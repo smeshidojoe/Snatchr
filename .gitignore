@@ -1,0 +1,40 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---- Сборка / обновление ----
+build/
+dist/
+_update/          # скачанный апдейт рядом с программой
+*.manifest
+*.spec            # авто-сгенерированные spec'и игнорируем,
+!Snatchr.spec     # но наш рецепт сборки держим в репозитории.
+
+# ---- Snatchr runtime ----
+# Скачиваемые бинарники (yt-dlp.exe, ffmpeg.exe, ffprobe.exe).
+tools/
+# Локальные данные/настройки/кэш (на случай, если лежат в проекте).
+*.log
+config.json
+cache.json
+
+# ---- Reference / scratch material (не часть приложения) ----
+refference/
+img/
+
+# ---- OS / editor ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+.idea/
+.vscode/
