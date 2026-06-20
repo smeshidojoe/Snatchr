@@ -320,6 +320,11 @@ class MainPage(WindowDragMixin, QWidget):
             self._analyze_timer.stop()
             self._set_state("idle")
             return
+        # Текст изменился относительно проанализированной ссылки — прежняя карточка
+        # устарела: убираем её и блокируем Download до новой проверки.
+        if url != self._analyzing_url and self._state in ("ready", "error"):
+            self._reset_info()
+            self._set_state("idle")
         self._analyze_timer.start()
 
     def _clear_url(self):
@@ -331,6 +336,10 @@ class MainPage(WindowDragMixin, QWidget):
             return
         url = (self.url_edit.text() or "").strip()
         if not (url.startswith("http://") or url.startswith("https://")):
+            # Невалидный ввод (например, ссылка без http) — сбрасываем устаревшее
+            # состояние «ready», чтобы Download не остался активным.
+            self._reset_info()
+            self._set_state("idle")
             return
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
             self._ensure_tools(then_analyze=True)
@@ -692,7 +701,10 @@ class MainPage(WindowDragMixin, QWidget):
             en = self._tools_ready and any(r.is_checked()
                                            for r in getattr(self, "_pl_rows", []))
         else:
-            en = (self._state == "ready" and self._tools_ready)
+            # Download активен только если ввод совпадает с проанализированной ссылкой.
+            cur = (self.url_edit.text() or "").strip()
+            en = (self._state == "ready" and self._tools_ready
+                  and cur == self._analyzing_url)
         self.btn_download.setEnabled(en)
 
     def _reset_info(self):
@@ -757,6 +769,8 @@ class MainPage(WindowDragMixin, QWidget):
         self._animate_button_to_stop()
         self._mdl_total = len(jobs)
         self._mdl_done = 0
+        self._mdl_fail = 0
+        self._batch_stopped = False
         self._mdl = MultiDownloadWorker(jobs, settings or self.settings, self)
         self._mdl.item_progress.connect(self._on_multi_progress)
         self._mdl.item_status.connect(self._on_multi_status)
@@ -768,6 +782,7 @@ class MainPage(WindowDragMixin, QWidget):
         if self._dl is not None:
             self._dl.stop()
         if self._mdl is not None:
+            self._batch_stopped = True
             self._mdl.stop()
 
     def _on_progress(self, p):
@@ -800,14 +815,26 @@ class MainPage(WindowDragMixin, QWidget):
 
     def _on_multi_item_done(self, idx, ok, info):
         self._mdl_done += 1
+        if not ok:
+            self._mdl_fail += 1
         rows = getattr(self, "_dl_rows", None)
         if rows and idx < len(rows):
             rows[idx].set_detail("✓" if ok else "✗",
                                  self.OK_COLOR if ok else self.ERR_COLOR)
 
     def _on_multi_all_done(self):
-        self._show_status(f"{tr('Saved to')} {self._display_path(self.settings.get('download_path',''))}",
-                          self.OK_COLOR, self._ok_pm)
+        total = self._mdl_total
+        fail = getattr(self, "_mdl_fail", 0)
+        folder = self._display_path(self.settings.get("download_path", ""))
+        if getattr(self, "_batch_stopped", False):
+            self._show_status(tr("Stopped"), self.MUTED_COLOR, None)
+        elif fail and fail >= total:
+            self._show_status(tr("All downloads failed"), self.ERR_COLOR, self._err_pm)
+        elif fail:
+            self._show_status(f"{tr('Saved with errors')} ({total - fail}/{total})",
+                              self.ERR_COLOR, self._err_pm)
+        else:
+            self._show_status(f"{tr('Saved to')} {folder}", self.OK_COLOR, self._ok_pm)
         ctx = getattr(self, "_dl_context", "multi")
         self._set_state("playlist_ready" if ctx == "playlist" else "multi_ready")
         self._animate_button_to_download(text=tr("Download"))

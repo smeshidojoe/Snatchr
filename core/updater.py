@@ -140,16 +140,23 @@ def restart_to_update():
     Работает только во frozen-режиме (есть отдельный exe для перезапуска)."""
     if not is_frozen() or not has_pending_update():
         return False
-    exe = sys.executable
-    target = install_dir()
     pid = os.getpid()
+
+    def _ps_quote(p):
+        # Одинарные кавычки в PowerShell экранируются удвоением апострофа,
+        # иначе путь с U+0027 (C:\Users\O'Brien\…) ломает разбор команды.
+        return "'" + str(p).replace("'", "''") + "'"
+
+    zip_q = _ps_quote(UPDATE_ZIP)
+    target_q = _ps_quote(install_dir())
+    exe_q = _ps_quote(sys.executable)
     # PowerShell: ждём выхода нашего PID, распаковываем, перезапускаем exe.
     script = (
         f"try {{ Wait-Process -Id {pid} -Timeout 60 }} catch {{}}; "
         f"Start-Sleep -Milliseconds 400; "
-        f"Expand-Archive -LiteralPath '{UPDATE_ZIP}' -DestinationPath '{target}' -Force; "
-        f"Remove-Item -LiteralPath '{UPDATE_ZIP}' -Force; "
-        f"Start-Process -FilePath '{exe}'"
+        f"Expand-Archive -LiteralPath {zip_q} -DestinationPath {target_q} -Force; "
+        f"Remove-Item -LiteralPath {zip_q} -Force; "
+        f"Start-Process -FilePath {exe_q}"
     )
     try:
         subprocess.Popen(

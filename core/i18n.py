@@ -62,6 +62,8 @@ _RU = {
     "Trying streamlink…": "Пробуем streamlink…",
     "Stopped": "Остановлено",
     "Download failed": "Ошибка загрузки",
+    "Saved with errors": "Сохранено с ошибками",
+    "All downloads failed": "Все загрузки не удались",
     "Saved to": "Сохранено в",
     "File Size ~": "Размер файла ~",
     "Setup failed": "Ошибка установки",

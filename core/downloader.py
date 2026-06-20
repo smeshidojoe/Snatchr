@@ -182,7 +182,10 @@ def audio_formats(info):
     for codec, f in rows:
         kb = _kbit(f.get("abr") or f.get("tbr"))
         label = codec + (f"{SEP}~{kb}k" if kb else "")
-        options.append({"label": label, "fmt": f["format_id"], "mp3": False})
+        # audio=True + реальное расширение контейнера: чтобы уникальность имени и
+        # expected_path считались по фактическому ext (.m4a/.webm/.opus), а не .mp4.
+        options.append({"label": label, "fmt": f["format_id"], "mp3": False,
+                        "audio": True, "ext": (f.get("ext") or codec)})
     return options
 
 
@@ -206,14 +209,22 @@ def _unique_base(out_dir, base, ext):
 
 def _final_ext(option):
     """Расширение итогового файла (для проверки уникальности имени)."""
-    return "mp3" if (option or {}).get("mp3") else "mp4"
+    o = option or {}
+    if o.get("mp3"):
+        return "mp3"
+    if o.get("audio"):                 # аудио-исходник (m4a/opus/webm…)
+        return o.get("ext") or "m4a"
+    return "mp4"
 
 
 def _merge_ext(option, url, settings):
     """Контейнер для склейки. Если дальше будет конвертация — пакуем в MKV
-    (он без проблем держит VP9+opus), иначе сразу в MP4. Для аудио — mp3."""
-    if (option or {}).get("mp3"):
+    (он без проблем держит VP9+opus), иначе сразу в MP4. Для аудио — свой ext."""
+    o = option or {}
+    if o.get("mp3"):
         return "mp3"
+    if o.get("audio"):
+        return o.get("ext") or "m4a"   # аудио не склеивается, ext = как у источника
     return "mkv" if should_convert(option, url, settings) else "mp4"
 
 
@@ -261,6 +272,8 @@ def build_download_args(option, url, settings, title=None):
     args += ["-f", option["fmt"]]
     if option.get("mp3"):
         args += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
+    elif option.get("audio"):
+        pass   # аудио-исходник: сохраняем как есть, без склейки/ремукса
     else:
         # При конвертации склеиваем в MKV (надёжно для VP9+opus), затем
         # перекодируем в mp4; без конвертации — сразу mp4.
@@ -315,6 +328,7 @@ def parse_destination(line):
 
 
 _ERROR_MAP = [
+    ("conversion failed", "Downloaded, but conversion failed (file kept unconverted)."),
     ("http error 401", "Access requires sign-in (401)."),
     ("http error 403", "Access denied (403) — the video may be region-locked or need sign-in."),
     ("http error 404", "Not found (404) — the link may be broken or removed."),
@@ -369,10 +383,12 @@ def slim_info(info):
 
 
 def should_convert(option, url, settings):
-    """Нужна ли конвертация: галочка вкл, видео (не mp3), и источник — YouTube."""
+    """Нужна ли конвертация: галочка вкл, видео (не mp3/не аудио), источник — YouTube."""
+    o = option or {}
     return (bool(settings.get("convert_yt"))
             and is_youtube(url)
-            and not (option or {}).get("mp3"))
+            and not o.get("mp3")
+            and not o.get("audio"))
 
 
 def probe_flat(url, timeout=90):
@@ -456,22 +472,6 @@ def _stream(args, hooks, log, progress=True):
     return rc == 0, dest
 
 
-def cleanup_partials(settings):
-    """Удаляет недокачанные/временные файлы (после отмены)."""
-    out_dir = _out_dir(settings)
-    try:
-        for f in os.listdir(out_dir):
-            low = f.lower()
-            if low.endswith((".part", ".ytdl", ".part-frag", ".__conv__.mp4",
-                             ".temp", ".temp.mp4")) or ".part-frag" in low:
-                try:
-                    os.remove(os.path.join(out_dir, f))
-                except OSError:
-                    pass
-    except OSError:
-        pass
-
-
 def _is_fragment(rest):
     """rest вида '.f247.webm' -> True (промежуточный формат-фрагмент yt-dlp)."""
     if not rest.startswith(".f"):
@@ -543,6 +543,7 @@ def run_job(option, url, settings, hooks, title=None):
             ok, _ = _stream(args, hooks, log, progress=False)
             dest = out if ok else ""
 
+    conv_failed = False
     if ok and dest and not hooks.is_stopped() and should_convert(option, url, settings):
         try:
             hooks.on_status(tr("Converting…"))
@@ -551,11 +552,17 @@ def run_job(option, url, settings, hooks, title=None):
             # Галочка включена -> конвертируем всегда, независимо от кодека.
             dest = convert.convert(dest, hooks=hooks, force=True)
         except Exception as exc:
+            conv_failed = True
+            log.event("Conversion failed")
             log.info("Conversion failed: " + str(exc))
 
+    # При отмене чистим только обломки ТЕКУЩЕГО задания (по имени), а не всю папку.
     if hooks.is_stopped():
-        cleanup_partials(settings)
+        cleanup_job_artifacts(expected or dest)
         return False, "", log
+    # Скачали, но конвертация упала: файл оставляем (он валиден), но это НЕ успех.
+    if conv_failed:
+        return False, dest, log
     if ok:
         log.event("Done")
     else:
