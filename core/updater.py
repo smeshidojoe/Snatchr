@@ -134,33 +134,52 @@ def apply_pending_update(target=None):
         return False
 
 
+def _ps_quote(p):
+    # Одинарные кавычки в PowerShell экранируются удвоением апострофа,
+    # иначе путь с U+0027 (C:\Users\O'Brien\…) ломает разбор команды.
+    return "'" + str(p).replace("'", "''") + "'"
+
+
 def restart_to_update():
-    """Запускает внешнего помощника (PowerShell), который дождётся выхода этого
-    процесса, распакует zip поверх папки установки и перезапустит exe.
-    Работает только во frozen-режиме (есть отдельный exe для перезапуска)."""
+    """Запускает внешнего помощника (PowerShell): он ждёт, пока exe реально
+    разблокируется (в onefile файл держат и загрузчик, и сам процесс),
+    распаковывает zip поверх папки установки и перезапускает exe. Пишет лог в
+    _update/helper.log. Работает только во frozen-режиме."""
     if not is_frozen() or not has_pending_update():
         return False
-    pid = os.getpid()
 
-    def _ps_quote(p):
-        # Одинарные кавычки в PowerShell экранируются удвоением апострофа,
-        # иначе путь с U+0027 (C:\Users\O'Brien\…) ломает разбор команды.
-        return "'" + str(p).replace("'", "''") + "'"
-
+    exe_q = _ps_quote(sys.executable)
     zip_q = _ps_quote(UPDATE_ZIP)
     target_q = _ps_quote(install_dir())
-    exe_q = _ps_quote(sys.executable)
-    # PowerShell: ждём выхода нашего PID, распаковываем, перезапускаем exe.
+    log_q = _ps_quote(os.path.join(UPDATE_DIR, "helper.log"))
+
+    # Ждём разблокировки exe (попытка открыть в монопольном режиме), затем
+    # распаковываем. Ошибки и шаги пишем в helper.log для диагностики.
     script = (
-        f"try {{ Wait-Process -Id {pid} -Timeout 60 }} catch {{}}; "
-        f"Start-Sleep -Milliseconds 400; "
-        f"Expand-Archive -LiteralPath {zip_q} -DestinationPath {target_q} -Force; "
-        f"Remove-Item -LiteralPath {zip_q} -Force; "
-        f"Start-Process -FilePath {exe_q}"
+        "$ErrorActionPreference='SilentlyContinue'; "
+        f"$exe={exe_q}; $zip={zip_q}; $target={target_q}; $log={log_q}; "
+        "function L($m){ ('[' + (Get-Date -Format o) + '] ' + $m) | Out-File -FilePath $log -Append -Encoding utf8 }; "
+        "L('helper started'); "
+        "$ok=$false; "
+        "for($i=0;$i -lt 120;$i++){ "
+        "  try{ $fs=[System.IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); $ok=$true; break } "
+        "  catch{ Start-Sleep -Milliseconds 500 } "
+        "} "
+        "L('exe unlocked=' + $ok); "
+        "Start-Sleep -Milliseconds 500; "
+        "try{ "
+        "  Expand-Archive -LiteralPath $zip -DestinationPath $target -Force; "
+        "  L('extracted'); "
+        "  Remove-Item -LiteralPath $zip -Force; "
+        "}catch{ L('ERROR: ' + $_.Exception.Message) } "
+        "Start-Process -FilePath $exe; "
+        "L('relaunched')"
     )
     try:
+        os.makedirs(UPDATE_DIR, exist_ok=True)
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-WindowStyle", "Hidden", "-Command", script],
             creationflags=_DETACHED, close_fds=True)
         return True
     except Exception:

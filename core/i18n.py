@@ -71,7 +71,7 @@ _RU = {
     "Update available": "Доступно обновление",
     "You're up to date": "Установлена последняя версия",
     "Check failed — try later": "Не удалось проверить — попробуйте позже",
-    "Update & Restart": "Обновить и перезапустить",
+    "Download Update": "Скачать обновление",
     "Downloading update…": "Скачивание обновления…",
 
     # --- Подсказки (tooltip) ---

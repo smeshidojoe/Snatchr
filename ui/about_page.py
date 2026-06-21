@@ -284,7 +284,7 @@ class AboutPage(WindowDragMixin, QWidget):
             url = result.get("download_url")
             if url:
                 self._update_url = url
-                self._set_update_action(tr("Update & Restart"), self._start_app_update)
+                self._set_update_action(tr("Download Update"), self._start_app_update)
         elif status == "current":
             text, color = tr("You're up to date"), self.MUTED_COLOR
         else:
