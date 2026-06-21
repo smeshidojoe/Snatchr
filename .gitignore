@@ -9,6 +9,7 @@ dist/
 .venv/
 venv/
 env/
+installer_output/
 
 # ---- Сборка / обновление ----
 build/
@@ -38,3 +39,5 @@ Desktop.ini
 *.swp
 .idea/
 .vscode/
+.iss
+snatchr_setup.iss

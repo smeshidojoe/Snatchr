@@ -164,11 +164,167 @@ _DARK_PULSE = {
     "error":        "#e08a8a",
 }
 
+# --- Decadence (Звёздная ночь Ван Гога: глубокий синий + золотые звёзды) ---- #
+_DECADENCE = {
+    "grad_center":  "#1b3a6b",
+    "grad_edge":    "#0a1430",
+    "border":       "#e8d18a",
+    "bg":           "#0e1a3a",
+    "page_bg":      "#16264d",
+
+    "icon":         "#cdd9f0",
+    "icon_hover":   "#f0e6b0",
+    "separator":    "#3a4f80",
+
+    "title":        "#eef2ff",
+    "text":         "#c3d0ec",
+    "muted":        "#8497c0",
+    "on_accent":    "#0e1a3a",
+
+    "accent":       "#f0d878",
+    "accent_hover": "#f7e79a",
+    "link":         "#e8d18a",
+    "link_hover":   "#f7e79a",
+    "choose":       "#e8d18a",
+    "choose_bg":    "rgba(240, 216, 120, 0.10)",
+    "choose_bg_h":  "rgba(240, 216, 120, 0.20)",
+
+    "card_bg":      "#16264d",
+    "field_bg":     "#1a2c57",
+
+    "cb_off":       "#2e406e",
+    "cb_on":        "#f0d878",
+
+    "seg_bg":       "#16264d",
+    "seg_sel":      "#f0d878",
+
+    "sel_chip":     "#22386b",
+    "sel_chevron":  "#eef2ff",
+
+    "download_bg":       "#f0d878",
+    "download_bg_hover": "#f7e79a",
+    "analyze_bg":        "#c79a3a",
+    "analyze_bg_hover":  "#d8ad4e",
+    "stop_bg":           "#c25b5b",
+    "stop_bg_hover":     "#d06a6a",
+    "disabled_bg":       "#1a2c57",
+    "disabled_text":     "#5a6c96",
+
+    "prog_track":   "#1a2c57",
+    "ok":           "#8ad1a0",
+    "error":        "#e08a8a",
+}
+
+# --- Crimson Forest (тёмно-зелёная основа + кремовый, акцент — багровый) ---- #
+_CRIMSON_FOREST = {
+    "grad_center":  "#1d3a26",
+    "grad_edge":    "#0a160e",
+    "border":       "#c0392b",
+    "bg":           "#0f1f14",
+    "page_bg":      "#15281b",
+
+    "icon":         "#e8e0c8",
+    "icon_hover":   "#f5efd8",
+    "separator":    "#3a5a44",
+
+    "title":        "#ede7cf",
+    "text":         "#c9d6bf",
+    "muted":        "#8aa089",
+    "on_accent":    "#ffffff",
+
+    "accent":       "#c0392b",
+    "accent_hover": "#d4493a",
+    "link":         "#d98a3a",
+    "link_hover":   "#ec9a4a",
+    "choose":       "#d98a3a",
+    "choose_bg":    "rgba(217, 138, 58, 0.10)",
+    "choose_bg_h":  "rgba(217, 138, 58, 0.20)",
+
+    "card_bg":      "#15281b",
+    "field_bg":     "#18301f",
+
+    "cb_off":       "#2f4a36",
+    "cb_on":        "#c0392b",
+
+    "seg_bg":       "#18301f",
+    "seg_sel":      "#c0392b",
+
+    "sel_chip":     "#1f3a28",
+    "sel_chevron":  "#ede7cf",
+
+    "download_bg":       "#c0392b",
+    "download_bg_hover": "#d4493a",
+    "analyze_bg":        "#b8893a",
+    "analyze_bg_hover":  "#ca9a4a",
+    "stop_bg":           "#8e2b2b",
+    "stop_bg_hover":     "#a23636",
+    "disabled_bg":       "#18301f",
+    "disabled_text":     "#5a6c52",
+
+    "prog_track":   "#18301f",
+    "ok":           "#7fd18a",
+    "error":        "#e08a8a",
+}
+
+# --- Vibrancecore (тёмно-синяя основа, электрик-синий + сочный красный) ----- #
+_VIBRANCECORE = {
+    "grad_center":  "#12203a",
+    "grad_edge":    "#060a16",
+    "border":       "#2ea3e6",
+    "bg":           "#0a1020",
+    "page_bg":      "#101a30",
+
+    "icon":         "#e0eaff",
+    "icon_hover":   "#ffffff",
+    "separator":    "#2a4a70",
+
+    "title":        "#eaf2ff",
+    "text":         "#b8c8e8",
+    "muted":        "#7a8cb0",
+    "on_accent":    "#ffffff",
+
+    "accent":       "#2ea3e6",
+    "accent_hover": "#4ab4f0",
+    "link":         "#2ea3e6",
+    "link_hover":   "#4ab4f0",
+    "choose":       "#2ea3e6",
+    "choose_bg":    "rgba(46, 163, 230, 0.10)",
+    "choose_bg_h":  "rgba(46, 163, 230, 0.20)",
+
+    "card_bg":      "#101a30",
+    "field_bg":     "#14203a",
+
+    "cb_off":       "#2a3a5e",
+    "cb_on":        "#2ea3e6",
+
+    "seg_bg":       "#14203a",
+    "seg_sel":      "#2ea3e6",
+
+    "sel_chip":     "#1a2a48",
+    "sel_chevron":  "#eaf2ff",
+
+    "download_bg":       "#ff4d4d",
+    "download_bg_hover": "#ff6360",
+    "analyze_bg":        "#e0a23a",
+    "analyze_bg_hover":  "#eeb24e",
+    "stop_bg":           "#c0392b",
+    "stop_bg_hover":     "#d4493a",
+    "disabled_bg":       "#14203a",
+    "disabled_text":     "#5a6c90",
+
+    "prog_track":   "#14203a",
+    "ok":           "#5ad18a",
+    "error":        "#ff6b6b",
+}
+
 
 THEMES = {
-    "Deep Ocean":    {"assets": "Deep Ocean", "palette": _DEEP_OCEAN},
-    "Rose Negative": {"assets": "Deep Ocean", "palette": _ROSE_NEGATIVE},
-    "Dark Pulse":    {"assets": "Deep Ocean", "palette": _DARK_PULSE},
+    "Deep Ocean":     {"assets": "Deep Ocean", "palette": _DEEP_OCEAN},
+    "White Rose":     {"assets": "Deep Ocean", "palette": _ROSE_NEGATIVE},
+    "Dark Pulse":     {"assets": "Deep Ocean", "palette": _DARK_PULSE},
+    "Decadence":      {"assets": "Deep Ocean", "palette": _DECADENCE},
+    "Crimson Forest": {"assets": "Deep Ocean", "palette": _CRIMSON_FOREST},
+    "Vibrancecore":   {"assets": "Deep Ocean", "palette": _VIBRANCECORE},
 }
 
 DEFAULT_THEME = "Deep Ocean"

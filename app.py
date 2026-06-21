@@ -31,41 +31,23 @@ class App(QWidget):
         # Регистрируем кастомные шрифты до создания виджетов.
         fonts.load()
 
-        screen = QGuiApplication.primaryScreen().geometry()
-        sw, sh = screen.width(), screen.height()
-
-        BASE_W = 2560
-        BASE_H = 1440
-
-        self.scale = min(sw / BASE_W, sh / BASE_H)
-        self.scale = max(0.6, min(self.scale, 1.4))
-
-        self.WIN_W         = self._s(492)
-        self.WIN_H_FULL    = self._s(480)            # главная / About
-        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(50)  # Settings — на 50px выше
-        self.WIN_H_ABOUT   = self._s(480)            # окно About — базовая высота
-        self.WIN_H    = self.WIN_H_FULL
-        self.CORNER_R = self._s(14)
-        self.BORDER_W = max(2, self._s(3))
-
-        # Трей выставляется из main.py после создания окна.
-        self.tray = None
-
         # Настройки загружаются с диска (персистентность между сессиями).
         self.settings = config.load()
         i18n.set_language(self.settings.get("language", "English"))
 
+        # Масштаб авто по разрешению экрана (база 2560×1440 -> 1.0).
+        # Доп. коэффициент, чтобы 1080p давал 0.85 (а не 0.75).
+        screen = QGuiApplication.primaryScreen().geometry()
+        self._base_scale = min(screen.width() / 2560, screen.height() / 1440)
+        self._base_scale *= 0.85 / 0.75
+        self._base_scale = max(0.6, min(self._base_scale, 1.4))
+        self._recompute_dims()
+
+        # Трей выставляется из main.py после создания окна.
+        self.tray = None
+
         # Цвета окна — из палитры выбранной темы.
         self._load_window_colors()
-
-        # Внутренняя область (внутри рамки, над нижней панелью), где живут страницы.
-        self.BAR_H     = self._s(48)
-        self.content_x = self.BORDER_W
-        self.content_y = self.BORDER_W
-        self.content_w = self.WIN_W - 2 * self.BORDER_W
-        # Страница Settings выше (окно +50px), главная/About — базовой высоты.
-        self.content_h = self.WIN_H_SETTINGS - self.BAR_H - self.BORDER_W
-        self.about_content_h = self.WIN_H_ABOUT - self.BAR_H - self.BORDER_W
 
         self.current_page = "main"
         self._nav_busy = False
@@ -81,8 +63,7 @@ class App(QWidget):
         # Перетаскивание окна (за верхнюю пустую область).
         self.allow_dragging = bool(self.settings.get("allow_dragging", False))
         self._drag_offset = None
-        # Высота «зоны захвата» сверху окна.
-        self.DRAG_ZONE_H = self._s(64)
+        # DRAG_ZONE_H задаётся в _recompute_dims().
 
         # Состояние показа окна (для устойчивости к быстрым кликам по трею).
         self._shown = False
@@ -128,6 +109,36 @@ class App(QWidget):
     # ------------------------------------------------------------------ #
     #  Построение страниц / применение темы и языка
     # ------------------------------------------------------------------ #
+    def _recompute_dims(self):
+        """Пересчёт всех размеров окна по масштабу (авто, по разрешению экрана)."""
+        self.scale = self._base_scale
+
+        self.WIN_W          = self._s(492)
+        self.WIN_H_FULL     = self._s(480)
+        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(50)
+        self.WIN_H_ABOUT    = self._s(480)
+        self.WIN_H          = self.WIN_H_FULL
+        self.CORNER_R       = self._s(14)
+        self.BORDER_W       = max(2, self._s(3))
+        self.BAR_H          = self._s(48)
+        self.DRAG_ZONE_H    = self._s(64)
+
+        self.content_x = self.BORDER_W
+        self.content_y = self.BORDER_W
+        self.content_w = self.WIN_W - 2 * self.BORDER_W
+        self.content_h = self.WIN_H_SETTINGS - self.BAR_H - self.BORDER_W
+        self.about_content_h = self.WIN_H_ABOUT - self.BAR_H - self.BORDER_W
+
+    def _crossfade(self, snap):
+        """Плавный кросс-фейд: поверх нового окна показываем снимок старого и гасим."""
+        from PySide6.QtWidgets import QLabel
+        ov = QLabel(self)
+        ov.setPixmap(snap)
+        ov.setGeometry(0, 0, snap.width(), snap.height())
+        ov.raise_()
+        ov.show()
+        anim.fade(ov, 1.0, 0.0, 300, on_finished=ov.deleteLater)
+
     def _load_window_colors(self):
         """Цвета фона/рамки окна из палитры текущей темы."""
         pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
@@ -177,6 +188,7 @@ class App(QWidget):
     def _apply_appearance_now(self):
         if self._updating or self.main_page.is_busy():
             return
+        snap = self.grab()                      # кадр старого вида для кросс-фейда
         i18n.set_language(self.settings.get("language", "English"))
         self._load_window_colors()
 
@@ -199,6 +211,7 @@ class App(QWidget):
         self.about_page.raise_()
         self.bottom_bar.btn_settings.raise_()
         self.update()
+        self._crossfade(snap)                   # плавный переход к новой теме
 
     # ------------------------------------------------------------------ #
     #  Отрисовка фона: скруглённый прямоугольник + радиальный градиент + рамка
@@ -690,6 +703,7 @@ class App(QWidget):
             if not self._shown:
                 self.hide()
                 self.setWindowOpacity(1.0)
+                self.main_page.on_window_hidden()   # очистить поле ввода ссылки
                 self._reset_to_main()
 
         self._run_win_anim(cur, QPoint(cur.x(), cur.y() + off),

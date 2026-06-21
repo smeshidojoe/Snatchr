@@ -62,6 +62,8 @@ _RU = {
     "Trying streamlink…": "Пробуем streamlink…",
     "Stopped": "Остановлено",
     "Download failed": "Ошибка загрузки",
+    "Saved with errors": "Сохранено с ошибками",
+    "All downloads failed": "Все загрузки не удались",
     "Saved to": "Сохранено в",
     "File Size ~": "Размер файла ~",
     "Setup failed": "Ошибка установки",
@@ -69,7 +71,7 @@ _RU = {
     "Update available": "Доступно обновление",
     "You're up to date": "Установлена последняя версия",
     "Check failed — try later": "Не удалось проверить — попробуйте позже",
-    "Update & Restart": "Обновить и перезапустить",
+    "Download Update": "Скачать обновление",
     "Downloading update…": "Скачивание обновления…",
 
     # --- Подсказки (tooltip) ---
