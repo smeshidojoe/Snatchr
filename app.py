@@ -35,11 +35,11 @@ class App(QWidget):
         self.settings = config.load()
         i18n.set_language(self.settings.get("language", "English"))
 
-        # Масштаб авто по разрешению экрана (база 2560×1440 -> 1.0).
-        # Доп. коэффициент, чтобы 1080p давал 0.85 (а не 0.75).
+        # Масштаб авто по разрешению экрана. Линейный пересчёт через две точки:
+        # 1080p (raw 0.75) -> 0.85, 1440p (raw 1.0) -> 1.0  =>  scale = raw*0.6 + 0.4.
         screen = QGuiApplication.primaryScreen().geometry()
-        self._base_scale = min(screen.width() / 2560, screen.height() / 1440)
-        self._base_scale *= 0.85 / 0.75
+        raw = min(screen.width() / 2560, screen.height() / 1440)
+        self._base_scale = raw * 0.6 + 0.4
         self._base_scale = max(0.6, min(self._base_scale, 1.4))
         self._recompute_dims()
 
