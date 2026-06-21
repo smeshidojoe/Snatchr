@@ -120,6 +120,15 @@ class MainPage(WindowDragMixin, QWidget):
         """Идёт ли загрузка/конвертация (тогда не пересобираем UI на лету)."""
         return self._state == "downloading"
 
+    def on_window_hidden(self):
+        """Окно свернули: очищаем поле(я) ввода, если не идёт загрузка."""
+        if self._state == "downloading":
+            return
+        self.url_text.blockSignals(True)
+        self.url_text.clear()
+        self.url_text.blockSignals(False)
+        self.url_edit.clear()      # textChanged -> сброс состояния в idle
+
     def expand_extra(self):
         return self.app._s(50) if self._is_multi() else 0
 

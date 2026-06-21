@@ -45,6 +45,10 @@ def load():
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
 
+    # Миграция переименованной темы.
+    if data.get("theme") == "Rose Negative":
+        data["theme"] = "White Rose"
+
     if migrated:
         save(data)   # сразу сохраняем в новое расположение
 

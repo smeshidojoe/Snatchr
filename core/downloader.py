@@ -13,10 +13,15 @@ audio_formats(info)   — список вариантов для режима Au
 import os
 import json
 import time
+import uuid
+import shutil
 
 from core import tools
 from core import logbook
 from core.i18n import tr
+from core.config import APP_DIR
+
+TMP_ROOT = os.path.join(APP_DIR, "tmp")   # временные папки загрузок рядом с конфигом
 
 SEP = " · "          # разделитель блоков в подписи
 MIN_HEIGHT = 480     # ниже 480p не показываем
@@ -235,21 +240,20 @@ def _name_template(out_dir, option, title):
     return base + ".%(ext)s"
 
 
-def _expected_path(option, url, settings, title):
-    """Детерминированный путь файла сразу после загрузки/склейки (мы задаём -o).
+def _expected_path(option, url, settings, title, out_dir):
+    """Детерминированный путь файла сразу после загрузки/склейки (в out_dir).
     None — если заголовок неизвестен (тогда полагаемся на распарсенный путь)."""
     if not title:
         return None
-    out_dir = settings.get("download_path") or os.path.join(
-        os.path.expanduser("~"), "Downloads")
     base = _unique_base(out_dir, _sanitize_name(title), _final_ext(option))
     return os.path.join(out_dir, base + "." + _merge_ext(option, url, settings))
 
 
-def build_download_args(option, url, settings, title=None):
+def build_download_args(option, url, settings, title=None, out_dir=None):
     """Аргументы yt-dlp для скачивания одиночной ссылки по выбранному варианту."""
-    out_dir = settings.get("download_path") or os.path.join(
-        os.path.expanduser("~"), "Downloads")
+    if out_dir is None:
+        out_dir = settings.get("download_path") or os.path.join(
+            os.path.expanduser("~"), "Downloads")
 
     # ВНИМАНИЕ: --print включает --quiet и глушит прогресс. Поэтому итоговый путь
     # берём из обычных строк вывода ([Merger]/[download] Destination) в parse_destination.
@@ -444,8 +448,36 @@ def _out_dir(settings):
         os.path.expanduser("~"), "Downloads")
 
 
-def build_streamlink_args(url, settings):
-    out = os.path.join(_out_dir(settings), "stream-" + time.strftime("%Y%m%d-%H%M%S") + ".mp4")
+def _new_job_dir():
+    """Создаёт временную папку задания (tmp/aaaa-xxxx-bbbb-dddd рядом с конфигом)."""
+    h = uuid.uuid4().hex[:16]
+    name = "-".join(h[i:i + 4] for i in range(0, 16, 4))
+    d = os.path.join(TMP_ROOT, name)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _rm_dir(path):
+    try:
+        if path and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _move_to_dest(src, download_dir):
+    """Переносит src в папку загрузок с уникальным именем; возвращает путь."""
+    os.makedirs(download_dir, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(src))
+    final_base = _unique_base(download_dir, base, ext.lstrip(".") or "mp4")
+    final = os.path.join(download_dir, final_base + ext)
+    shutil.move(src, final)
+    return final
+
+
+def build_streamlink_args(url, settings, out_dir=None):
+    out_dir = out_dir or _out_dir(settings)
+    out = os.path.join(out_dir, "stream-" + time.strftime("%Y%m%d-%H%M%S") + ".mp4")
     args = [tools.streamlink_path(), "--ffmpeg-ffmpeg", tools.FFMPEG_EXE,
             url, "best", "-o", out, "--force"]
     return args, out
@@ -472,41 +504,6 @@ def _stream(args, hooks, log, progress=True):
     return rc == 0, dest
 
 
-def _is_fragment(rest):
-    """rest вида '.f247.webm' -> True (промежуточный формат-фрагмент yt-dlp)."""
-    if not rest.startswith(".f"):
-        return False
-    mid = rest[2:].split(".", 1)[0]
-    return mid.isdigit()
-
-
-def cleanup_job_artifacts(dest):
-    """Удаляет обломки неудачной загрузки, привязанные к имени dest:
-    фрагменты (.fNNN.*), .temp(.mp4), .part/.ytdl и файл обложки."""
-    if not dest:
-        return
-    out_dir = os.path.dirname(dest)
-    base = os.path.splitext(os.path.basename(dest))[0]
-    if not out_dir or not base:
-        return
-    try:
-        for f in os.listdir(out_dir):
-            if not f.startswith(base):
-                continue
-            rest = f[len(base):]
-            low = f.lower()
-            ext = os.path.splitext(f)[1].lower()
-            if (low.endswith((".part", ".ytdl", ".temp", ".temp.mp4")) or ".part-frag" in low
-                    or _is_fragment(rest)
-                    or ext in (".jpg", ".jpeg", ".png", ".webp")):
-                try:
-                    os.remove(os.path.join(out_dir, f))
-                except OSError:
-                    pass
-    except OSError:
-        pass
-
-
 def run_job(option, url, settings, hooks, title=None):
     """
     Полный цикл одного задания: yt-dlp -> (fallback streamlink для Twitch) ->
@@ -515,10 +512,11 @@ def run_job(option, url, settings, hooks, title=None):
     """
     log = logbook.Log(url)
     log.event("Starting download (yt-dlp)")
-    # Ожидаемый путь файла известен заранее (мы задаём -o). Проверять успех по
-    # нему надёжнее, чем по распарсенному из stdout пути (кириллица там может
-    # прийти битой при неверной кодировке).
-    expected = _expected_path(option, url, settings, title)
+    download_dir = _out_dir(settings)
+    # Качаем в отдельную временную папку; готовый файл переносим в папку загрузок.
+    # Так все обломки и temp-файлы изолированы и легко удаляются при отмене.
+    job_dir = _new_job_dir()
+    expected = _expected_path(option, url, settings, title, job_dir)
 
     def _resolve(parsed):
         if expected and os.path.exists(expected):
@@ -527,7 +525,7 @@ def run_job(option, url, settings, hooks, title=None):
             return parsed
         return ""
 
-    ok, dest = _stream(build_download_args(option, url, settings, title),
+    ok, dest = _stream(build_download_args(option, url, settings, title, job_dir),
                        hooks, log, progress=True)
     # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
     if not hooks.is_stopped():
@@ -539,9 +537,9 @@ def run_job(option, url, settings, hooks, title=None):
         if is_twitch(url) and tools.have_streamlink():
             hooks.on_status(tr("Trying streamlink…"))
             log.event("Trying streamlink")
-            args, out = build_streamlink_args(url, settings)
+            args, out = build_streamlink_args(url, settings, job_dir)
             ok, _ = _stream(args, hooks, log, progress=False)
-            dest = out if ok else ""
+            dest = out if (ok and os.path.exists(out)) else ""
 
     conv_failed = False
     if ok and dest and not hooks.is_stopped() and should_convert(option, url, settings):
@@ -556,15 +554,25 @@ def run_job(option, url, settings, hooks, title=None):
             log.event("Conversion failed")
             log.info("Conversion failed: " + str(exc))
 
-    # При отмене чистим только обломки ТЕКУЩЕГО задания (по имени), а не всю папку.
+    # Отмена задания или конвертации -> удаляем всю временную папку.
     if hooks.is_stopped():
-        cleanup_job_artifacts(expected or dest)
+        _rm_dir(job_dir)
         return False, "", log
-    # Скачали, но конвертация упала: файл оставляем (он валиден), но это НЕ успех.
+
+    final = ""
+    if ok and dest and os.path.exists(dest):
+        try:
+            final = _move_to_dest(dest, download_dir)   # переносим готовый файл
+        except Exception as exc:
+            log.info("Move failed: " + str(exc))
+            ok = False
+    else:
+        ok = False
+    _rm_dir(job_dir)   # временная папка больше не нужна
+
+    # Скачали, но конвертация упала: файл оставляем (перенесён), но это НЕ успех.
     if conv_failed:
-        return False, dest, log
+        return False, final, log
     if ok:
         log.event("Done")
-    else:
-        cleanup_job_artifacts(expected or dest)   # не оставляем обломки неудачной попытки
-    return ok, dest, log
+    return ok, final, log
