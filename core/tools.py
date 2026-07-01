@@ -26,8 +26,14 @@ _OLD_TOOLS_DIR = os.path.join(BASE_DIR, "tools")
 YTDLP_EXE     = os.path.join(TOOLS_DIR, "yt-dlp.exe")
 FFMPEG_EXE    = os.path.join(TOOLS_DIR, "ffmpeg.exe")
 FFPROBE_EXE   = os.path.join(TOOLS_DIR, "ffprobe.exe")
+DENO_EXE      = os.path.join(TOOLS_DIR, "deno.exe")
 
 YTDLP_URL  = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+# Deno — JS-движок, которым yt-dlp решает JS-челленджи YouTube (nsig). Кладём его
+# в tools/ и добавляем в PATH — yt-dlp сам подхватывает deno/node из PATH. Без
+# него yt-dlp откатывается на встроенный интерпретатор (медленнее, иногда падает).
+DENO_URL   = ("https://github.com/denoland/deno/releases/latest/download/"
+              "deno-x86_64-pc-windows-msvc.zip")
 FFMPEG_API = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=20"
 # Берём СТАБИЛЬНУЮ сборку ветки 7.1 (а не master): master собран против свежих
 # nvenc-заголовков и требует драйвер новее, чем у большинства NVIDIA-карт, из-за
@@ -71,6 +77,10 @@ def have_ffmpeg():
     return os.path.isfile(FFMPEG_EXE) and os.path.isfile(FFPROBE_EXE)
 
 
+def have_deno():
+    return os.path.isfile(DENO_EXE)
+
+
 def default_browser():
     """Основной браузер пользователя как имя для yt-dlp --cookies-from-browser
     (chrome/edge/firefox/brave/opera/vivaldi) или None, если не определили."""
@@ -91,6 +101,19 @@ def default_browser():
     return None
 
 
+def windows_uses_light_theme():
+    """Светлая ли тема панели задач Windows (для цвета иконки в трее).
+    True — светлая панель (иконки должны быть чёрными), False — тёмная (белыми).
+    Ключ SystemUsesLightTheme отвечает именно за панель задач/трей."""
+    try:
+        import winreg
+        key = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            return bool(winreg.QueryValueEx(k, "SystemUsesLightTheme")[0])
+    except Exception:
+        return False   # по умолчанию — тёмная панель (белые иконки, как раньше)
+
+
 def streamlink_path():
     """Путь к streamlink, если он есть (в tools/ или в PATH). Иначе None."""
     local = os.path.join(TOOLS_DIR, "streamlink.exe")
@@ -108,10 +131,12 @@ def have_streamlink():
 # ------------------------------------------------------------------ #
 def _utf8_env():
     """Окружение, заставляющее дочерний Python (yt-dlp) выводить UTF-8, иначе на
-    Windows кириллица в путях приходит в cp1251 и ломается при декодировании."""
+    Windows кириллица в путях приходит в cp1251 и ломается при декодировании.
+    Плюс кладём tools/ в PATH — чтобы yt-dlp нашёл deno (JS-челленджи YouTube)."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    env["PATH"] = TOOLS_DIR + os.pathsep + env.get("PATH", "")
     return env
 
 
@@ -253,6 +278,34 @@ def update_ffmpeg(progress=None):
             pass
     download_ffmpeg(progress)
     return True
+
+
+def download_deno(progress=None):
+    """Скачать deno.exe (zip с GitHub) в tools/. progress(frac) — ход загрузки.
+    Ошибки пробрасываются наверх (вызывающий делает best-effort)."""
+    ensure_dir()
+    req = urllib.request.Request(DENO_URL, headers={"User-Agent": "Snatchr"})
+    buf = io.BytesIO()
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = resp.read(1024 * 64)
+            if not chunk:
+                break
+            buf.write(chunk)
+            done += len(chunk)
+            if progress and total:
+                progress(done / total)
+    with zipfile.ZipFile(buf) as zf:
+        for name in zf.namelist():
+            if os.path.basename(name).lower() == "deno.exe":
+                tmp = DENO_EXE + ".part"
+                with zf.open(name) as src, open(tmp, "wb") as dst:
+                    dst.write(src.read())
+                os.replace(tmp, DENO_EXE)     # атомарно, чтобы не остался кусок
+                return True
+    raise RuntimeError("deno.exe not found in archive")
 
 
 def ffmpeg_location():

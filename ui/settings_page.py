@@ -257,13 +257,16 @@ class SettingsPage(WindowDragMixin, QWidget):
     def _build_update_buttons(self, x, y):
         from PySide6.QtGui import QFontMetrics
         s = self.app._s
-        bh, gap = s(28), s(12)
+        bh, gap = s(28), s(10)
         font = fonts.font(s(11), "Semibold")
         fm = QFontMetrics(font)
-        t1, t2 = tr("Update yt-dlp"), tr("Update ffmpeg")
-        # Ширина под текст (минимум s(120)) — на русском надписи длиннее.
-        bw1 = max(s(120), fm.horizontalAdvance(t1) + s(24))
-        bw2 = max(s(120), fm.horizontalAdvance(t2) + s(24))
+        t1, t2, t3 = tr("Update yt-dlp"), tr("Update ffmpeg"), tr("Clear Cache")
+        # Ширина под текст (минимум s(104)) — на русском надписи длиннее.
+        bw1 = max(s(104), fm.horizontalAdvance(t1) + s(20))
+        bw2 = max(s(104), fm.horizontalAdvance(t2) + s(20))
+        # Clear Cache — чуть длиннее и с запасом под текст «Cache cleared».
+        bw3 = max(s(122), fm.horizontalAdvance(t3) + s(28),
+                  fm.horizontalAdvance(tr("Cache cleared")) + s(28))
 
         self.btn_update = LinkButton(
             self, t1, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ytdlp_update,
@@ -274,6 +277,38 @@ class SettingsPage(WindowDragMixin, QWidget):
             self, t2, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ffmpeg_update,
             hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
         self.btn_update_ff.setGeometry(x + bw1 + gap, y, bw2, bh)
+
+        self.btn_clear_cache = LinkButton(
+            self, t3, font, self.CHOOSE, self.LINK_HOVER, self._clear_cache,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+        self.btn_clear_cache.setGeometry(x + bw1 + bw2 + 2 * gap, y, bw3, bh)
+
+    def _clear_cache(self):
+        """Очищает cache.json в %APPDATA%/Snatchr и плавно подтверждает на кнопке."""
+        from core import cache
+        cache.clear()
+        if getattr(self, "_cc_flashing", False):
+            return
+        self._cc_flashing = True
+        self._flash_button_text(self.btn_clear_cache,
+                                tr("Cache cleared"), tr("Clear Cache"))
+
+    def _flash_button_text(self, btn, temp, restore, hold_ms=1500):
+        """Плавно (через прозрачность) меняет текст кнопки на temp, держит и
+        возвращает restore."""
+        from ui import anim
+        from PySide6.QtCore import QTimer
+
+        def fade_to(text, on_done=None):
+            def swapped():
+                btn.setText(text)
+                anim.fade(btn, 0.0, 1.0, 160, on_finished=on_done)
+            anim.fade(btn, 1.0, 0.0, 160, on_finished=swapped)
+
+        def finish():
+            self._cc_flashing = False
+        fade_to(temp, on_done=lambda: QTimer.singleShot(
+            hold_ms, lambda: fade_to(restore, on_done=finish)))
 
     def _on_usage_change(self, value):
         self.app.set_usage_mode(value)

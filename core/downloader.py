@@ -11,10 +11,12 @@ audio_formats(info)   — список вариантов для режима Au
 """
 
 import os
+import re
 import json
 import time
 import uuid
 import shutil
+import unicodedata
 
 from core import tools
 from core import logbook
@@ -221,10 +223,27 @@ def audio_formats(info):
 # ------------------------------------------------------------------ #
 #  Сборка команды скачивания и парсинг прогресса
 # ------------------------------------------------------------------ #
+# Безопасная пунктуация в именах файлов (эмодзи/символы отсекаем, буквы любого
+# языка, цифры и пробелы оставляем).
+_SAFE_PUNCT = set(" .,!'’‘()[]{}—–-_#@&+=~%")
+
+
 def _sanitize_name(name):
-    for ch in '<>:"/\\|?*':
-        name = name.replace(ch, "_")
-    return name.strip().rstrip(".") or "video"
+    """Чистое имя файла для ВСЕХ режимов скачивания: убираем эмодзи, спецсимволы
+    и запрещённые в Windows символы (<>:\"/\\|?*), оставляя буквы (в т.ч.
+    кириллицу), цифры, пробелы и безопасную пунктуацию."""
+    out = []
+    for ch in name or "":
+        if ch in '<>:"/\\|?*':
+            out.append(" ")                 # запрещено в именах файлов Windows
+            continue
+        cat = unicodedata.category(ch)
+        if cat and (cat[0] in ("L", "N", "M") or cat == "Zs" or ch in _SAFE_PUNCT):
+            out.append(ch)
+        # прочее (эмодзи So/Sk, управляющие Cc/Cf, разделители и т.п.) выкидываем
+    cleaned = " ".join("".join(out).split())    # схлопываем повторные пробелы
+    cleaned = cleaned.strip().strip(".")
+    return cleaned or "video"
 
 
 def _unique_base(out_dir, base, ext):
@@ -273,8 +292,10 @@ def _expected_path(option, url, settings, title, out_dir):
     return os.path.join(out_dir, base + "." + _merge_ext(option, url, settings))
 
 
-def build_download_args(option, url, settings, title=None, out_dir=None):
-    """Аргументы yt-dlp для скачивания одиночной ссылки по выбранному варианту."""
+def build_download_args(option, url, settings, title=None, out_dir=None, cookies=True):
+    """Аргументы yt-dlp для скачивания одиночной ссылки по выбранному варианту.
+    cookies=False — собрать команду БЕЗ кук (для ретрая, когда извлечение кук
+    из браузера падает)."""
     if out_dir is None:
         out_dir = settings.get("download_path") or os.path.join(
             os.path.expanduser("~"), "Downloads")
@@ -293,7 +314,8 @@ def build_download_args(option, url, settings, title=None, out_dir=None):
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
         f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s",
     ]
-    args += cookie_args(settings)   # куки применяем всегда (файл или браузер)
+    if cookies:
+        args += cookie_args(settings)   # куки: свой файл или браузер
     loc = tools.ffmpeg_location()
     if loc:
         args += ["--ffmpeg-location", loc]
@@ -307,6 +329,11 @@ def build_download_args(option, url, settings, title=None, out_dir=None):
         # При конвертации склеиваем в MKV (надёжно для VP9+opus), затем
         # перекодируем в mp4; без конвертации — сразу mp4.
         args += ["--merge-output-format", _merge_ext(option, url, settings)]
+
+    # Скачивание по таймкодам (только одиночные ссылки): «*START-END» в секундах.
+    sec = option.get("section")
+    if sec:
+        args += ["--download-sections", sec, "--force-keyframes-at-cuts"]
 
     # Пост-процессинг из настроек.
     if settings.get("embed_thumbnail"):
@@ -343,6 +370,17 @@ def parse_progress(line):
     return {"percent_str": pct, "speed": speed, "eta": eta, "frac": frac, "size": size}
 
 
+def _stream_count(line):
+    """Сколько потоков сольются в один итоговый файл (видео+аудио), из строки
+    '[info] … Downloading N format(s): 248+251' -> 2. Иначе None."""
+    if "format(s):" not in line:
+        return None
+    spec = line.split("format(s):", 1)[1].strip().split()
+    if not spec:
+        return None
+    return spec[0].count("+") + 1
+
+
 def parse_destination(line):
     """Извлекает путь к итоговому файлу (приоритет — точная строка --print)."""
     if DEST_TAG in line:
@@ -358,6 +396,8 @@ def parse_destination(line):
 
 _ERROR_MAP = [
     ("conversion failed", "Downloaded, but conversion failed."),
+    ("failed to decrypt with dpapi", "Browser cookies locked (Chrome encryption)."),
+    ("could not copy chrome cookie", "Close the browser and retry (cookies busy)."),
     ("not a bot", "Bot check — try cookies or later."),
     ("confirm you", "Bot check — try cookies or later."),
     ("sign in to confirm your age", "Age-restricted — sign-in needed."),
@@ -372,11 +412,24 @@ _ERROR_MAP = [
     ("this video is not available", "Video unavailable."),
     ("not available in your country", "Not available in your region."),
     ("geo restricted", "Not available in your region."),
+    ("could not authenticate", "X/Twitter: sign-in failed (yt-dlp limitation)."),
+    ("no video could be found", "No downloadable video found."),
     ("unable to extract", "Couldn't read — site may have changed."),
     ("unsupported url", "Link not supported."),
     ("ffmpeg", "Processing failed (ffmpeg)."),
     ("no space left", "Not enough disk space."),
 ]
+
+
+def is_cookie_error(text):
+    """Провал из-за извлечения кук из браузера (Chrome App-Bound Encryption /
+    залоченная БД), а не из-за самого видео — тогда есть смысл повторить без кук."""
+    low = (text or "").lower()
+    return ("failed to decrypt with dpapi" in low
+            or ("could not copy" in low and "cookie" in low)
+            or ("could not find" in low and "cookie" in low)
+            or ("could not decrypt" in low and "cookie" in low)
+            or "unable to read cookies" in low)
 
 
 def is_auth_error(text):
@@ -499,10 +552,43 @@ def _rm_dir(path):
         pass
 
 
+# Промежуточные файлы отдельных потоков yt-dlp: «<base>.f248.webm».
+_FRAG_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
+
+
+def _scan_job_output(job_dir, ext):
+    """Ищет итоговый файл в изолированной папке задания. Нужен как запасной
+    вариант к parse_destination: если в заголовке есть emoji/символы вне кодовой
+    страницы консоли, yt-dlp печатает путь искажённым и он не совпадает с реально
+    записанным файлом. Папка задания одноразовая, поэтому итог там — единственный
+    «настоящий» файл (обрезки .part/.fNNN. пропускаем)."""
+    try:
+        names = os.listdir(job_dir)
+    except OSError:
+        return ""
+    cands = []
+    for n in names:
+        p = os.path.join(job_dir, n)
+        if not os.path.isfile(p):
+            continue
+        low = n.lower()
+        if low.endswith((".part", ".ytdl", ".temp")) or _FRAG_RE.search(n):
+            continue
+        cands.append(p)
+    if not cands:
+        return ""
+    pref = [c for c in cands if c.lower().endswith("." + ext.lower())]
+    pool = pref or cands
+    return max(pool, key=lambda p: os.path.getsize(p))
+
+
 def _move_to_dest(src, download_dir):
-    """Переносит src в папку загрузок с уникальным именем; возвращает путь."""
+    """Переносит src в папку загрузок с уникальным (и очищенным от спецсимволов)
+    именем; возвращает путь. Чистка здесь ловит и режимы, где имя задавал сам
+    yt-dlp (напр., фоновый Paste), а не наш шаблон."""
     os.makedirs(download_dir, exist_ok=True)
     base, ext = os.path.splitext(os.path.basename(src))
+    base = _sanitize_name(base)
     final_base = _unique_base(download_dir, base, ext.lstrip(".") or "mp4")
     final = os.path.join(download_dir, final_base + ext)
     shutil.move(src, final)
@@ -518,21 +604,36 @@ def build_streamlink_args(url, settings, out_dir=None):
 
 
 def _stream(args, hooks, log, progress=True):
-    """Запускает процесс со стримингом вывода в лог; возвращает (ok, dest)."""
+    """Запускает процесс со стримингом вывода в лог; возвращает (ok, dest).
+
+    Прогресс отдельных потоков (видео, затем аудио) объединяется в один job:
+    вместо двух пробегов 0→100% полоса идёт единожды 0→100% по всем файлам."""
     proc = tools.popen(args)
     hooks.set_proc(proc)
     dest = ""
+    n_streams = 1        # сколько файлов сольётся в один (видео+аудио = 2)
+    file_idx = -1        # индекс текущего скачиваемого файла (0-based)
     for line in proc.stdout:
         if hooks.is_stopped():
             break
         if progress:
+            ns = _stream_count(line)
+            if ns:
+                n_streams = ns
             pr = parse_progress(line)
             if pr:
+                if n_streams > 1 and pr.get("frac") is not None:
+                    idx = min(max(file_idx, 0), n_streams - 1)
+                    frac = max(0.0, min(1.0, (idx + pr["frac"]) / n_streams))
+                    pr["frac"] = frac
+                    pr["percent_str"] = f"{frac * 100:.1f}%"
                 hooks.on_progress(pr)
                 continue
             d = parse_destination(line)
             if d:
                 dest = d
+                if "[download] Destination: " in line:
+                    file_idx += 1       # начался новый файл потока
         log.raw(line.rstrip())
     rc = proc.wait()
     return rc == 0, dest
@@ -557,15 +658,31 @@ def run_job(option, url, settings, hooks, title=None):
             return expected
         if parsed and os.path.exists(parsed):
             return parsed
-        return ""
+        # Путь из консоли не совпал с файлом (напр., emoji в заголовке) —
+        # ищем итог прямо в одноразовой папке задания.
+        return _scan_job_output(job_dir, _merge_ext(option, url, settings))
 
-    # Куки (файл/браузер) добавляются внутри build_download_args всегда.
+    # Куки применяем best-effort. Если их извлечение из браузера падает (Chrome
+    # App-Bound Encryption / залоченная БД), повторяем БЕЗ кук — публичное видео
+    # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
     ok, dest = _stream(build_download_args(option, url, settings, title, job_dir),
                        hooks, log, progress=True)
     # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
     if not hooks.is_stopped():
         dest = _resolve(dest)
         ok = bool(dest)
+    if (not ok and not hooks.is_stopped() and cookie_args(settings)
+            and is_cookie_error(log.text())):
+        log.event("Cookie extraction failed — retrying without cookies")
+        _rm_dir(job_dir)
+        job_dir = _new_job_dir()
+        expected = _expected_path(option, url, settings, title, job_dir)
+        ok, dest = _stream(
+            build_download_args(option, url, settings, title, job_dir, cookies=False),
+            hooks, log, progress=True)
+        if not hooks.is_stopped():
+            dest = _resolve(dest)
+            ok = bool(dest)
 
     if not ok and not hooks.is_stopped():
         log.event("yt-dlp failed")

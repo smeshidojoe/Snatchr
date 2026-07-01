@@ -1,16 +1,516 @@
 import os
+import time
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QIcon, QPixmap, QImage, QPainter, QColor, QBrush, QPolygonF
-from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QEasingCurve
+from PySide6.QtGui import (
+    QIcon, QPixmap, QImage, QPainter, QColor, QBrush, QPen, QPolygonF,
+    QFontMetrics, QCursor, QGuiApplication,
+)
+from PySide6.QtWidgets import QSystemTrayIcon, QWidget, QApplication
 
 from core.constants import ICONS_DIR
+from core import themes, fonts, tools
+from core.icons import tint_pixmap
+from core.i18n import tr
+from ui import anim
+
+# Низкоуровневый мышиный хук (для показа меню по зажатию ЛКМ на иконке трея).
+WH_MOUSE_LL    = 14
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP   = 0x0202
+WM_MOUSEMOVE   = 0x0200
 
 
+def _blend(c0, c1, t):
+    """Линейная интерполяция двух QColor (t: 0 -> c0, 1 -> c1)."""
+    t = max(0.0, min(1.0, t))
+    return QColor(
+        int(c0.red()   + (c1.red()   - c0.red())   * t),
+        int(c0.green() + (c1.green() - c0.green()) * t),
+        int(c0.blue()  + (c1.blue()  - c0.blue())  * t),
+    )
+
+
+# ------------------------------------------------------------------ #
+#  Меню трея в стиле селектора (открывается по ПКМ)
+# ------------------------------------------------------------------ #
+class TrayMenu(QWidget):
+    """Всплывающее меню трея, оформленное как выпадающий список-селектор:
+    тёмное скруглённое поле + строки с плавной скользящей подсветкой.
+    items — список (label, callback)."""
+
+    def __init__(self, app, items, hold=False):
+        # ПКМ-меню — обычный Popup (Qt сам ведёт мышь и закрывает по клику вне).
+        # Hold-меню (по зажатию ЛКМ) ведём вручную из мышиного хука, поэтому это
+        # неактивируемое верхнее окно (без захвата мыши и без авто-закрытия).
+        flags = Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+        if hold:
+            flags |= Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        else:
+            flags |= Qt.Popup
+        super().__init__(None, flags)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        if hold:
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setMouseTracking(True)
+        self._hold = hold
+
+        self._app = app
+        self._items = items
+        s = app._s
+        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._font = fonts.font(s(11), "Regular")
+        self._field_bg = QColor(pal["field_bg"])
+        self._text_color = QColor(pal["text"])
+        self._accent = QColor(pal["seg_sel"])
+        self._border = QColor(pal["border"])
+        self._on_accent = QColor(pal["on_accent"])
+        self._radius = s(9)
+
+        fm = QFontMetrics(self._font)
+        self._row_h = fm.height() + s(14)
+        self._pad = s(5)
+        self._text_x = self._pad + s(10)
+        longest = max((fm.horizontalAdvance(lbl) for lbl, _ in items), default=s(80))
+        self._w = longest + s(40)
+
+        self._hover = -1
+        self._hi_pos = 0.0
+        self._hi_alpha = 0.0
+        self._opened_at = 0.0
+
+    # --- позиционирование / показ ------------------------------------- #
+    def popup_at(self, gpos):
+        h = self._pad * 2 + self._row_h * len(self._items)
+        self.resize(self._w, h)
+
+        avail = QGuiApplication.primaryScreen().availableGeometry()
+        # В hold-режиме отступаем от курсора, чтобы он изначально стоял НЕ на
+        # кнопке (иначе простой hold-release случайно выберет первый пункт —
+        # нужно осознанно навести на кнопку и отпустить).
+        gap = self._row_h if self._hold else 0
+        x = gpos.x()
+        if gpos.y() + gap + h > avail.bottom():   # снизу не помещается — вверх
+            y = gpos.y() - gap - h
+        else:
+            y = gpos.y() + gap
+        x = max(avail.left(), min(x, avail.right() - self._w + 1))
+        y = max(avail.top(), min(y, avail.bottom() - h + 1))
+        self.move(x, y)
+        self._opened_at = time.monotonic()
+        self.show()
+        self.raise_()
+
+    # --- управление из мышиного хука (hold-режим, глобальные координаты) --- #
+    def _idx_at_global(self, gpos):
+        local = self.mapFromGlobal(gpos)
+        if 0 <= local.x() <= self.width():
+            return self._row_at(local.y())
+        return -1
+
+    def hover_at(self, gpos):
+        idx = self._idx_at_global(gpos)
+        if idx != self._hover:
+            self._hover = idx
+            self._animate_hi(idx)
+
+    def release_at(self, gpos):
+        idx = self._idx_at_global(gpos)
+        self.close()
+        if idx >= 0:
+            QTimer.singleShot(0, self._items[idx][1])
+
+    # --- мышь ---------------------------------------------------------- #
+    def _row_at(self, y):
+        idx = int((y - self._pad) // self._row_h)
+        return idx if 0 <= idx < len(self._items) else -1
+
+    def mouseMoveEvent(self, event):
+        if self._hold:
+            return                       # hold-меню ведём из хука, не из Qt
+        idx = self._row_at(event.position().y())
+        if idx != self._hover:
+            self._hover = idx
+            self._animate_hi(idx)
+
+    def mouseReleaseEvent(self, event):
+        if self._hold:
+            return
+        # «Хвост» открывающего клика игнорируем, чтобы меню не закрылось сразу.
+        if time.monotonic() - self._opened_at < 0.18:
+            return
+        idx = self._row_at(event.position().y())
+        self.close()
+        if idx >= 0:
+            QTimer.singleShot(0, self._items[idx][1])
+
+    def _animate_hi(self, to_idx):
+        frm = self._hi_pos
+        a0 = self._hi_alpha
+        if to_idx < 0:
+            def tick(p):
+                self._hi_alpha = a0 * (1.0 - p)
+                self.update()
+            anim.animate(self, 0.0, 1.0, 130, tick,
+                         easing=QEasingCurve.OutCubic, attr="_hi_anim")
+            return
+
+        def tick(p):
+            self._hi_pos = frm + (to_idx - frm) * p
+            self._hi_alpha = a0 + (1.0 - a0) * p
+            self.update()
+
+        def fin():
+            self._hi_pos = float(to_idx)
+            self._hi_alpha = 1.0
+            self.update()
+        anim.animate(self, 0.0, 1.0, 190, tick,
+                     easing=QEasingCurve.OutCubic, on_finished=fin, attr="_hi_anim")
+
+    # --- отрисовка ----------------------------------------------------- #
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+
+        p.setPen(QPen(self._border, 1))
+        p.setBrush(self._field_bg)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), self._radius, self._radius)
+
+        if self._hi_alpha > 0.01:
+            hy = self._pad + self._hi_pos * self._row_h
+            acc = QColor(self._accent)
+            acc.setAlphaF(max(0.0, min(1.0, self._hi_alpha)))
+            p.setPen(Qt.NoPen)
+            p.setBrush(acc)
+            p.drawRoundedRect(QRectF(self._pad, hy, w - 2 * self._pad, self._row_h),
+                              self._radius - 2, self._radius - 2)
+
+        p.setFont(self._font)
+        for i, (label, _) in enumerate(self._items):
+            ry = self._pad + i * self._row_h
+            cover = max(0.0, 1.0 - abs(i - self._hi_pos)) * self._hi_alpha
+            p.setPen(_blend(self._text_color, self._on_accent, cover))
+            p.drawText(QRectF(self._text_x, ry, w - self._text_x - self._pad, self._row_h),
+                       Qt.AlignVCenter | Qt.AlignLeft, label)
+        p.end()
+
+
+# ------------------------------------------------------------------ #
+#  Анимация иконки трея на время фоновой загрузки (Вставить)
+# ------------------------------------------------------------------ #
+class TrayAnimator:
+    """Пока идёт фоновая загрузка/конвертация, иконка трея — кольцо прогресса,
+    заполняющееся по часовой стрелке от 12 часов, с цветом от оранжевого к
+    зелёному. По завершении: кольцо -> галочка -> плавно назад к иконке юзера.
+    Все переходы — плавные (покадровая перерисовка по таймеру)."""
+
+    RING_ORANGE = QColor("#ff9500")
+    RING_GREEN  = QColor("#34c759")
+    FAIL_RED    = QColor("#e05a5a")
+
+    def __init__(self, tray):
+        self._tray = tray
+        self._size = 64
+        self._timer = QTimer()
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._tick)
+        self._last_ring = -1.0     # последняя отрисованная доля кольца (анти-дребезг)
+
+        self._phase = "idle"       # idle|start|ring|finish|hold|restore
+        self._t = 0.0              # прогресс текущего перехода (0..1)
+        self._frac = 0.0           # целевая доля кольца
+        self._draw_frac = 0.0      # отрисованная доля (плавно догоняет целевую)
+        self._base_pm = None       # иконка пользователя (для кроссфейда)
+        self._check_pm = None      # заранее отрендеренная галочка/крестик
+
+    def is_active(self):
+        return self._phase != "idle"
+
+    # --- управление ---------------------------------------------------- #
+    def start(self):
+        self._base_pm = self._tray.base_pixmap(self._size)
+        self._frac = 0.0
+        self._draw_frac = 0.0
+        self._phase = "start"
+        self._t = 0.0
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def set_fraction(self, frac):
+        self._frac = max(0.0, min(1.0, frac or 0.0))
+
+    def finish(self, success=True):
+        if self._phase == "idle":
+            return
+        self._check_pm = self._check_pixmap(success)
+        self._phase = "finish"
+        self._t = 0.0
+        if not self._timer.isActive():
+            self._timer.start()
+
+    # --- покадровая логика --------------------------------------------- #
+    def _tick(self):
+        dt = self._timer.interval()
+        if self._phase == "start":
+            self._t += dt / 240.0
+            self._draw_frac += (self._frac - self._draw_frac) * 0.25
+            ring = self._ring_pixmap(self._draw_frac)
+            self._set(self._crossfade(self._base_pm, ring, min(1.0, self._t)))
+            if self._t >= 1.0:
+                self._phase, self._t = "ring", 0.0
+        elif self._phase == "ring":
+            self._draw_frac += (self._frac - self._draw_frac) * 0.20
+            # Перерисовываем иконку, только когда видимая дуга реально изменилась
+            # (иначе — десятки лишних setIcon в секунду на всё время загрузки).
+            if abs(self._draw_frac - self._last_ring) >= 0.004:
+                self._last_ring = self._draw_frac
+                self._set(self._ring_pixmap(self._draw_frac))
+        elif self._phase == "finish":
+            self._t += dt / 280.0
+            self._draw_frac += (1.0 - self._draw_frac) * 0.30
+            ring = self._ring_pixmap(self._draw_frac)
+            self._set(self._crossfade(ring, self._check_pm, min(1.0, self._t)))
+            if self._t >= 1.0:
+                self._phase, self._t = "hold", 0.0
+        elif self._phase == "hold":
+            self._t += dt / 560.0
+            self._set(self._check_pm)
+            if self._t >= 1.0:
+                self._phase, self._t = "restore", 0.0
+        elif self._phase == "restore":
+            self._t += dt / 260.0
+            self._set(self._crossfade(self._check_pm, self._base_pm, min(1.0, self._t)))
+            if self._t >= 1.0:
+                self._timer.stop()
+                self._phase = "idle"
+                self._tray.icon.setIcon(self._tray._resolve_icon())
+
+    def _set(self, pm):
+        self._tray.icon.setIcon(QIcon(pm))
+
+    # --- рендер отдельных состояний ------------------------------------ #
+    def _blank(self):
+        img = QImage(self._size, self._size, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        return img
+
+    def _ring_pixmap(self, frac):
+        sz = self._size
+        img = self._blank()
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        m = sz * 0.16
+        rect = QRectF(m, m, sz - 2 * m, sz - 2 * m)
+        pw = sz * 0.13
+
+        track = QPen(QColor(255, 255, 255, 55), pw)
+        track.setCapStyle(Qt.RoundCap)
+        p.setPen(track)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(rect, 0, 360 * 16)
+
+        if frac > 0.004:
+            col = _blend(self.RING_ORANGE, self.RING_GREEN, frac)
+            pen = QPen(col, pw)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(rect, 90 * 16, -int(360 * 16 * frac))   # от 12 часов по часовой
+        p.end()
+        return QPixmap.fromImage(img)
+
+    def _check_pixmap(self, success):
+        sz = self._size
+        img = self._blank()
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        col = self.RING_GREEN if success else self.FAIL_RED
+        m = sz * 0.16
+        rect = QRectF(m, m, sz - 2 * m, sz - 2 * m)
+        ring = QPen(col, sz * 0.13)
+        ring.setCapStyle(Qt.RoundCap)
+        p.setPen(ring)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(rect, 0, 360 * 16)
+
+        mark = QPen(col, sz * 0.12)
+        mark.setCapStyle(Qt.RoundCap)
+        mark.setJoinStyle(Qt.RoundJoin)
+        p.setPen(mark)
+        if success:
+            p.drawPolyline([QPointF(sz * 0.34, sz * 0.52),
+                            QPointF(sz * 0.45, sz * 0.63),
+                            QPointF(sz * 0.67, sz * 0.39)])
+        else:
+            p.drawLine(QPointF(sz * 0.39, sz * 0.39), QPointF(sz * 0.61, sz * 0.61))
+            p.drawLine(QPointF(sz * 0.61, sz * 0.39), QPointF(sz * 0.39, sz * 0.61))
+        p.end()
+        return QPixmap.fromImage(img)
+
+    def _crossfade(self, pm_a, pm_b, t):
+        img = self._blank()
+        p = QPainter(img)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        if pm_a is not None and not pm_a.isNull():
+            p.setOpacity(1.0 - t)
+            p.drawPixmap(0, 0, pm_a.scaled(self._size, self._size,
+                                           Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if pm_b is not None and not pm_b.isNull():
+            p.setOpacity(t)
+            p.drawPixmap(0, 0, pm_b.scaled(self._size, self._size,
+                                           Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        p.end()
+        return QPixmap.fromImage(img)
+
+
+# ------------------------------------------------------------------ #
+#  Показ меню по зажатию ЛКМ на иконке трея (глобальный мышиный хук)
+# ------------------------------------------------------------------ #
+class TrayHoldWatcher:
+    """Открывает контекстное меню, если ЛКМ на иконке трея удерживают дольше
+    порога; наведение по кнопкам и выбор ведём прямо из хука (отпустил на кнопке
+    — выполнилась функция). Быстрый клик хук не трогает — работает как раньше
+    (открыть/закрыть окно). Если хук не установился — просто ничего не делает."""
+
+    HOLD_MS = 200
+    LLMHF_INJECTED = 0x00000001
+
+    def __init__(self, tray):
+        self._tray = tray
+        self._app = tray.app
+        self._down = False
+        self._menu = None
+        self._hook = None
+        self._cfunc = None
+        self._user32 = None
+        self._ctypes = None
+        self._MSLL = None
+
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(self.HOLD_MS)
+        self._timer.timeout.connect(self._maybe_open)
+        self._install()
+
+    def _install(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+            class MSLLHOOKSTRUCT(ctypes.Structure):
+                _fields_ = [("pt", POINT), ("mouseData", wintypes.DWORD),
+                            ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                            ("dwExtraInfo", ctypes.c_void_p)]
+
+            LRESULT = ctypes.c_ssize_t
+            self._PROC = ctypes.CFUNCTYPE(LRESULT, ctypes.c_int,
+                                          wintypes.WPARAM, wintypes.LPARAM)
+            self._cfunc = self._PROC(self._proc)
+            u = ctypes.windll.user32
+            u.SetWindowsHookExW.restype = wintypes.HHOOK
+            u.SetWindowsHookExW.argtypes = [ctypes.c_int, self._PROC,
+                                            wintypes.HINSTANCE, wintypes.DWORD]
+            u.CallNextHookEx.restype = LRESULT
+            u.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int,
+                                         wintypes.WPARAM, wintypes.LPARAM]
+            self._hook = u.SetWindowsHookExW(WH_MOUSE_LL, self._cfunc, None, 0)
+            self._user32 = u
+            self._ctypes = ctypes
+            self._MSLL = MSLLHOOKSTRUCT
+        except Exception:
+            self._hook = None
+
+    def _point(self, lParam):
+        """(x, y), injected — из MSLLHOOKSTRUCT по указателю lParam."""
+        try:
+            ms = self._ctypes.cast(
+                lParam, self._ctypes.POINTER(self._MSLL)).contents
+            return (int(ms.pt.x), int(ms.pt.y)), bool(ms.flags & self.LLMHF_INJECTED)
+        except Exception:
+            return None, False
+
+    def _proc(self, nCode, wParam, lParam):
+        consume = False
+        try:
+            if nCode >= 0:
+                if wParam == WM_LBUTTONDOWN:
+                    self._on_down()
+                elif wParam == WM_MOUSEMOVE:
+                    if self._menu is not None:
+                        pt, injected = self._point(lParam)
+                        if injected:
+                            consume = True     # это наш же SetCursorPos — гасим
+                        elif pt is not None:
+                            # Пока меню открыто, движение мыши НЕ пропускаем в
+                            # оболочку (иначе она таскает иконку в трее), но сами
+                            # двигаем курсор и ведём подсветку по кнопкам.
+                            self._menu.hover_at(QPoint(*pt))
+                            try:
+                                self._user32.SetCursorPos(pt[0], pt[1])
+                            except Exception:
+                                pass
+                            consume = True
+                elif wParam == WM_LBUTTONUP:
+                    self._down = False
+                    self._timer.stop()
+                    if self._menu is not None:
+                        m, self._menu = self._menu, None
+                        pt, _ = self._point(lParam)
+                        gp = QPoint(*pt) if pt else QCursor.pos()
+                        # UP не съедаем (чтобы не рассинхронить кнопку в оболочке);
+                        # трей просто пропустит ближайший тоггл окна.
+                        self._tray.suppress_next_toggle()
+                        m.release_at(gp)
+        except Exception:
+            pass
+        if consume:
+            return 1
+        return self._user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+    def _on_down(self):
+        if self._over_icon():
+            self._down = True
+            self._timer.start()
+
+    def _maybe_open(self):
+        if self._down and self._menu is None:
+            self._menu = self._tray.show_menu_hold()
+
+    def _over_icon(self):
+        pos = QCursor.pos()
+        try:
+            g = self._tray.icon.geometry()
+            if g.isValid() and g.width() > 0 and g.height() > 0:
+                return g.contains(pos)
+        except Exception:
+            pass
+        # Точный прямоугольник иконки недоступен — берём область трея целиком.
+        return self._app._cursor_over_tray()
+
+    def stop(self):
+        if self._hook and self._user32 is not None:
+            try:
+                self._user32.UnhookWindowsHookEx(self._hook)
+            except Exception:
+                pass
+            self._hook = None
+
+
+# ------------------------------------------------------------------ #
+#  Иконка в системном трее
+# ------------------------------------------------------------------ #
 class TrayIcon:
     def __init__(self, app):
         self.app = app
         self.icon = None
+        self.animator = None
+        self._menu_popup = None
+        self._hold_menu = None
+        self._hold_watcher = None
+        self._suppress_toggle = False
         self._build_icon()
 
     def _default_icon(self):
@@ -28,41 +528,90 @@ class TrayIcon:
         return QIcon(QPixmap.fromImage(img))
 
     def _resolve_icon(self):
-        """Иконка из icons/<tray_icon>.png, либо иконка по умолчанию."""
+        """Иконка из icons/<tray_icon>.png, перекрашенная под тему панели задач
+        Windows (чёрная на светлой панели, белая на тёмной). Пусто -> дефолт."""
         name = self.app.settings.get("tray_icon", "")
         if name:
             path = os.path.join(ICONS_DIR, name + ".png")
             if os.path.isfile(path):
-                pm = QPixmap(path)
-                if not pm.isNull():
+                color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
+                pm = tint_pixmap(path, color, 64)
+                if pm is not None and not pm.isNull():
                     return QIcon(pm)
         return self._default_icon()
+
+    def base_pixmap(self, size):
+        """Пиксмап текущей пользовательской иконки (для кроссфейда анимации)."""
+        return self._resolve_icon().pixmap(size, size)
 
     def _build_icon(self):
         self.icon = QSystemTrayIcon(self._resolve_icon(), self.app)
         self.icon.setToolTip("Snatchr")
-
-        menu = QMenu()
-        act_open = menu.addAction("Открыть")
-        act_open.triggered.connect(self._show_app)
-        act_quit = menu.addAction("Выход")
-        act_quit.triggered.connect(self._quit_app)
-        self.icon.setContextMenu(menu)
-        self._menu = menu
-
+        # Контекстное меню (ПКМ) рисуем сами — нативное QMenu не ставим.
         self.icon.activated.connect(self._on_activated)
+        self.animator = TrayAnimator(self)
+        # Меню по зажатию ЛКМ (клики оставляем прежней логике open/close окна).
+        self._hold_watcher = TrayHoldWatcher(self)
 
     def set_icon(self, name):
         """Сменить иконку трея на лету (name — имя файла без расширения)."""
         self.app.settings["tray_icon"] = name or ""
-        if self.icon is not None:
+        if self.icon is not None and not (self.animator and self.animator.is_active()):
             self.icon.setIcon(self._resolve_icon())
 
+    def notify(self, text, title="Snatchr"):
+        try:
+            self.icon.showMessage(title, text, QSystemTrayIcon.Information, 3500)
+        except Exception:
+            pass
+
+    # --- события трея -------------------------------------------------- #
+    def suppress_next_toggle(self):
+        """После hold-жеста подавить ближайший тоггл окна (флаг сам сбрасывается,
+        если Trigger так и не пришёл — напр., отпустили не над иконкой)."""
+        self._suppress_toggle = True
+        QTimer.singleShot(350, self._clear_suppress)
+
+    def _clear_suppress(self):
+        self._suppress_toggle = False
+
     def _on_activated(self, reason):
-        # Левый клик. Быстрый повторный клик во время анимации Windows отдаёт
-        # как DoubleClick — его тоже считаем кликом, иначе второй клик теряется.
+        # ЛКМ (Trigger) — открыть/закрыть окно (режим Pinned/Auto-hide).
+        # Быстрый повторный клик во время анимации Windows приходит как
+        # DoubleClick — его тоже считаем кликом, иначе второй клик теряется.
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self._suppress_toggle:
+                self._suppress_toggle = False
+                return
             self._toggle_app()
+        elif reason == QSystemTrayIcon.Context:
+            self._show_menu()
+
+    def _menu_items(self):
+        return [
+            (tr("Paste"), self._paste),
+            (tr("Open"),  self._show_app),
+            (tr("Exit"),  self._quit_app),
+        ]
+
+    def _show_menu(self):
+        self._menu_popup = TrayMenu(self.app, self._menu_items())
+        self._menu_popup.popup_at(QCursor.pos())
+
+    def show_menu_hold(self):
+        """Меню по зажатию ЛКМ; ведётся из TrayHoldWatcher. Возвращает виджет."""
+        self._hold_menu = TrayMenu(self.app, self._menu_items(), hold=True)
+        self._hold_menu.popup_at(QCursor.pos())
+        return self._hold_menu
+
+    # --- действия меню ------------------------------------------------- #
+    def _paste(self):
+        text = ""
+        try:
+            text = QApplication.clipboard().text() or ""
+        except Exception:
+            pass
+        self.app.start_tray_download(text.strip())
 
     def _toggle_app(self):
         self.app.toggle_window()
@@ -71,7 +620,8 @@ class TrayIcon:
         self.app.show_near_tray()
 
     def _quit_app(self):
-        from PySide6.QtWidgets import QApplication
+        if self._hold_watcher is not None:
+            self._hold_watcher.stop()
         self.icon.hide()
         QApplication.instance().quit()
 

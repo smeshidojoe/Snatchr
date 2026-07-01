@@ -153,25 +153,35 @@ def restart_to_update():
     target_q = _ps_quote(install_dir())
     log_q = _ps_quote(os.path.join(UPDATE_DIR, "helper.log"))
 
-    # Ждём разблокировки exe (попытка открыть в монопольном режиме), затем
-    # распаковываем. Ошибки и шаги пишем в helper.log для диагностики.
+    # Ждём разблокировки exe, распаковываем zip во временную папку, находим наш
+    # exe на любой глубине (устойчиво к архиву, где файлы лежат в подпапке) и
+    # копируем его вместе с соседями в папку установки. Все шаги — в helper.log.
     script = (
         "$ErrorActionPreference='SilentlyContinue'; "
         f"$exe={exe_q}; $zip={zip_q}; $target={target_q}; $log={log_q}; "
+        "$name=[System.IO.Path]::GetFileName($exe); "
         "function L($m){ ('[' + (Get-Date -Format o) + '] ' + $m) | Out-File -FilePath $log -Append -Encoding utf8 }; "
-        "L('helper started'); "
+        "L('helper started; exe=' + $exe); "
         "$ok=$false; "
         "for($i=0;$i -lt 120;$i++){ "
         "  try{ $fs=[System.IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); $ok=$true; break } "
         "  catch{ Start-Sleep -Milliseconds 500 } "
         "} "
         "L('exe unlocked=' + $ok); "
-        "Start-Sleep -Milliseconds 500; "
+        "Start-Sleep -Milliseconds 400; "
+        "$tmp=Join-Path $env:TEMP ('snatchr_upd_' + [Guid]::NewGuid().ToString('N')); "
         "try{ "
-        "  Expand-Archive -LiteralPath $zip -DestinationPath $target -Force; "
-        "  L('extracted'); "
-        "  Remove-Item -LiteralPath $zip -Force; "
+        "  Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force; "
+        "  L('extracted to ' + $tmp); "
+        "  $src=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $name | Select-Object -First 1; "
+        "  if($src){ "
+        "    L('found ' + $name + ' in ' + $src.Directory.FullName); "
+        "    Copy-Item -Path (Join-Path $src.Directory.FullName '*') -Destination $target -Recurse -Force; "
+        "    L('copied into ' + $target); "
+        "  } else { L('ERROR: ' + $name + ' not found in archive') } "
         "}catch{ L('ERROR: ' + $_.Exception.Message) } "
+        "try{ Remove-Item -LiteralPath $zip -Force }catch{}; "
+        "try{ Remove-Item -LiteralPath $tmp -Recurse -Force }catch{}; "
         "Start-Process -FilePath $exe; "
         "L('relaunched')"
     )

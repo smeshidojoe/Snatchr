@@ -67,6 +67,20 @@ class UpdateFfmpegWorker(QThread):
             self.done.emit(False, str(exc))
 
 
+class EnsureDenoWorker(QThread):
+    """Тихо докачивает deno (JS-движок для челленджей YouTube), если его ещё нет.
+    Ошибку глотаем — без deno yt-dlp работает на встроенном интерпретаторе."""
+    done = Signal(bool)
+
+    def run(self):
+        try:
+            if not tools.have_deno():
+                tools.download_deno()
+            self.done.emit(True)
+        except Exception:
+            self.done.emit(False)
+
+
 class YtdlpAutoUpdateWorker(QThread):
     """Тихое фоновое обновление yt-dlp (чтобы YouTube не ломал старую версию)."""
     done = Signal(bool)
@@ -99,8 +113,29 @@ class AppUpdateWorker(QThread):
 
 
 def _probe_with_cookies(url, settings):
-    """probe(url) — куки (файл/браузер) применяем всегда."""
-    return downloader.probe(url, cookies=downloader.cookie_args(settings or {}))
+    """probe(url) с куками (файл/браузер). Если извлечение кук из браузера падает
+    (Chrome App-Bound Encryption / залоченная БД) — повторяем без кук, чтобы
+    публичные ссылки всё равно анализировались."""
+    ck = downloader.cookie_args(settings or {})
+    try:
+        return downloader.probe(url, cookies=ck)
+    except Exception as exc:
+        if ck and downloader.is_cookie_error(str(exc)):
+            return downloader.probe(url, cookies=None)
+        raise
+
+
+def _probe_cached(url, settings):
+    """Как _probe_with_cookies, но с кэшем (как у одиночной ссылки): повторные и
+    уже проанализированные ссылки не дёргают yt-dlp заново."""
+    from core import cache
+    if not downloader.is_playlist_url(url):
+        hit = cache.get(url)
+        if hit is not None:
+            return hit
+    info = _probe_with_cookies(url, settings)
+    cache.put(url, downloader.slim_info(info))
+    return info
 
 
 class ProbeWorker(QThread):
@@ -170,7 +205,7 @@ class MultiProbeWorker(QThread):
             if self._stopped:
                 break
             try:
-                self.item.emit(i, _probe_with_cookies(u, self._settings), "")
+                self.item.emit(i, _probe_cached(u, self._settings), "")
             except Exception as exc:
                 self.item.emit(i, None, str(exc))
         self.done.emit()

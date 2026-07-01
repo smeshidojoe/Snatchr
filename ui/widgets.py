@@ -1,4 +1,5 @@
 import math
+import time
 
 from PySide6.QtCore import (
     Qt, QSize, QRectF, QPointF, QPoint, Signal, QEasingCurve, QTimer
@@ -7,7 +8,9 @@ from PySide6.QtGui import (
     QPainter, QColor, QPen, QPolygonF, QFontMetrics, QPixmap, QGuiApplication,
     QFont, QPainterPath
 )
-from PySide6.QtWidgets import QPushButton, QAbstractButton, QLabel, QWidget, QFrame
+from PySide6.QtWidgets import (
+    QPushButton, QAbstractButton, QLabel, QWidget, QFrame, QLineEdit
+)
 
 from core.i18n import tr
 from ui import anim
@@ -178,6 +181,43 @@ class LinkButton(QPushButton):
     def leaveEvent(self, event):
         self._apply(self._color, self._base_bg)
         super().leaveEvent(event)
+
+
+class TimeCodeEdit(QLineEdit):
+    """Поле таймкода с жёстким шаблоном 00:00:00 (двоеточия зафиксированы, через
+    inputMask). Всегда показывает 00:00:00; можно мышью выделить нужный сегмент
+    (часы/минуты/секунды) и вписать своё число. 00:00:00 = «не задано»."""
+
+    def __init__(self, parent, font, field_bg, text_color, radius,
+                 disabled_bg, disabled_text):
+        super().__init__(parent)
+        self.setFont(font)
+        self.setInputMask("00:00:00;0")     # шаблон, правится по сегментам
+        self.setText("00:00:00")
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(
+            f"QLineEdit {{ background-color: {field_bg}; border: none; "
+            f"border-radius: {radius}px; color: {text_color}; }}"
+            f"QLineEdit:disabled {{ background-color: {disabled_bg}; "
+            f"color: {disabled_text}; }}")
+
+    def clear_code(self):
+        self.setText("00:00:00")
+
+    def seconds(self):
+        """Время в секундах (0 = не задано). Читаем displayText (с маской ;0 он
+        всегда возвращает полный 00:00:00, в отличие от text()); пустой сегмент —
+        как 0."""
+        parts = self.displayText().split(":")
+        if len(parts) != 3:
+            return 0
+        try:
+            h = int(parts[0]) if parts[0].strip() else 0
+            m = int(parts[1]) if parts[1].strip() else 0
+            s = int(parts[2]) if parts[2].strip() else 0
+        except ValueError:
+            return 0
+        return h * 3600 + m * 60 + s
 
 
 class SegmentedControl(QWidget):
@@ -483,10 +523,14 @@ class Selector(QWidget):
         self._popup = None
 
     # --- API ----------------------------------------------------------- #
-    def add_item(self, text, icon_path=None):
+    def add_item(self, text, icon=None):
+        """icon — путь к файлу (str) ИЛИ уже готовый QPixmap (например,
+        перекрашенная иконка трея), либо None."""
         pm = None
-        if icon_path:
-            loaded = QPixmap(icon_path)
+        if isinstance(icon, QPixmap):
+            pm = icon if not icon.isNull() else None
+        elif icon:
+            loaded = QPixmap(icon)
             if not loaded.isNull():
                 pm = loaded
         self._items.append((text, pm))
@@ -577,6 +621,8 @@ class _SelectorPopup(QWidget):
         self._items = selector._items
         self._current = selector._current
         self._hover = selector._current
+        self._hi_pos = float(selector._current)   # позиция скользящей подсветки
+        self._hi_alpha = 1.0                       # прозрачность подсветки (0 = вне строк)
         self._font = selector._font
         self._field_bg = selector._field_bg
         self._text_color = selector._text_color
@@ -608,10 +654,12 @@ class _SelectorPopup(QWidget):
         x = max(avail.left(), min(x, avail.right() - w + 1))
         y = max(avail.top(), min(y, avail.bottom() - h + 1))
         self.move(x, y)
-        # Первое отпускание мыши — это «хвост» клика, открывшего список
-        # (по текущему пункту над полем). Его игнорируем, чтобы список не
-        # закрывался сразу. Дальше работают и обычный клик, и hold-drag.
-        self._first_release = True
+        # Первое отпускание мыши — «хвост» клика, открывшего список. Игнорируем
+        # его по времени (а не по совпадению с текущим пунктом): при защите от
+        # выхода за панель задач список может сместиться, и под полем окажется
+        # НЕ текущий пункт — тогда старая проверка (idx == _current) ошибочно
+        # выбирала соседний пункт сразу при открытии.
+        self._opened_at = time.monotonic()
         self.show()
 
     # --- мышь ----------------------------------------------------------- #
@@ -625,16 +673,36 @@ class _SelectorPopup(QWidget):
         idx = self._row_at(event.position().y())
         if idx != self._hover:
             self._hover = idx
+            self._animate_hi(idx)
+
+    def _animate_hi(self, to_idx):
+        """Плавно сдвигает подсветку к строке to_idx (или гасит её при -1)."""
+        frm = self._hi_pos
+        a0 = self._hi_alpha
+        if to_idx < 0:
+            def tick(p):
+                self._hi_alpha = a0 * (1.0 - p)
+                self.update()
+            anim.animate(self, 0.0, 1.0, 130, tick,
+                         easing=QEasingCurve.OutCubic, attr="_hi_anim")
+            return
+
+        def tick(p):
+            self._hi_pos = frm + (to_idx - frm) * p
+            self._hi_alpha = a0 + (1.0 - a0) * p
             self.update()
 
+        def fin():
+            self._hi_pos = float(to_idx)
+            self._hi_alpha = 1.0
+            self.update()
+        anim.animate(self, 0.0, 1.0, 190, tick,
+                     easing=QEasingCurve.OutCubic, on_finished=fin, attr="_hi_anim")
+
     def mouseReleaseEvent(self, event):
+        if time.monotonic() - getattr(self, "_opened_at", 0.0) < 0.18:
+            return                       # хвост открывающего клика — не выбираем
         idx = self._row_at(event.position().y())
-        if self._first_release:
-            self._first_release = False
-            # Отпустили на том же пункте, что был под полем — это открывающий
-            # клик: оставляем список открытым.
-            if idx == self._current:
-                return
         if idx >= 0:
             self._sel._on_pick(idx)
         self.close()
@@ -650,18 +718,23 @@ class _SelectorPopup(QWidget):
         p.setBrush(self._field_bg)
         p.drawRoundedRect(bg, self._radius, self._radius)
 
+        # Одна скользящая «пилюля» подсветки (плавно перемещается между строками).
+        if self._hi_alpha > 0.01:
+            hy = self._pad + self._hi_pos * self._row_h
+            hrow = QRectF(self._pad, hy, w - 2 * self._pad, self._row_h)
+            acc = QColor(self._accent)
+            acc.setAlphaF(max(0.0, min(1.0, self._hi_alpha)))
+            p.setPen(Qt.NoPen)
+            p.setBrush(acc)
+            p.drawRoundedRect(hrow, self._radius - 2, self._radius - 2)
+
         p.setFont(self._font)
         for i, (text, pm) in enumerate(self._items):
             ry = self._pad + i * self._row_h
-            row = QRectF(self._pad, ry, w - 2 * self._pad, self._row_h)
 
-            if i == self._hover:
-                p.setPen(Qt.NoPen)
-                p.setBrush(self._accent)
-                p.drawRoundedRect(row, self._radius - 2, self._radius - 2)
-                text_pen = self._on_accent
-            else:
-                text_pen = self._text_color
+            # Цвет текста плавно перетекает в on_accent по мере наезда подсветки.
+            cover = max(0.0, 1.0 - abs(i - self._hi_pos)) * self._hi_alpha
+            text_pen = _lerp_color(self._text_color, self._on_accent, cover)
 
             x = self._pad + 6
             # Галочка у текущего пункта.

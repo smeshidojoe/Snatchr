@@ -1,4 +1,5 @@
 import math
+import os
 
 from PySide6.QtCore import (
     Qt, QRectF, QPointF, QPoint, QEvent, QPropertyAnimation, QEasingCurve, QTimer
@@ -518,11 +519,21 @@ class App(QWidget):
         if not self.isVisible():
             self._first_run_checked = False
             return
+        self._maybe_setup_deno()          # тихо докачиваем deno в фоне (JS-движок)
         if tools.have_ytdlp() and tools.have_ffmpeg():
             self._maybe_autoupdate_ytdlp()
             return
         self._show_overlay("Downloading yt-dlp…", SetupWorker(self),
                            on_done=self._on_setup_done)
+
+    def _maybe_setup_deno(self):
+        """Фоновая (не блокирующая) докачка deno, если его нет — best-effort."""
+        from core import tools
+        if tools.have_deno():
+            return
+        from core.workers import EnsureDenoWorker
+        self._deno_worker = EnsureDenoWorker(self)
+        self._deno_worker.start()
 
     def _on_setup_done(self, ok, err):
         if ok:
@@ -548,6 +559,65 @@ class App(QWidget):
         import time
         self.settings["ytdlp_updated"] = int(time.time())
         self.save_settings()
+
+    # ------------------------------------------------------------------ #
+    #  Фоновая загрузка из трея («Вставить»): Best Quality, окно не нужно.
+    # ------------------------------------------------------------------ #
+    def start_tray_download(self, url):
+        """Скачивает ссылку из буфера в Best Quality в фоне (те же настройки и
+        конвертация, что и при открытом окне). Прогресс — на иконке трея."""
+        from core.i18n import tr
+        from core import downloader, tools
+        url = (url or "").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            if self.tray is not None:
+                self.tray.notify(tr("Paste a video link first"))
+            return
+        if getattr(self, "_tray_dl", None) is not None:
+            if self.tray is not None:
+                self.tray.notify(tr("A download is already running"))
+            return
+        # Без бинарников фоновая загрузка невозможна — открываем окно (там докачка).
+        if not (tools.have_ytdlp() and tools.have_ffmpeg()):
+            self.show_near_tray()
+            return
+
+        option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
+        self._tray_convert = downloader.should_convert(option, url, self.settings)
+
+        from core.workers import DownloadWorker
+        self._tray_dl = DownloadWorker(option, url, self.settings, None, self)
+        self._tray_dl.progress.connect(self._on_tray_progress)
+        self._tray_dl.finished_ok.connect(self._on_tray_done)
+        self._tray_dl.failed.connect(self._on_tray_failed)
+        self._tray_dl.start()
+        if self.tray is not None:
+            self.tray.animator.start()
+
+    def _on_tray_progress(self, p):
+        if self.tray is None:
+            return
+        if p.get("stage") == "convert":
+            frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
+        else:
+            d = p.get("frac") or 0.0
+            frac = d * 0.5 if getattr(self, "_tray_convert", False) else d
+        self.tray.animator.set_fraction(frac)
+
+    def _on_tray_done(self, dest):
+        from core.i18n import tr
+        self._tray_dl = None
+        if self.tray is not None:
+            self.tray.animator.finish(True)
+            folder = os.path.basename((self.settings.get("download_path") or "").rstrip("\\/"))
+            self.tray.notify(f"{tr('Saved to')} {folder}" if folder else tr("Saved to"))
+
+    def _on_tray_failed(self, msg):
+        self._tray_dl = None
+        if self.tray is not None:
+            self.tray.animator.finish(False)
+            if (msg or "").strip() and msg.strip() != "Stopped":
+                self.tray.notify(msg)
 
     def _show_overlay(self, title, worker, on_done=None):
         """Показывает модальный оверлей с заголовком и общей полосой прогресса,

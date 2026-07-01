@@ -43,6 +43,17 @@ def put(url, info):
     _save()
 
 
+def clear():
+    """Полностью очищает кэш анализа ссылок (удаляет cache.json)."""
+    global _data
+    _data = {}
+    try:
+        if os.path.isfile(CACHE_PATH):
+            os.remove(CACHE_PATH)
+    except OSError:
+        pass
+
+
 def _save():
     try:
         os.makedirs(APP_DIR, exist_ok=True)

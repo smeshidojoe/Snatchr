@@ -226,13 +226,19 @@ class AboutPage(WindowDragMixin, QWidget):
         return names
 
     def _icon_icons(self):
-        """{display: путь к png} для отображения иконки в пунктах селектора."""
+        """{display: QPixmap} — иконка для пункта селектора, перекрашенная под
+        тему панели задач Windows (чёрная на светлой, белая на тёмной), как и
+        сама иконка в трее."""
+        from core import tools
+        from core.icons import tint_pixmap
+        color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
         result = {}
         for disp, stem in self._icon_map.items():
             if stem:
                 path = os.path.join(ICONS_DIR, stem + ".png")
-                if os.path.isfile(path):
-                    result[disp] = path
+                pm = tint_pixmap(path, color, 48)
+                if pm is not None:
+                    result[disp] = pm
         return result
 
     def _current_icon_display(self):

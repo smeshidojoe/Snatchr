@@ -48,6 +48,25 @@ def themed_pixmap(theme, filename, color, size):
     return QPixmap.fromImage(out)
 
 
+def tint_pixmap(path, color, size):
+    """Перекрашивает любой глиф-PNG (по альфа-каналу) в указанный цвет.
+    Используется для иконок трея — они белые, но на светлой панели задач
+    Windows должны становиться чёрными (см. tools.windows_uses_light_theme)."""
+    if not path or not os.path.isfile(path):
+        return None
+    src = QImage(path).convertToFormat(QImage.Format_ARGB32)
+    src = src.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    out = QImage(src.size(), QImage.Format_ARGB32)
+    out.fill(Qt.transparent)
+    painter = QPainter(out)
+    painter.drawImage(0, 0, src)
+    painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    painter.fillRect(out.rect(), QColor(color))
+    painter.end()
+    return QPixmap.fromImage(out)
+
+
 def themed_icon(theme, filename, color, size):
     """То же, что themed_pixmap, но как QIcon (для QPushButton)."""
     pm = themed_pixmap(theme, filename, color, size)

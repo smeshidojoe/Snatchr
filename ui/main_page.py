@@ -12,7 +12,7 @@ from core.workers import (
 from ui.widgets import (
     IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
     DownloadButton, ProgressBar, Spinner, ScrollList, InfoCardRow,
-    PlaylistHeader, rounded_pixmap,
+    PlaylistHeader, TimeCodeEdit, rounded_pixmap,
 )
 from ui import anim
 
@@ -127,6 +127,8 @@ class MainPage(WindowDragMixin, QWidget):
         self.url_text.blockSignals(True)
         self.url_text.clear()
         self.url_text.blockSignals(False)
+        self.tc_start.clear_code()
+        self.tc_end.clear_code()
         self.url_edit.clear()      # textChanged -> сброс состояния в idle
 
     def expand_extra(self):
@@ -168,6 +170,27 @@ class MainPage(WindowDragMixin, QWidget):
         self.cb_multi = CheckBox(self, tr("Multiple Links"), fonts.font(s(12), "Regular"),
                                  self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
         self.cb_multi.toggled.connect(self._on_multi_toggle)
+
+        # Таймкоды (только одиночные ссылки): метка From/To + жёсткий блок 00:00:00.
+        # Метки всегда «жирные» и основного цвета текста — неактивность касается
+        # только полей ввода, но не подписей.
+        tc_lbl_font = fonts.font(s(12), "Semibold")
+        tc_lbl_css = f"color: {self.TITLE_COLOR}; background: transparent;"
+        self.tc_from_lbl = QLabel(tr("From"), self)
+        self.tc_from_lbl.setFont(tc_lbl_font)
+        self.tc_from_lbl.setStyleSheet(tc_lbl_css)
+        self.tc_from_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.tc_to_lbl = QLabel(tr("To"), self)
+        self.tc_to_lbl.setFont(tc_lbl_font)
+        self.tc_to_lbl.setStyleSheet(tc_lbl_css)
+        self.tc_to_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        tc_font = fonts.mono(s(12))
+        self.tc_start = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
+                                     self._pal["disabled_bg"], self._pal["disabled_text"])
+        self.tc_end = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
+                                   self._pal["disabled_bg"], self._pal["disabled_text"])
+        self.tc_start.setEnabled(False)
+        self.tc_end.setEnabled(False)
 
         self.seg_type = SegmentedControl(
             self, [(tr("Video"), "video"), (tr("Audio"), "audio")], "video",
@@ -272,7 +295,24 @@ class MainPage(WindowDragMixin, QWidget):
 
         input_bottom = fy + fh + extra
         ml_y = input_bottom + s(8)
-        self.cb_multi.setGeometry(pad, ml_y, w - 2 * pad, s(26))
+        # [From] [00:00:00]  [To] [00:00:00] — справа; чекбокс Multiple Links на
+        # остатке слева. Всё в одном ряду — при разворачивании Multiple Links ряд
+        # (метки и поля) едет вниз вместе с ним.
+        from PySide6.QtGui import QFontMetrics
+        lfm = QFontMetrics(self.tc_from_lbl.font())
+        from_lw = lfm.horizontalAdvance(self.tc_from_lbl.text())
+        to_lw = lfm.horizontalAdvance(self.tc_to_lbl.text())
+        fw, lgap, gap, th = s(92), s(6), s(12), s(26)
+        ty = ml_y
+        te_x = w - pad - fw
+        self.tc_end.setGeometry(te_x, ty, fw, th)
+        to_x = te_x - lgap - to_lw
+        self.tc_to_lbl.setGeometry(to_x, ty, to_lw, th)
+        fe_x = to_x - gap - fw
+        self.tc_start.setGeometry(fe_x, ty, fw, th)
+        from_x = fe_x - lgap - from_lw
+        self.tc_from_lbl.setGeometry(from_x, ty, from_lw, th)
+        self.cb_multi.setGeometry(pad, ml_y, from_x - s(8) - pad, s(26))
 
         row_y = ml_y + s(26) + s(10)
         row_h = s(30)
@@ -535,8 +575,10 @@ class MainPage(WindowDragMixin, QWidget):
         self.lbl_msg.setText(
             downloader.friendly_error(msg, default="Could not read this link."))
         self._set_state("error")
-        # Куки браузера уже не помогли (или их нет) — предлагаем указать свой файл.
-        if downloader.is_auth_error(msg) and not self.settings.get("cookies_file"):
+        # Куки браузера не помогли/не читаются (бот-чек или Chrome-шифрование) —
+        # предлагаем указать свой файл cookies.
+        if ((downloader.is_auth_error(msg) or downloader.is_cookie_error(msg))
+                and not self.settings.get("cookies_file")):
             self.btn_cookies.show()
             self.btn_cookies.raise_()
 
@@ -735,6 +777,37 @@ class MainPage(WindowDragMixin, QWidget):
         else:
             self.spinner.stop()
         self._refresh_download_enabled()
+        self._update_timecodes_enabled()
+
+    def _update_timecodes_enabled(self):
+        """Таймкоды доступны только для одиночного видео (state=ready) длиннее
+        3 минут и вне режима Multiple Links; иначе — выключены (и сброшены)."""
+        dur = (self._info or {}).get("duration") or 0
+        en = (not self._is_multi() and self._state == "ready" and dur >= 180)
+        # Метки цвет не меняют (всегда основной) — инактив только на полях ввода.
+        for f in (self.tc_start, self.tc_end):
+            f.setEnabled(en)
+            if not en:
+                f.clear_code()
+
+    def _section_arg(self):
+        """«*START-END» для yt-dlp по введённым таймкодам, None (вся длина) или
+        'invalid' (показана ошибка). 00:00:00 в поле = «не задано». Страхуемся,
+        даже если UI-защита (выключение полей) не сработала."""
+        if not self.tc_start.isEnabled():
+            return None
+        s0, e0 = self.tc_start.seconds(), self.tc_end.seconds()
+        if s0 == 0 and e0 == 0:
+            return None                       # оба по нулям — вся длина
+        dur = int((self._info or {}).get("duration") or 0)
+        start = s0
+        end = e0 if e0 > 0 else dur           # To=00:00:00 -> до конца видео
+        if dur and end > dur:
+            end = dur
+        if start < 0 or end <= start or (dur and start >= dur):
+            self._show_status(tr("Invalid time range"), self.ERR_COLOR, self._err_pm)
+            return "invalid"
+        return f"*{start}-{end}"
 
     def _refresh_download_enabled(self):
         if self._state == "downloading":
@@ -783,11 +856,22 @@ class MainPage(WindowDragMixin, QWidget):
         url = (self.url_edit.text() or "").strip()
         if not url or self._selected is None:
             return
+        sec = self._section_arg()
+        if sec == "invalid":
+            return                       # ошибка интервала уже показана
+        option = self._selected
+        if sec:
+            option = dict(self._selected)
+            option["section"] = sec
+        # Будет ли конвертация — чтобы вести ОДИН прогресс-бар 0..100% на всё
+        # задание: скачивание (видео+аудио) -> первая половина, конвертация ->
+        # вторая (как у фонового Paste), без сброса полосы между этапами.
+        self._dl_convert = bool(downloader.should_convert(option, url, self.settings))
         self._set_state("downloading")
         self.btn_download.setEnabled(True)
         self._animate_button_to_stop()
         title = self._info.get("title") if self._info else None
-        self._dl = DownloadWorker(self._selected, url, self.settings, title, self)
+        self._dl = DownloadWorker(option, url, self.settings, title, self)
         self._dl.progress.connect(self._on_progress)
         self._dl.status.connect(self._on_status)
         self._dl.finished_ok.connect(self._on_dl_finished)
@@ -836,8 +920,16 @@ class MainPage(WindowDragMixin, QWidget):
         self.lbl_progress.setText("   ·   ".join(parts))
         if p.get("size"):
             self.lbl_size.setText(tr("File Size ~") + p["size"])
-        if p.get("frac") is not None:
-            self.progress_bar.set_value(p["frac"])
+        frac = p.get("frac")
+        if frac is not None:
+            # Единая полоса: конвертация — вторая половина; скачивание — первая
+            # (или вся полоса, если конвертации не будет). «Converting…» остаётся
+            # в подписи (percent_str), полоса назад не откатывается.
+            if p.get("stage") == "convert":
+                overall = 0.5 + 0.5 * frac
+            else:
+                overall = frac * 0.5 if getattr(self, "_dl_convert", False) else frac
+            self.progress_bar.set_value(overall)
 
     def _on_status(self, text):
         self.lbl_progress.setText(text)
