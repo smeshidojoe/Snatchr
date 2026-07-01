@@ -35,10 +35,34 @@ PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
 DEST_TAG = "@@DEST@@"      # префикс строки с итоговым путём файла
 
 
+COOKIE_BROWSERS = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"]
+
+
+def file_cookie_args(settings):
+    """--cookies <file>, если в настройках задан существующий файл кук."""
+    f = (settings or {}).get("cookies_file") or ""
+    return ["--cookies", f] if f and os.path.isfile(f) else []
+
+
+def browser_cookie_args(settings):
+    """--cookies-from-browser <browser> (выбранный в настройках или авто) или []."""
+    b = (settings or {}).get("cookies_browser") or "auto"
+    if b == "auto":
+        b = tools.default_browser()
+    return ["--cookies-from-browser", b] if b else []
+
+
+def cookie_args(settings):
+    """Куки, которые применяем ВСЕГДА: свой файл (если задан), иначе — браузер."""
+    return file_cookie_args(settings) or browser_cookie_args(settings)
+
+
 # ------------------------------------------------------------------ #
-def probe(url, no_playlist=True, timeout=60):
+def probe(url, no_playlist=True, timeout=60, cookies=None):
     """Информация о ссылке (dict). Бросает RuntimeError при ошибке."""
     args = [tools.YTDLP_EXE, "-J", "--no-warnings"]
+    if cookies:
+        args += cookies
     if no_playlist:
         args.append("--no-playlist")
     args.append(url)
@@ -269,6 +293,7 @@ def build_download_args(option, url, settings, title=None, out_dir=None):
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
         f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s",
     ]
+    args += cookie_args(settings)   # куки применяем всегда (файл или браузер)
     loc = tools.ffmpeg_location()
     if loc:
         args += ["--ffmpeg-location", loc]
@@ -332,34 +357,43 @@ def parse_destination(line):
 
 
 _ERROR_MAP = [
-    ("conversion failed", "Downloaded, but conversion failed (file kept unconverted)."),
-    ("http error 401", "Access requires sign-in (401)."),
-    ("http error 403", "Access denied (403) — the video may be region-locked or need sign-in."),
-    ("http error 404", "Not found (404) — the link may be broken or removed."),
-    ("http error 429", "Too many requests (429) — try again a bit later."),
-    ("private video", "This video is private."),
-    ("sign in to confirm your age", "Age-restricted — sign-in is required."),
-    ("confirm you’re not a bot", "Blocked by anti-bot check — try again later."),
+    ("conversion failed", "Downloaded, but conversion failed."),
+    ("not a bot", "Bot check — try cookies or later."),
+    ("confirm you", "Bot check — try cookies or later."),
+    ("sign in to confirm your age", "Age-restricted — sign-in needed."),
+    ("http error 401", "Sign-in required (401)."),
+    ("http error 403", "Access denied (403)."),
+    ("http error 404", "Not found (404)."),
+    ("http error 429", "Too many requests — try later."),
+    ("private video", "Video is private."),
     ("members-only", "Members-only content."),
     ("join this channel", "Members-only content."),
-    ("video unavailable", "This video is unavailable."),
-    ("this video is not available", "This video is unavailable."),
+    ("video unavailable", "Video unavailable."),
+    ("this video is not available", "Video unavailable."),
     ("not available in your country", "Not available in your region."),
     ("geo restricted", "Not available in your region."),
-    ("unable to extract", "Couldn’t read this link — the site may have changed."),
-    ("unsupported url", "This link isn’t supported."),
+    ("unable to extract", "Couldn't read — site may have changed."),
+    ("unsupported url", "Link not supported."),
     ("ffmpeg", "Processing failed (ffmpeg)."),
     ("no space left", "Not enough disk space."),
 ]
 
 
-def friendly_error(text):
-    """Человекочитаемое объяснение ошибки по выводу утилит."""
+def is_auth_error(text):
+    """Похоже ли, что ошибку можно обойти куками (бот-чек / вход / 403)."""
+    low = (text or "").lower()
+    return ("not a bot" in low or "confirm you" in low or "http error 403" in low
+            or "sign in" in low or "login required" in low or "private video" in low
+            or "members-only" in low or "age" in low and "confirm" in low)
+
+
+def friendly_error(text, default=None):
+    """Человекочитаемое (и локализованное) объяснение ошибки по выводу утилит."""
     low = (text or "").lower()
     for needle, msg in _ERROR_MAP:
         if needle in low:
-            return msg
-    return "Download failed — see the log on your Desktop."
+            return tr(msg)
+    return tr(default) if default else tr("Download failed.")
 
 
 # ------------------------------------------------------------------ #
@@ -525,6 +559,7 @@ def run_job(option, url, settings, hooks, title=None):
             return parsed
         return ""
 
+    # Куки (файл/браузер) добавляются внутри build_download_args всегда.
     ok, dest = _stream(build_download_args(option, url, settings, title, job_dir),
                        hooks, log, progress=True)
     # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.

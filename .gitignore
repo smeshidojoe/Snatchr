@@ -41,3 +41,5 @@ Desktop.ini
 .vscode/
 .iss
 snatchr_setup.iss
+Snatchr.spec
+version_info.txt

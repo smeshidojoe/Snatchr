@@ -23,6 +23,9 @@ def defaults():
         "language":        "English",     # язык интерфейса
         "usage_mode":      "toggle",      # "toggle" (Pinned) | "focus" (Auto-hide)
         "allow_dragging":  False,         # разрешить перетаскивание окна
+        "ytdlp_updated":   0,             # когда в последний раз обновляли yt-dlp (epoch)
+        "cookies_browser": "auto",        # браузер для cookies ("auto" | chrome | …)
+        "cookies_file":    "",            # путь к своему cookies.txt (приоритетнее браузера)
     }
 
 

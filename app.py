@@ -115,7 +115,7 @@ class App(QWidget):
 
         self.WIN_W          = self._s(492)
         self.WIN_H_FULL     = self._s(480)
-        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(50)
+        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(100)   # +место под Cookies
         self.WIN_H_ABOUT    = self._s(480)
         self.WIN_H          = self.WIN_H_FULL
         self.CORNER_R       = self._s(14)
@@ -519,12 +519,35 @@ class App(QWidget):
             self._first_run_checked = False
             return
         if tools.have_ytdlp() and tools.have_ffmpeg():
+            self._maybe_autoupdate_ytdlp()
             return
         self._show_overlay("Downloading yt-dlp…", SetupWorker(self),
                            on_done=self._on_setup_done)
 
     def _on_setup_done(self, ok, err):
+        if ok:
+            self._mark_ytdlp_updated()   # только что скачали свежий yt-dlp
         self.main_page.on_tools_ready(ok, err)
+
+    def _maybe_autoupdate_ytdlp(self):
+        """Раз в сутки тихо обновляем yt-dlp в фоне: YouTube часто ломает старую
+        версию, из-за чего ссылки перестают читаться."""
+        import time
+        from core import tools
+        if not tools.have_ytdlp() or self.main_page.is_busy():
+            return
+        last = float(self.settings.get("ytdlp_updated", 0) or 0)
+        if time.time() - last < 14 * 86400:      # не чаще раза в 2 недели (exe-версия)
+            return
+        from core.workers import YtdlpAutoUpdateWorker
+        self._ytdlp_upd = YtdlpAutoUpdateWorker(self)
+        self._ytdlp_upd.done.connect(lambda ok: self._mark_ytdlp_updated() if ok else None)
+        self._ytdlp_upd.start()
+
+    def _mark_ytdlp_updated(self):
+        import time
+        self.settings["ytdlp_updated"] = int(time.time())
+        self.save_settings()
 
     def _show_overlay(self, title, worker, on_done=None):
         """Показывает модальный оверлей с заголовком и общей полосой прогресса,

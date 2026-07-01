@@ -71,6 +71,26 @@ def have_ffmpeg():
     return os.path.isfile(FFMPEG_EXE) and os.path.isfile(FFPROBE_EXE)
 
 
+def default_browser():
+    """Основной браузер пользователя как имя для yt-dlp --cookies-from-browser
+    (chrome/edge/firefox/brave/opera/vivaldi) или None, если не определили."""
+    try:
+        import winreg
+        key = (r"Software\Microsoft\Windows\Shell\Associations"
+               r"\UrlAssociations\https\UserChoice")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            progid = (winreg.QueryValueEx(k, "ProgId")[0] or "").lower()
+    except Exception:
+        return None
+    for needle, name in (("brave", "brave"), ("firefox", "firefox"),
+                         ("msedge", "edge"), ("edge", "edge"),
+                         ("opera", "opera"), ("vivaldi", "vivaldi"),
+                         ("chromium", "chromium"), ("chrome", "chrome")):
+        if needle in progid:
+            return name
+    return None
+
+
 def streamlink_path():
     """Путь к streamlink, если он есть (в tools/ или в PATH). Иначе None."""
     local = os.path.join(TOOLS_DIR, "streamlink.exe")
@@ -165,14 +185,10 @@ def ensure_ytdlp(progress=None, on_status=None):
 
 def update_ytdlp(progress=None):
     """
-    Переустановить yt-dlp: удалить текущий exe и скачать свежий с GitHub.
+    Обновить yt-dlp свежей версией с GitHub. Скачивание идёт в .part и атомарно
+    заменяет exe (os.replace) — при сбое/офлайне старый файл остаётся на месте.
     progress(frac) — колбэк хода скачивания (0..1). Бросает исключение при сбое.
     """
-    try:
-        if os.path.isfile(YTDLP_EXE):
-            os.remove(YTDLP_EXE)
-    except OSError:
-        pass
     download_ytdlp(progress)
     return True
 

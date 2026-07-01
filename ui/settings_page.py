@@ -6,8 +6,15 @@ from core import fonts, themes
 from core.i18n import tr
 from core.icons import themed_icon
 from ui.widgets import (
-    IconButton, LinkButton, CheckBox, SegmentedControl, WindowDragMixin
+    IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin
 )
+
+# Отображаемая подпись -> значение cookies_browser в конфиге.
+_COOKIE_CHOICES = [
+    ("Auto", "auto"), ("Chrome", "chrome"), ("Edge", "edge"),
+    ("Firefox", "firefox"), ("Brave", "brave"), ("Opera", "opera"),
+    ("Vivaldi", "vivaldi"), ("Chromium", "chromium"),
+]
 
 
 class SettingsPage(WindowDragMixin, QWidget):
@@ -108,14 +115,44 @@ class SettingsPage(WindowDragMixin, QWidget):
         card3_y = sec3_y + s(16)
         card3_h = self._build_processing_card(pad, card3_y, card_w)
 
-        # --- секция: Usage ---------------------------------------------- #
+        # --- секция: Cookies (браузер для обхода бот-чека) -------------- #
         sec4_y = card3_y + card3_h + s(14)
-        self._section_title(tr("Usage"), pad, sec4_y)
-        card4_y = sec4_y + s(24)   # больше воздуха под заголовком Usage
-        card4_h = self._build_usage_card(pad, card4_y, card_w)
+        self._section_title(tr("Cookies"), pad, sec4_y)
+        cookies_h = self._build_cookies_card(pad, sec4_y + s(20), card_w)
+
+        # --- секция: Usage ---------------------------------------------- #
+        sec5_y = sec4_y + s(20) + cookies_h + s(14)
+        self._section_title(tr("Usage"), pad, sec5_y)
+        usage_y = sec5_y + s(24)   # больше воздуха под заголовком Usage
+        usage_h = self._build_usage_card(pad, usage_y, card_w)
 
         # --- Кнопки обновления yt-dlp / ffmpeg (под блоком Usage) ------- #
-        self._build_update_buttons(pad, card4_y + card4_h + s(16))
+        self._build_update_buttons(pad, usage_y + usage_h + s(16))
+
+    def _build_cookies_card(self, x, y, card_w):
+        s = self.app._s
+        self._label(tr("Browser for cookies"), fonts.font(s(11), "Regular"),
+                    self.TEXT_COLOR, x, y + s(3))
+        cur_val = self.settings.get("cookies_browser", "auto")
+        cur_label = next((lab for lab, v in _COOKIE_CHOICES if v == cur_val), "Auto")
+        self._cookie_val = {lab: v for lab, v in _COOKIE_CHOICES}
+
+        sel = Selector(self, fonts.font(s(11), "Regular"),
+                       self._pal["field_bg"], self._pal["sel_chip"], self.TEXT_COLOR,
+                       self._pal["sel_chevron"], s(7), s(22),
+                       accent=self.SEG_SEL, border=self._pal["border"],
+                       on_accent=self.ON_ACCENT)
+        for lab, _ in _COOKIE_CHOICES:
+            sel.add_item(lab)
+        sel.set_current(cur_label)
+        sel.changed.connect(self._on_cookie_browser_change)
+        sel.setGeometry(card_w - s(120), y, s(120) + x, s(26))
+        self._cookie_sel = sel
+        return s(26)
+
+    def _on_cookie_browser_change(self, label):
+        self.settings["cookies_browser"] = self._cookie_val.get(label, "auto")
+        self.app.save_settings()
 
     # ------------------------------------------------------------------ #
     def _section_title(self, text, x, y):

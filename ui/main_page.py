@@ -10,7 +10,7 @@ from core.workers import (
     MultiProbeWorker, MultiDownloadWorker, PlaylistProbeWorker,
 )
 from ui.widgets import (
-    IconButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
+    IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
     DownloadButton, ProgressBar, Spinner, ScrollList, InfoCardRow,
     PlaylistHeader, rounded_pixmap,
 )
@@ -205,6 +205,14 @@ class MainPage(WindowDragMixin, QWidget):
         self.lbl_msg = QLabel(self)
         self.lbl_msg.setFont(fonts.font(s(11), "Regular"))
         self.lbl_msg.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
+        self.lbl_msg.setWordWrap(True)
+
+        # Кнопка «свои cookies» — появляется, когда даже куки браузера не помогли.
+        self.btn_cookies = LinkButton(self, tr("Use cookies file…"),
+                                      fonts.font(s(10), "Semibold"),
+                                      self._pal["link"], self._pal["link_hover"],
+                                      self._on_pick_cookies)
+        self.btn_cookies.hide()
 
         # Скроллируемый список (Multiple Links / плейлист).
         self.list = ScrollList(self, self.PROG_TRACK, self.MUTED_COLOR)
@@ -292,6 +300,10 @@ class MainPage(WindowDragMixin, QWidget):
 
         self.list.setGeometry(pad, info_y, w - 2 * pad, self._status_y - s(6) - info_y)
 
+        # «Use cookies file…» — в правом нижнем углу инфо-блока (над статусом).
+        cw = s(130)
+        self.btn_cookies.setGeometry(w - pad - cw, self._status_y - s(26), cw, s(22))
+
         self.status_box.setGeometry(pad, self._status_y, w - 2 * pad, s(18))
         self.status_icon.setGeometry(0, 0, s(15), s(18))
         self.status_text.setGeometry(s(19), 0, w - 2 * pad - s(19), s(18))
@@ -365,7 +377,7 @@ class MainPage(WindowDragMixin, QWidget):
         if downloader.is_playlist_url(url):
             self._set_state("playlist_fetching")
             self.lbl_msg.setText(tr("Fetching playlist…"))
-            self._pl = PlaylistProbeWorker(url, self)
+            self._pl = PlaylistProbeWorker(url, self.settings, self)
             self._active_worker = self._pl
             self._pl.done.connect(self._on_playlist_done)
             self._pl.error.connect(self._on_probe_error)
@@ -374,7 +386,7 @@ class MainPage(WindowDragMixin, QWidget):
         self._set_state("fetching")
         self.lbl_msg.setText(tr("Fetching info…"))
         # Старые воркеры не убиваем (terminate падает) — игнорируем их результат.
-        self._probe = ProbeWorker(url, self)
+        self._probe = ProbeWorker(url, self.settings, self)
         self._active_worker = self._probe
         self._probe.done.connect(self._on_probe_done)
         self._probe.error.connect(self._on_probe_error)
@@ -391,7 +403,7 @@ class MainPage(WindowDragMixin, QWidget):
             self._set_state("fetching")
             self.lbl_msg.setText(tr("Fetching info…"))
             url = (self.url_edit.text() or "").strip()
-            self._probe = ProbeWorker(url, self)
+            self._probe = ProbeWorker(url, self.settings, self)
             self._active_worker = self._probe
             self._probe.done.connect(self._on_probe_done)
             self._probe.error.connect(self._on_probe_error)
@@ -518,8 +530,30 @@ class MainPage(WindowDragMixin, QWidget):
     def _on_probe_error(self, msg):
         if self.sender() is not self._active_worker:
             return
-        self.lbl_msg.setText(tr("Could not read this link."))
+        # Показываем конкретную причину (бот-чек / регион / приватное / …),
+        # а не общее «не удалось прочитать» — ссылка часто читается, но заблокирована.
+        self.lbl_msg.setText(
+            downloader.friendly_error(msg, default="Could not read this link."))
         self._set_state("error")
+        # Куки браузера уже не помогли (или их нет) — предлагаем указать свой файл.
+        if downloader.is_auth_error(msg) and not self.settings.get("cookies_file"):
+            self.btn_cookies.show()
+            self.btn_cookies.raise_()
+
+    def _on_pick_cookies(self):
+        from PySide6.QtWidgets import QFileDialog
+        self.app.suppress_autohide(True)
+        try:
+            path, _ = QFileDialog.getOpenFileName(
+                self, tr("Choose cookies file"), "",
+                "Cookies (*.txt);;All files (*.*)")
+        finally:
+            self.app.suppress_autohide(False)
+        if path:
+            self.settings["cookies_file"] = path
+            self.app.save_settings()
+            self.btn_cookies.hide()
+            self._analyze_timer.start()   # повторный анализ уже с файлом кук
 
     def _on_thumb(self, data):
         if not data:
@@ -590,7 +624,7 @@ class MainPage(WindowDragMixin, QWidget):
         self.list.clear()
         self._multi_url_list = urls
         self._multi_infos = [None] * len(urls)
-        self._mprobe = MultiProbeWorker(urls, self)
+        self._mprobe = MultiProbeWorker(urls, self.settings, self)
         self._mprobe.item.connect(self._on_multi_item)
         self._mprobe.done.connect(self._on_multi_analyze_done)
         self._mprobe.start()
@@ -690,6 +724,8 @@ class MainPage(WindowDragMixin, QWidget):
         single_info = (state == "ready")
         for wdg in (self.thumb, self.lbl_title, self.lbl_uploader, self.lbl_duration):
             wdg.setVisible(single_info)
+        if state != "error":
+            self.btn_cookies.hide()   # кнопка кук — только в состоянии ошибки
         self.lbl_msg.setVisible(state in ("fetching", "error", "libraries",
                                           "multi_fetching", "playlist_fetching"))
         self.list.setVisible(state in ("multi_ready", "playlist_ready", "downloading")

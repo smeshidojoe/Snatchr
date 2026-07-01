@@ -67,6 +67,18 @@ class UpdateFfmpegWorker(QThread):
             self.done.emit(False, str(exc))
 
 
+class YtdlpAutoUpdateWorker(QThread):
+    """Тихое фоновое обновление yt-dlp (чтобы YouTube не ломал старую версию)."""
+    done = Signal(bool)
+
+    def run(self):
+        try:
+            tools.update_ytdlp()
+            self.done.emit(True)
+        except Exception:
+            self.done.emit(False)
+
+
 class AppUpdateWorker(QThread):
     """Скачивание обновления приложения (zip релиза) с прогрессом."""
     progress = Signal(float)
@@ -86,19 +98,24 @@ class AppUpdateWorker(QThread):
             self.done.emit(False, str(exc))
 
 
+def _probe_with_cookies(url, settings):
+    """probe(url) — куки (файл/браузер) применяем всегда."""
+    return downloader.probe(url, cookies=downloader.cookie_args(settings or {}))
+
+
 class ProbeWorker(QThread):
-    """Анализ ссылки через yt-dlp -J."""
+    """Анализ ссылки через yt-dlp -J (с ретраем на куках браузера)."""
     done = Signal(object)         # info (dict)
     error = Signal(str)
 
-    def __init__(self, url, parent=None):
+    def __init__(self, url, settings=None, parent=None):
         super().__init__(parent)
         self._url = url
+        self._settings = settings or {}
 
     def run(self):
         try:
-            info = downloader.probe(self._url)
-            self.done.emit(info)
+            self.done.emit(_probe_with_cookies(self._url, self._settings))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -108,9 +125,10 @@ class PlaylistProbeWorker(QThread):
     done = Signal(object)
     error = Signal(str)
 
-    def __init__(self, url, parent=None):
+    def __init__(self, url, settings=None, parent=None):
         super().__init__(parent)
         self._url = url
+        self._settings = settings or {}
 
     def run(self):
         try:
@@ -141,9 +159,10 @@ class MultiProbeWorker(QThread):
     item = Signal(int, object, str)   # индекс, info|None, текст ошибки
     done = Signal()
 
-    def __init__(self, urls, parent=None):
+    def __init__(self, urls, settings=None, parent=None):
         super().__init__(parent)
         self._urls = urls
+        self._settings = settings or {}
         self._stopped = False
 
     def run(self):
@@ -151,7 +170,7 @@ class MultiProbeWorker(QThread):
             if self._stopped:
                 break
             try:
-                self.item.emit(i, downloader.probe(u), "")
+                self.item.emit(i, _probe_with_cookies(u, self._settings), "")
             except Exception as exc:
                 self.item.emit(i, None, str(exc))
         self.done.emit()
