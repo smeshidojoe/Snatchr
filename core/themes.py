@@ -317,8 +317,60 @@ _VIBRANCECORE = {
     "error":        "#ff6b6b",
 }
 
+# --- Glass (Apple Liquid Glass: матовое стекло, системные цвета Apple) ------ #
+_GLASS = {
+    "grad_center":  "#f2f6fc",
+    "grad_edge":    "#c9d5e6",
+    "border":       "#f7fafd",
+    "bg":           "#e9eef6",
+    "page_bg":      "#e3eaf4",
+
+    "icon":         "#5b6b80",
+    "icon_hover":   "#1c2836",
+    "separator":    "#c3cedd",
+
+    "title":        "#1d2430",
+    "text":         "#3a4656",
+    "muted":        "#8593a6",
+    "on_accent":    "#ffffff",
+
+    "accent":       "#0a84ff",
+    "accent_hover": "#3396ff",
+    "link":         "#0a84ff",
+    "link_hover":   "#3396ff",
+    "choose":       "#0a84ff",
+    "choose_bg":    "rgba(10, 132, 255, 0.10)",
+    "choose_bg_h":  "rgba(10, 132, 255, 0.18)",
+
+    "card_bg":      "#f4f8fd",
+    "field_bg":     "#eef3fa",
+
+    "cb_off":       "#c3cedd",
+    "cb_on":        "#0a84ff",
+
+    "seg_bg":       "#dfe7f2",
+    "seg_sel":      "#0a84ff",
+
+    "sel_chip":     "#e6edf7",
+    "sel_chevron":  "#3a4656",
+
+    "download_bg":       "#0a84ff",
+    "download_bg_hover": "#3396ff",
+    "analyze_bg":        "#ff9500",
+    "analyze_bg_hover":  "#ffa726",
+    "stop_bg":           "#ff3b30",
+    "stop_bg_hover":     "#ff574d",
+    "disabled_bg":       "#dde4ee",
+    "disabled_text":     "#9aa7b8",
+
+    "prog_track":   "#d7e0ed",
+    "ok":           "#34c759",
+    "error":        "#ff3b30",
+}
+
 
 THEMES = {
+    "Glass":          {"assets": "Deep Ocean", "palette": _GLASS},
     "Deep Ocean":     {"assets": "Deep Ocean", "palette": _DEEP_OCEAN},
     "White Rose":     {"assets": "Deep Ocean", "palette": _ROSE_NEGATIVE},
     "Dark Pulse":     {"assets": "Deep Ocean", "palette": _DARK_PULSE},

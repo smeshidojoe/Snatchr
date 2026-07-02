@@ -116,7 +116,7 @@ class App(QWidget):
 
         self.WIN_W          = self._s(492)
         self.WIN_H_FULL     = self._s(480)
-        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(100)   # +место под Cookies
+        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(140)   # +Cookies +yt-dlp канал
         self.WIN_H_ABOUT    = self._s(480)
         self.WIN_H          = self.WIN_H_FULL
         self.CORNER_R       = self._s(14)
@@ -487,7 +487,18 @@ class App(QWidget):
     # ------------------------------------------------------------------ #
     def start_ytdlp_update(self):
         from core.workers import UpdateYtdlpWorker
-        self._show_overlay("Updating yt-dlp…", UpdateYtdlpWorker(self))
+        ch = self.settings.get("ytdlp_channel", "stable")
+        self._show_overlay("Updating yt-dlp…", UpdateYtdlpWorker(ch, False, self))
+
+    def set_ytdlp_channel(self, channel):
+        """Переключить канал yt-dlp (stable/nightly) и сделать бинарь активным
+        (из кэша мгновенно либо докачать)."""
+        if channel == self.settings.get("ytdlp_channel"):
+            return
+        self.settings["ytdlp_channel"] = channel
+        self.save_settings()
+        from core.workers import UpdateYtdlpWorker
+        self._show_overlay("Switching yt-dlp…", UpdateYtdlpWorker(channel, True, self))
 
     def start_ffmpeg_update(self):
         from core.workers import UpdateFfmpegWorker
@@ -520,20 +531,34 @@ class App(QWidget):
             self._first_run_checked = False
             return
         self._maybe_setup_deno()          # тихо докачиваем deno в фоне (JS-движок)
+        ch = self.settings.get("ytdlp_channel", "stable")
         if tools.have_ytdlp() and tools.have_ffmpeg():
             self._maybe_autoupdate_ytdlp()
             return
-        self._show_overlay("Downloading yt-dlp…", SetupWorker(self),
+        self._show_overlay("Downloading yt-dlp…", SetupWorker(ch, self),
                            on_done=self._on_setup_done)
 
     def _maybe_setup_deno(self):
-        """Фоновая (не блокирующая) докачка deno, если его нет — best-effort."""
+        """Фоновая (не блокирующая) докачка deno, затем — PO-token провайдер (ему
+        нужен deno). Всё best-effort."""
         from core import tools
         if tools.have_deno():
+            self._maybe_setup_pot()
             return
         from core.workers import EnsureDenoWorker
         self._deno_worker = EnsureDenoWorker(self)
+        self._deno_worker.done.connect(lambda ok: self._maybe_setup_pot() if ok else None)
         self._deno_worker.start()
+
+    def _maybe_setup_pot(self):
+        """Фоновая установка PO-token провайдера (обход YouTube 403), если его нет
+        и есть deno — best-effort."""
+        from core import tools
+        if tools.have_pot() or not tools.have_deno():
+            return
+        from core.workers import EnsurePotWorker
+        self._pot_worker = EnsurePotWorker(self)
+        self._pot_worker.start()
 
     def _on_setup_done(self, ok, err):
         if ok:
@@ -551,7 +576,8 @@ class App(QWidget):
         if time.time() - last < 14 * 86400:      # не чаще раза в 2 недели (exe-версия)
             return
         from core.workers import YtdlpAutoUpdateWorker
-        self._ytdlp_upd = YtdlpAutoUpdateWorker(self)
+        ch = self.settings.get("ytdlp_channel", "stable")
+        self._ytdlp_upd = YtdlpAutoUpdateWorker(ch, self)
         self._ytdlp_upd.done.connect(lambda ok: self._mark_ytdlp_updated() if ok else None)
         self._ytdlp_upd.start()
 

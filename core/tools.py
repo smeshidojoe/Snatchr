@@ -29,6 +29,11 @@ FFPROBE_EXE   = os.path.join(TOOLS_DIR, "ffprobe.exe")
 DENO_EXE      = os.path.join(TOOLS_DIR, "deno.exe")
 
 YTDLP_URL  = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+# Каналы yt-dlp: стабильный и nightly (свежие фиксы YouTube приезжают раньше).
+YTDLP_URLS = {
+    "stable":  YTDLP_URL,
+    "nightly": "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe",
+}
 # Deno — JS-движок, которым yt-dlp решает JS-челленджи YouTube (nsig). Кладём его
 # в tools/ и добавляем в PATH — yt-dlp сам подхватывает deno/node из PATH. Без
 # него yt-dlp откатывается на встроенный интерпретатор (медленнее, иногда падает).
@@ -194,9 +199,31 @@ def _download(url, dest, progress=None):
     os.replace(tmp, dest)
 
 
-def download_ytdlp(progress=None):
-    """Скачать/перезаписать yt-dlp.exe последней версией."""
-    _download(YTDLP_URL, YTDLP_EXE, progress)
+def _channel_cache(channel):
+    """Путь к кэшу бинаря канала (yt-dlp-stable.exe / yt-dlp-nightly.exe)."""
+    return os.path.join(TOOLS_DIR, f"yt-dlp-{channel}.exe")
+
+
+def download_ytdlp(progress=None, channel="stable"):
+    """Скачать свежий yt-dlp выбранного канала, сделать активным (yt-dlp.exe)
+    и сохранить копию в кэш канала (для мгновенного переключения обратно)."""
+    url = YTDLP_URLS.get(channel) or YTDLP_URL
+    _download(url, YTDLP_EXE, progress)
+    try:
+        shutil.copy2(YTDLP_EXE, _channel_cache(channel))
+    except OSError:
+        pass
+
+
+def activate_ytdlp_channel(channel, progress=None):
+    """Сделать активным бинарь выбранного канала: из кэша (быстро, без сети) или
+    скачать, если кэша нет."""
+    cache = _channel_cache(channel)
+    if os.path.isfile(cache):
+        shutil.copy2(cache, YTDLP_EXE)
+    else:
+        download_ytdlp(progress, channel)
+    return True
 
 
 def ensure_ytdlp(progress=None, on_status=None):
@@ -208,13 +235,13 @@ def ensure_ytdlp(progress=None, on_status=None):
     return YTDLP_EXE
 
 
-def update_ytdlp(progress=None):
+def update_ytdlp(progress=None, channel="stable"):
     """
-    Обновить yt-dlp свежей версией с GitHub. Скачивание идёт в .part и атомарно
-    заменяет exe (os.replace) — при сбое/офлайне старый файл остаётся на месте.
+    Обновить yt-dlp свежей версией выбранного канала. Скачивание идёт в .part и
+    атомарно заменяет exe (os.replace) — при сбое/офлайне старый файл остаётся.
     progress(frac) — колбэк хода скачивания (0..1). Бросает исключение при сбое.
     """
-    download_ytdlp(progress)
+    download_ytdlp(progress, channel)
     return True
 
 
@@ -311,3 +338,84 @@ def download_deno(progress=None):
 def ffmpeg_location():
     """Папка с ffmpeg/ffprobe для передачи в yt-dlp (--ffmpeg-location)."""
     return TOOLS_DIR if have_ffmpeg() else None
+
+
+# ------------------------------------------------------------------ #
+#  PO Token provider (обход YouTube «HTTP 403» на https/DASH-форматах)
+# ------------------------------------------------------------------ #
+# YouTube требует PO Token (Proof of Origin) для многих форматов — без него
+# загрузка данных отдаёт 403. Плагин bgutil + генератор токенов на нашем deno
+# (script mode). Всё держим под APP_DIR/pot, чтобы легко удалить, если сломается.
+POT_VERSION     = "1.3.1"
+POT_PLUGIN_URL  = ("https://github.com/Brainicism/bgutil-ytdlp-pot-provider/"
+                   f"releases/download/{POT_VERSION}/bgutil-ytdlp-pot-provider.zip")
+POT_SRC_URL     = ("https://github.com/Brainicism/bgutil-ytdlp-pot-provider/"
+                   f"archive/refs/tags/{POT_VERSION}.tar.gz")
+POT_DIR         = os.path.join(APP_DIR, "pot")
+POT_PLUGINS_DIR = os.path.join(POT_DIR, "plugins")     # -> yt-dlp --plugin-dirs
+POT_SERVER_DIR  = os.path.join(POT_DIR, "server")      # -> server_home
+_POT_PLUGIN_PKG = os.path.join(POT_PLUGINS_DIR, "snatchr-pot",
+                               "yt_dlp_plugins", "extractor")
+
+
+def have_pot():
+    """Готов ли PO-token провайдер (плагин + сервер + установленные node_modules)."""
+    return (os.path.isfile(os.path.join(_POT_PLUGIN_PKG, "getpot_bgutil_script.py"))
+            and os.path.isfile(os.path.join(POT_SERVER_DIR, "src", "generate_once.ts"))
+            and os.path.isdir(os.path.join(POT_SERVER_DIR, "node_modules")))
+
+
+def pot_ytdlp_args():
+    """Аргументы yt-dlp для PO-token провайдера ([] если не готов или нет deno)."""
+    if not (have_pot() and have_deno()):
+        return []
+    return ["--plugin-dirs", POT_PLUGINS_DIR,
+            "--extractor-args", "youtubepot-bgutilscript:server_home=" + POT_SERVER_DIR]
+
+
+def setup_pot(progress=None):
+    """Одноразовая установка PO-token провайдера: плагин + сервер + `deno install`.
+    Требует deno. Бросает исключение при сбое (вызывающий работает best-effort)."""
+    import tarfile
+    if not have_deno():
+        raise RuntimeError("deno is required for the PO token provider")
+    os.makedirs(POT_DIR, exist_ok=True)
+
+    # 1) Плагин: берём только базовый и script-провайдер (http-провайдер не нужен —
+    #    иначе каждый запрос сначала стучится на localhost:4416).
+    plug_zip = os.path.join(POT_DIR, "plugin.zip")
+    _download(POT_PLUGIN_URL, plug_zip)
+    os.makedirs(_POT_PLUGIN_PKG, exist_ok=True)
+    with zipfile.ZipFile(plug_zip) as zf:
+        for name in zf.namelist():
+            base = os.path.basename(name)
+            if base in ("getpot_bgutil.py", "getpot_bgutil_script.py"):
+                with zf.open(name) as s, open(os.path.join(_POT_PLUGIN_PKG, base), "wb") as d:
+                    d.write(s.read())
+
+    # 2) Сервер-генератор (src/generate_once.ts + package.json/deno.lock).
+    src_tar = os.path.join(POT_DIR, "src.tar.gz")
+    _download(POT_SRC_URL, src_tar)
+    extract_dir = os.path.join(POT_DIR, "_extract")
+    if os.path.isdir(extract_dir):
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    with tarfile.open(src_tar) as tf:
+        tf.extractall(extract_dir)
+    root = next(os.scandir(extract_dir)).path            # bgutil-…-<ver>/
+    if os.path.isdir(POT_SERVER_DIR):
+        shutil.rmtree(POT_SERVER_DIR, ignore_errors=True)
+    shutil.move(os.path.join(root, "server"), POT_SERVER_DIR)
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    for tmp in (plug_zip, src_tar):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+    # 3) Ставим npm-зависимости генератора нашим deno (без интерактива).
+    r = subprocess.run([DENO_EXE, "install", "--quiet"], cwd=POT_SERVER_DIR,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600, creationflags=CREATE_NO_WINDOW, env=_utf8_env())
+    if not os.path.isdir(os.path.join(POT_SERVER_DIR, "node_modules")):
+        raise RuntimeError("deno install failed: " + (r.stderr or "")[-300:])
+    return True

@@ -63,6 +63,7 @@ def cookie_args(settings):
 def probe(url, no_playlist=True, timeout=60, cookies=None):
     """Информация о ссылке (dict). Бросает RuntimeError при ошибке."""
     args = [tools.YTDLP_EXE, "-J", "--no-warnings"]
+    args += tools.pot_ytdlp_args()      # PO-токен провайдер (обход YouTube 403)
     if cookies:
         args += cookies
     if no_playlist:
@@ -292,10 +293,11 @@ def _expected_path(option, url, settings, title, out_dir):
     return os.path.join(out_dir, base + "." + _merge_ext(option, url, settings))
 
 
-def build_download_args(option, url, settings, title=None, out_dir=None, cookies=True):
+def build_download_args(option, url, settings, title=None, out_dir=None,
+                        cookies=True, impersonate=False):
     """Аргументы yt-dlp для скачивания одиночной ссылки по выбранному варианту.
-    cookies=False — собрать команду БЕЗ кук (для ретрая, когда извлечение кук
-    из браузера падает)."""
+    cookies=False — команда БЕЗ кук (ретрай при сбое извлечения кук).
+    impersonate=True — притворяться браузером через curl_cffi (ретрай на 403)."""
     if out_dir is None:
         out_dir = settings.get("download_path") or os.path.join(
             os.path.expanduser("~"), "Downloads")
@@ -314,6 +316,9 @@ def build_download_args(option, url, settings, title=None, out_dir=None, cookies
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
         f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s",
     ]
+    args += tools.pot_ytdlp_args()      # PO-токен провайдер (обход YouTube 403)
+    if impersonate:
+        args += ["--impersonate", "chrome"]   # обход 403 по TLS-отпечатку
     if cookies:
         args += cookie_args(settings)   # куки: свой файл или браузер
     loc = tools.ffmpeg_location()
@@ -665,6 +670,7 @@ def run_job(option, url, settings, hooks, title=None):
     # Куки применяем best-effort. Если их извлечение из браузера падает (Chrome
     # App-Bound Encryption / залоченная БД), повторяем БЕЗ кук — публичное видео
     # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
+    use_cookies = True
     ok, dest = _stream(build_download_args(option, url, settings, title, job_dir),
                        hooks, log, progress=True)
     # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
@@ -674,11 +680,28 @@ def run_job(option, url, settings, hooks, title=None):
     if (not ok and not hooks.is_stopped() and cookie_args(settings)
             and is_cookie_error(log.text())):
         log.event("Cookie extraction failed — retrying without cookies")
+        use_cookies = False
         _rm_dir(job_dir)
         job_dir = _new_job_dir()
         expected = _expected_path(option, url, settings, title, job_dir)
         ok, dest = _stream(
             build_download_args(option, url, settings, title, job_dir, cookies=False),
+            hooks, log, progress=True)
+        if not hooks.is_stopped():
+            dest = _resolve(dest)
+            ok = bool(dest)
+
+    # HTTP 403 (часто — проверка TLS-отпечатка сервером): повторяем с
+    # impersonation — yt-dlp притворяется настоящим браузером (curl_cffi).
+    if (not ok and not hooks.is_stopped()
+            and "http error 403" in log.text().lower()):
+        log.event("HTTP 403 — retrying with browser impersonation")
+        _rm_dir(job_dir)
+        job_dir = _new_job_dir()
+        expected = _expected_path(option, url, settings, title, job_dir)
+        ok, dest = _stream(
+            build_download_args(option, url, settings, title, job_dir,
+                                cookies=use_cookies, impersonate=True),
             hooks, log, progress=True)
         if not hooks.is_stopped():
             dest = _resolve(dest)

@@ -19,11 +19,12 @@ def defaults():
         "embed_metadata":  False,
         "convert_yt":      False,         # по умолчанию выключена
         "tray_icon":       "",            # имя файла в icons/ ("" => иконка по умолчанию)
-        "theme":           "Decadence",   # стартовая тема для нового пользователя
+        "theme":           "Glass",       # стартовая тема для нового пользователя
         "language":        "English",     # язык интерфейса
         "usage_mode":      "toggle",      # "toggle" (Pinned) | "focus" (Auto-hide)
         "allow_dragging":  False,         # разрешить перетаскивание окна
         "ytdlp_updated":   0,             # когда в последний раз обновляли yt-dlp (epoch)
+        "ytdlp_channel":   "stable",      # канал yt-dlp: "stable" | "nightly"
         "cookies_browser": "auto",        # браузер для cookies ("auto" | chrome | …)
         "cookies_file":    "",            # путь к своему cookies.txt (приоритетнее браузера)
     }

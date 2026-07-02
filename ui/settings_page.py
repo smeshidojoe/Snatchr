@@ -126,8 +126,26 @@ class SettingsPage(WindowDragMixin, QWidget):
         usage_y = sec5_y + s(24)   # больше воздуха под заголовком Usage
         usage_h = self._build_usage_card(pad, usage_y, card_w)
 
-        # --- Кнопки обновления yt-dlp / ffmpeg (под блоком Usage) ------- #
-        self._build_update_buttons(pad, usage_y + usage_h + s(16))
+        # --- Канал yt-dlp (Stable / Nightly) --------------------------- #
+        ch_y = usage_y + usage_h + s(14)
+        self._build_ytdlp_channel(pad, ch_y, card_w)
+
+        # --- Кнопки обновления yt-dlp / ffmpeg / Clear Cache ----------- #
+        self._build_update_buttons(pad, ch_y + s(36))
+
+    def _build_ytdlp_channel(self, x, y, card_w):
+        s = self.app._s
+        self._label("yt-dlp", fonts.font(s(12), "Medium"),
+                    self.TEXT_COLOR, x, y + s(6))
+        seg_w = s(160)
+        seg = SegmentedControl(
+            self, [("Stable", "stable"), ("Nightly", "nightly")],
+            self.settings.get("ytdlp_channel", "stable"),
+            fonts.font(s(11), "Medium"),
+            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9))
+        seg.setGeometry(self.width_ - x - seg_w, y, seg_w, s(30))
+        seg.changed.connect(self.app.set_ytdlp_channel)
+        self._ytdlp_seg = seg
 
     def _build_cookies_card(self, x, y, card_w):
         s = self.app._s

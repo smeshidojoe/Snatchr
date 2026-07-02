@@ -17,11 +17,17 @@ class SetupWorker(QThread):
     progress = Signal(float)      # общий прогресс по всем загрузкам (0..1)
     done = Signal(bool, str)      # (успех, сообщение об ошибке)
 
+    def __init__(self, channel="stable", parent=None):
+        super().__init__(parent)
+        self._channel = channel
+
     def run(self):
         try:
             tasks = []
             if not tools.have_ytdlp():
-                tasks.append(("Downloading yt-dlp…", tools.download_ytdlp, True))
+                tasks.append(("Downloading yt-dlp…",
+                              lambda progress=None: tools.download_ytdlp(progress, self._channel),
+                              True))
             if not tools.have_ffmpeg():
                 tasks.append(("Downloading ffmpeg…", tools.download_ffmpeg, True))
 
@@ -42,13 +48,23 @@ class SetupWorker(QThread):
 
 
 class UpdateYtdlpWorker(QThread):
-    """Переустановка yt-dlp по требованию (кнопка в настройках)."""
+    """Обновление yt-dlp (кнопка в настройках) или переключение канала.
+    activate=True — просто сделать активным бинарь канала (из кэша, если есть)."""
     progress = Signal(float)      # ход скачивания (0..1)
     done = Signal(bool, str)      # (успех, сообщение об ошибке)
 
+    def __init__(self, channel="stable", activate=False, parent=None):
+        super().__init__(parent)
+        self._channel = channel
+        self._activate = activate
+
     def run(self):
         try:
-            tools.update_ytdlp(progress=lambda f: self.progress.emit(float(f)))
+            cb = lambda f: self.progress.emit(float(f))
+            if self._activate:
+                tools.activate_ytdlp_channel(self._channel, progress=cb)
+            else:
+                tools.update_ytdlp(progress=cb, channel=self._channel)
             self.done.emit(True, "")
         except Exception as exc:
             self.done.emit(False, str(exc))
@@ -82,12 +98,30 @@ class EnsureDenoWorker(QThread):
 
 
 class YtdlpAutoUpdateWorker(QThread):
-    """Тихое фоновое обновление yt-dlp (чтобы YouTube не ломал старую версию)."""
+    """Тихое фоновое обновление yt-dlp текущего канала (YouTube ломает старую)."""
+    done = Signal(bool)
+
+    def __init__(self, channel="stable", parent=None):
+        super().__init__(parent)
+        self._channel = channel
+
+    def run(self):
+        try:
+            tools.update_ytdlp(channel=self._channel)
+            self.done.emit(True)
+        except Exception:
+            self.done.emit(False)
+
+
+class EnsurePotWorker(QThread):
+    """Тихо ставит PO-token провайдер (плагин + генератор на deno), если его нет.
+    Требует deno; ошибку глотаем — без провайдера просто нет обхода 403."""
     done = Signal(bool)
 
     def run(self):
         try:
-            tools.update_ytdlp()
+            if not tools.have_pot():
+                tools.setup_pot()
             self.done.emit(True)
         except Exception:
             self.done.emit(False)
