@@ -38,10 +38,17 @@ class App(QWidget):
 
         # Масштаб авто по разрешению экрана. Линейный пересчёт через две точки:
         # 1080p (raw 0.75) -> 0.85, 1440p (raw 1.0) -> 1.0  =>  scale = raw*0.6 + 0.4.
-        screen = QGuiApplication.primaryScreen().geometry()
-        raw = min(screen.width() / 2560, screen.height() / 1440)
-        self._base_scale = raw * 0.6 + 0.4
-        self._base_scale = max(0.6, min(self._base_scale, 1.4))
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.geometry()
+        raw = min(geo.width() / 2560, geo.height() / 1440)
+        scale = max(0.6, min(raw * 0.6 + 0.4, 1.4))
+        # На экранах < 1440p (напр. 1080p) текст выходил слишком мелким (масштаб
+        # 0.7–0.85). Поднимаем до ~0.95, но не настолько, чтобы окно настроек не
+        # поместилось по высоте (защита для маленьких/сильно масштабированных
+        # экранов). 1440p и выше не затрагиваются — там масштаб уже >= 0.95.
+        avail_h = screen.availableGeometry().height()
+        fit_cap = avail_h / 560.0        # ~высота окна настроек в базовых единицах
+        self._base_scale = max(scale, min(0.95, fit_cap))
         self._recompute_dims()
 
         # Трей выставляется из main.py после создания окна.
@@ -100,6 +107,18 @@ class App(QWidget):
         self._setup_worker = None
         self._first_run_checked = False
 
+        # Мониторинг буфера обмена (тост «Скачать это?»). Подключаем, если включено.
+        self._clip_last = ""
+        self._clip_connected = False
+        self.apply_clipboard_watch()
+
+        # Spotlight (Ctrl+Shift+D) — создаётся лениво при первом вызове хоткея.
+        self.spotlight = None
+        self._win_dl = None            # активная одиночная загрузка окна (для моста)
+        self._hotkey = None
+        self._apply_hotkey()
+        QApplication.instance().aboutToQuit.connect(self._stop_hotkey)
+
     # ------------------------------------------------------------------ #
     def _s(self, value):
         return int(value * self.scale)
@@ -116,7 +135,7 @@ class App(QWidget):
 
         self.WIN_W          = self._s(492)
         self.WIN_H_FULL     = self._s(480)
-        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(140)   # +Cookies +yt-dlp канал
+        self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(70)    # фикс.; остальное — скролл
         self.WIN_H_ABOUT    = self._s(480)
         self.WIN_H          = self.WIN_H_FULL
         self.CORNER_R       = self._s(14)
@@ -193,6 +212,20 @@ class App(QWidget):
         i18n.set_language(self.settings.get("language", "English"))
         self._load_window_colors()
 
+        # Spotlight кэширует палитру при создании — пересоздадим при смене темы/языка.
+        if self.spotlight is not None:
+            self.spotlight.hide_spotlight()
+            self.spotlight.deleteLater()
+            self.spotlight = None
+
+        # Запоминаем позицию прокрутки настроек, чтобы после пересборки (смена
+        # темы/языка из блока Usage) остаться на том же месте, а не улететь наверх.
+        scroll_pos = 0
+        try:
+            scroll_pos = self.settings_page._scroll_area.verticalScrollBar().value()
+        except Exception:
+            pass
+
         # Удаляем старые страницы и панель. Кнопки нижней панели привязаны к окну,
         # поэтому их убираем отдельно (иначе остаются «фантомные» кнопки).
         self.bottom_bar.teardown()
@@ -202,15 +235,19 @@ class App(QWidget):
 
         self._build_pages()
 
-        # Тему/язык меняют на странице About — на ней и остаёмся.
-        self.current_page = "about"
-        self.set_window_height(self.WIN_H_ABOUT)
-        self.bottom_bar.set_page_mode("about")
-        self.about_page.setGeometry(self.content_x, self.content_y,
-                                    self.content_w, self.about_content_h)
-        self.about_page.show()
-        self.about_page.raise_()
-        self.bottom_bar.btn_settings.raise_()
+        # Тему/язык меняют на странице настроек — на ней и остаёмся.
+        self.current_page = "settings"
+        self.set_window_height(self.WIN_H_SETTINGS)
+        self.bottom_bar.set_page_mode("settings")
+        self.settings_page.setGeometry(self.content_x, self.content_y,
+                                       self.content_w, self.content_h)
+        self.settings_page.show()
+        self.settings_page.raise_()
+        # Восстанавливаем позицию прокрутки на новой (пересобранной) странице.
+        try:
+            self.settings_page._scroll_area.verticalScrollBar().setValue(scroll_pos)
+        except Exception:
+            pass
         self.update()
         self._crossfade(snap)                   # плавный переход к новой теме
 
@@ -517,8 +554,13 @@ class App(QWidget):
             return
         from core import updater
         if updater.restart_to_update():
-            QApplication.instance().quit()
-        # Если не frozen (разработка) — апдеплоится при следующем ручном запуске.
+            # Немедленно и жёстко выходим: onefile-процесс должен освободить exe,
+            # чтобы помощник смог его подменить (обычный quit может задержаться из-за
+            # фоновых потоков — тогда файл остаётся залоченным и апдейт не проходит).
+            if self.tray is not None:
+                self.tray.icon.hide()
+            os._exit(0)
+        # Если не frozen (разработка) — апдейт применится при следующем ручном запуске.
 
     def _maybe_first_run_setup(self):
         """После первого открытия окна: если бинарников нет (yt-dlp/ffmpeg/
@@ -587,6 +629,100 @@ class App(QWidget):
         self.save_settings()
 
     # ------------------------------------------------------------------ #
+    #  Spotlight (Ctrl+Shift+D) + единая история скачиваний
+    # ------------------------------------------------------------------ #
+    def _apply_hotkey(self):
+        """(Пере)регистрирует глобальный хоткей по текущим настройкам."""
+        self._stop_hotkey()
+        if not self.settings.get("spotlight_enabled", True):
+            return
+        from core.hotkey import HotkeyManager
+        combo = self.settings.get("spotlight_combo", "ctrl+shift+d")
+        self._hotkey = HotkeyManager(combo, self)
+        self._hotkey.triggered.connect(self.toggle_spotlight)
+        self._hotkey.start()
+
+    def _stop_hotkey(self):
+        if self._hotkey is not None:
+            self._hotkey.stop()
+            self._hotkey = None
+
+    def toggle_spotlight(self):
+        if self.spotlight is None:
+            from ui.spotlight import Spotlight
+            self.spotlight = Spotlight(self)
+            if self._win_dl is not None:      # уже идёт загрузка из окна — покажем
+                self.spotlight.attach_window_download(self._win_dl)
+        self.spotlight.toggle()
+
+    # --- мост: загрузка из окна программы отражается в истории Spotlight --- #
+    def report_win_dl_start(self, url, worker, convert):
+        import uuid
+        dl_id = uuid.uuid4().hex[:12]
+        self._win_dl = {"id": dl_id, "url": url, "worker": worker,
+                        "frac": 0.0, "convert": convert}
+        if self.spotlight is not None:
+            self.spotlight.attach_window_download(self._win_dl)
+        return dl_id
+
+    def report_win_dl_progress(self, frac):
+        if self._win_dl is None:
+            return
+        self._win_dl["frac"] = frac
+        if self.spotlight is not None:
+            self.spotlight.update_window_download(self._win_dl["id"], frac)
+
+    def report_win_dl_done(self, dest, url="", title=None):
+        d = self._win_dl
+        self._win_dl = None
+        entry = self.record_download(dest, url, title, notify_spotlight=False) \
+            if dest else None
+        if self.spotlight is not None and d is not None:
+            self.spotlight.finish_window_download(d["id"], entry)
+        elif entry is not None and self.spotlight is not None:
+            self.spotlight.on_external_download(entry)
+
+    def report_win_dl_fail(self):
+        d = self._win_dl
+        self._win_dl = None
+        if self.spotlight is not None and d is not None:
+            self.spotlight.remove_window_download(d["id"])
+
+    # --- настройки Spotlight ------------------------------------------- #
+    def set_spotlight_enabled(self, on):
+        self.settings["spotlight_enabled"] = bool(on)
+        self.save_settings()
+        self._apply_hotkey()
+        if not on and self.spotlight is not None:
+            self.spotlight.hide_spotlight()
+
+    def set_spotlight_dismiss(self, mode):
+        self.settings["spotlight_dismiss"] = mode
+        self.save_settings()
+
+    def set_spotlight_combo(self, combo):
+        self.settings["spotlight_combo"] = combo
+        self.save_settings()
+        self._apply_hotkey()
+
+    def suspend_hotkey(self):
+        """Временно снять глобальный хоткей (на время захвата новой комбинации в
+        настройках — иначе нажатие текущего сочетания заодно откроет Spotlight)."""
+        self._stop_hotkey()
+
+    def resume_hotkey(self):
+        self._apply_hotkey()
+
+    def record_download(self, dest, url, title=None, notify_spotlight=True):
+        """Добавляет скачанный файл в единую историю и (если Spotlight открыт)
+        наезжает записью в список. Возвращает запись истории или None."""
+        from core import history
+        entry = history.add(dest, url, title)
+        if entry is not None and notify_spotlight and self.spotlight is not None:
+            self.spotlight.on_external_download(entry)
+        return entry
+
+    # ------------------------------------------------------------------ #
     #  Фоновая загрузка из трея («Вставить»): Best Quality, окно не нужно.
     # ------------------------------------------------------------------ #
     def start_tray_download(self, url):
@@ -610,6 +746,7 @@ class App(QWidget):
 
         option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
         self._tray_convert = downloader.should_convert(option, url, self.settings)
+        self._tray_url = url
 
         from core.workers import DownloadWorker
         self._tray_dl = DownloadWorker(option, url, self.settings, None, self)
@@ -619,6 +756,62 @@ class App(QWidget):
         self._tray_dl.start()
         if self.tray is not None:
             self.tray.animator.start()
+
+    # ------------------------------------------------------------------ #
+    #  Мониторинг буфера обмена
+    # ------------------------------------------------------------------ #
+    def set_clipboard_watch(self, on):
+        self.settings["clipboard_watch"] = bool(on)
+        self.save_settings()
+        self.apply_clipboard_watch()
+
+    def set_toast_position(self, mode):
+        self.settings["toast_position"] = mode
+        self.save_settings()
+
+    def apply_clipboard_watch(self):
+        """Подключает/отключает слежение за буфером по настройке."""
+        clip = QApplication.clipboard()
+        if self._clip_connected:
+            try:
+                clip.dataChanged.disconnect(self._on_clipboard_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self._clip_connected = False
+        if self.settings.get("clipboard_watch", False):
+            # Запоминаем текущее содержимое, чтобы не всплыть на «старой» ссылке.
+            try:
+                self._clip_last = (clip.text() or "").strip()
+            except Exception:
+                self._clip_last = ""
+            clip.dataChanged.connect(self._on_clipboard_changed)
+            self._clip_connected = True
+
+    def _on_clipboard_changed(self):
+        from core import downloader
+        try:
+            text = (QApplication.clipboard().text() or "").strip()
+        except Exception:
+            return
+        if not text or text == self._clip_last:
+            return
+        self._clip_last = text
+        if self.tray is not None and downloader.is_supported_url(text):
+            from core.i18n import tr
+            self.tray.toast_download(text, tr("Download this?"))
+
+    def on_toast_clicked(self, url):
+        """Клик по тосту «Скачать это?» — запускаем фоновую загрузку."""
+        if url:
+            self.start_tray_download(url)
+
+    def is_tray_downloading(self):
+        return getattr(self, "_tray_dl", None) is not None
+
+    def stop_tray_download(self):
+        dl = getattr(self, "_tray_dl", None)
+        if dl is not None:
+            dl.stop()
 
     def _on_tray_progress(self, p):
         if self.tray is None:
@@ -633,17 +826,53 @@ class App(QWidget):
     def _on_tray_done(self, dest):
         from core.i18n import tr
         self._tray_dl = None
+        self._copy_file_to_clipboard(dest)      # готовый файл — в буфер (можно вставить)
+        self.record_download(dest, getattr(self, "_tray_url", ""), None)  # в историю
         if self.tray is not None:
+            self.tray.close_menus()      # убрать устаревшую кнопку Stop, если меню открыто
             self.tray.animator.finish(True)
-            folder = os.path.basename((self.settings.get("download_path") or "").rstrip("\\/"))
-            self.tray.notify(f"{tr('Saved to')} {folder}" if folder else tr("Saved to"))
+            name = os.path.basename(dest) if dest else ""
+            # Тост об успехе — всегда в углу монитора, где мышь (независимо от режима).
+            self.tray.show_toast(tr("Downloaded"), name,
+                                 lambda d=dest: self._open_in_folder(d), position="corner")
 
     def _on_tray_failed(self, msg):
+        from core.i18n import tr
         self._tray_dl = None
         if self.tray is not None:
+            self.tray.close_menus()      # убрать устаревшую кнопку Stop, если меню открыто
             self.tray.animator.finish(False)
             if (msg or "").strip() and msg.strip() != "Stopped":
-                self.tray.notify(msg)
+                self.tray.show_toast(tr("Download failed"), msg, None, position="corner")
+
+    def _copy_file_to_clipboard(self, path):
+        """Кладёт скачанный файл в буфер как «файл» (Qt отдаёт CF_HDROP на Windows)
+        — сразу вставляется (Ctrl+V) в мессенджер/проводник."""
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            from PySide6.QtCore import QMimeData, QUrl
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(os.path.abspath(path))])
+            QApplication.clipboard().setMimeData(mime)
+        except Exception:
+            pass
+
+    def _open_in_folder(self, path):
+        """Клик по тосту об успехе — открыть файл в проводнике (или папку загрузок)."""
+        import subprocess
+        try:
+            if path and os.path.isfile(path):
+                subprocess.Popen('explorer /select,"%s"' % os.path.normpath(path))
+                return
+        except Exception:
+            pass
+        folder = self.settings.get("download_path")
+        try:
+            if folder and os.path.isdir(folder):
+                os.startfile(folder)
+        except Exception:
+            pass
 
     def _show_overlay(self, title, worker, on_done=None):
         """Показывает модальный оверлей с заголовком и общей полосой прогресса,

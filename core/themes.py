@@ -368,18 +368,184 @@ _GLASS = {
     "error":        "#ff3b30",
 }
 
+# --- Glass Night (тёмное матовое стекло, системные цвета Apple Dark) --------- #
+_GLASS_NIGHT = {
+    "grad_center":  "#2a3140",
+    "grad_edge":    "#12151c",
+    "border":       "#3b4351",
+    "bg":           "#191d25",
+    "page_bg":      "#1e2330",
+
+    "icon":         "#9aa7bd",
+    "icon_hover":   "#eef2f8",
+    "separator":    "#333a47",
+
+    "title":        "#f0f3f8",
+    "text":         "#c3ccda",
+    "muted":        "#7a869a",
+    "on_accent":    "#ffffff",
+
+    "accent":       "#0a84ff",
+    "accent_hover": "#3396ff",
+    "link":         "#4a9dff",
+    "link_hover":   "#6cb0ff",
+    "choose":       "#4a9dff",
+    "choose_bg":    "rgba(10, 132, 255, 0.14)",
+    "choose_bg_h":  "rgba(10, 132, 255, 0.24)",
+
+    "card_bg":      "#232a37",
+    "field_bg":     "#1e2531",
+
+    "cb_off":       "#3a4250",
+    "cb_on":        "#0a84ff",
+
+    "seg_bg":       "#262e3b",
+    "seg_sel":      "#0a84ff",
+
+    "sel_chip":     "#2a3340",
+    "sel_chevron":  "#c3ccda",
+
+    "download_bg":       "#0a84ff",
+    "download_bg_hover": "#3396ff",
+    "analyze_bg":        "#ff9f0a",
+    "analyze_bg_hover":  "#ffb340",
+    "stop_bg":           "#ff453a",
+    "stop_bg_hover":     "#ff6961",
+    "disabled_bg":       "#262c37",
+    "disabled_text":     "#5c6675",
+
+    "prog_track":   "#2a323f",
+    "ok":           "#30d158",
+    "error":        "#ff453a",
+}
+
+
+# --- Dark Glass (нейтральное тёмное стекло — оттенки из окна Spotlight) ------ #
+_DARK_GLASS = {
+    "grad_center":  "#1c1c1e",
+    "grad_edge":    "#080809",
+    "border":       "#3a3a3d",
+    "bg":           "#141416",
+    "page_bg":      "#161618",
+
+    "icon":         "#98989d",
+    "icon_hover":   "#f2f2f7",
+    "separator":    "#2c2c2e",
+
+    "title":        "#f2f2f7",
+    "text":         "#d6d6db",
+    "muted":        "#8e8e93",
+    "on_accent":    "#ffffff",
+
+    "accent":       "#0a84ff",
+    "accent_hover": "#3396ff",
+    "link":         "#0a84ff",
+    "link_hover":   "#3396ff",
+    "choose":       "#0a84ff",
+    "choose_bg":    "rgba(255, 255, 255, 0.06)",
+    "choose_bg_h":  "rgba(255, 255, 255, 0.12)",
+
+    "card_bg":      "#1c1c1e",
+    "field_bg":     "#1a1a1c",
+
+    "cb_off":       "#48484a",
+    "cb_on":        "#0a84ff",
+
+    "seg_bg":       "#242426",
+    "seg_sel":      "#0a84ff",
+
+    "sel_chip":     "#2a2a2c",
+    "sel_chevron":  "#d6d6db",
+
+    "download_bg":       "#0a84ff",
+    "download_bg_hover": "#3396ff",
+    "analyze_bg":        "#ff9f0a",
+    "analyze_bg_hover":  "#ffb340",
+    "stop_bg":           "#ff453a",
+    "stop_bg_hover":     "#ff6961",
+    "disabled_bg":       "#242426",
+    "disabled_text":     "#636366",
+
+    "prog_track":   "#2a2a2c",
+    "ok":           "#30d158",
+    "error":        "#ff453a",
+}
+
+
+# --- Blackout (однотонная глубокая темнота, сине-серый акцент) --------------- #
+_BLACKOUT = {
+    "grad_center":  "#121212",   # без градиента — ровный фон #121212
+    "grad_edge":    "#121212",
+    "border":       "#2c2c2c",
+    "bg":           "#121212",
+    "page_bg":      "#161616",
+
+    "icon":         "#a0a0a0",   # заголовки категорий + иконки/Exit (общий ключ)
+    "icon_hover":   "#3182ce",
+    "separator":    "#2c2c2c",
+
+    "title":        "#e0e0e0",
+    "text":         "#e0e0e0",
+    "muted":        "#606060",
+    "on_accent":    "#e2e8f0",
+
+    "accent":       "#2a4365",
+    "accent_hover": "#345182",
+    "link":         "#3182ce",
+    "link_hover":   "#4a9be0",
+    "choose":       "#a0a0a0",
+    "choose_bg":    "#242424",
+    "choose_bg_h":  "#2e2e2e",
+
+    "card_bg":      "#1e1e1e",
+    "field_bg":     "#1e1e1e",
+
+    "cb_off":       "#2c2c2c",
+    "cb_on":        "#2a4365",
+
+    "seg_bg":       "#1e1e1e",
+    "seg_sel":      "#2a4365",
+
+    "sel_chip":     "#242424",
+    "sel_chevron":  "#888888",
+
+    "download_bg":       "#242424",
+    "download_bg_hover": "#2e2e2e",
+    "analyze_bg":        "#4a4028",
+    "analyze_bg_hover":  "#5a4e30",
+    "stop_bg":           "#9b2c2c",
+    "stop_bg_hover":     "#b03636",
+    "disabled_bg":       "#1e1e1e",
+    "disabled_text":     "#606060",
+
+    "prog_track":   "#2c2c2c",
+    "ok":           "#34c759",
+    "error":        "#e05a5a",
+}
+
 
 THEMES = {
     "Glass":          {"assets": "Deep Ocean", "palette": _GLASS},
+    "Dark Glass":     {"assets": "Deep Ocean", "palette": _DARK_GLASS},
+    "Glass Night":    {"assets": "Deep Ocean", "palette": _GLASS_NIGHT},
     "Deep Ocean":     {"assets": "Deep Ocean", "palette": _DEEP_OCEAN},
     "White Rose":     {"assets": "Deep Ocean", "palette": _ROSE_NEGATIVE},
     "Dark Pulse":     {"assets": "Deep Ocean", "palette": _DARK_PULSE},
     "Decadence":      {"assets": "Deep Ocean", "palette": _DECADENCE},
     "Crimson Forest": {"assets": "Deep Ocean", "palette": _CRIMSON_FOREST},
     "Vibrancecore":   {"assets": "Deep Ocean", "palette": _VIBRANCECORE},
+    "Blackout":       {"assets": "Deep Ocean", "palette": _BLACKOUT},
 }
 
-DEFAULT_THEME = "Deep Ocean"
+DEFAULT_THEME = "Glass"
+
+# Темы, временно скрытые из выбора (палитры оставлены для быстрого возврата).
+DISABLED_THEMES = {"Glass Night", "Dark Pulse"}
+
+
+def enabled_themes():
+    """Список тем для селектора (без временно отключённых)."""
+    return [t for t in THEMES if t not in DISABLED_THEMES]
 
 
 def palette(theme):

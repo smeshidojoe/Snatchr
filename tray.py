@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QSystemTrayIcon, QWidget, QApplication
 
 from core.constants import ICONS_DIR
 from core import themes, fonts, tools
-from core.icons import tint_pixmap
+from core.icons import tint_pixmap, raw_pixmap, COLORED_ICONS
 from core.i18n import tr
 from ui import anim
 
@@ -248,6 +248,15 @@ class TrayAnimator:
         self._t = 0.0
         if not self._timer.isActive():
             self._timer.start()
+
+    def abort(self):
+        """Мгновенно убрать кольцо без галочки (напр., Spotlight снова открыт, а
+        загрузка ещё идёт — прогресс теперь виден в окне Spotlight)."""
+        if self._phase == "idle":
+            return
+        self._timer.stop()
+        self._phase = "idle"
+        self._tray.icon.setIcon(self._tray._resolve_icon())
 
     # --- покадровая логика --------------------------------------------- #
     def _tick(self):
@@ -500,6 +509,119 @@ class TrayHoldWatcher:
 
 
 # ------------------------------------------------------------------ #
+#  Кастомный тост у трея (надёжнее нативного балуна Windows)
+# ------------------------------------------------------------------ #
+class Toast(QWidget):
+    """Небольшой тост в правом нижнем углу. Нативные уведомления Windows часто
+    не показываются (Focus Assist / настройки), поэтому рисуем свой. Клик —
+    выполнить действие, ✕ — закрыть, авто-скрытие через ~7 c."""
+
+    def __init__(self, app, title, subtitle, on_click):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
+                         | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+                         | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._app = app
+        self._on_click = on_click
+        s = app._s
+        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._bg = QColor(pal["card_bg"])
+        self._border = QColor(pal["border"])
+        self._title_col = QColor(pal["title"])
+        self._muted = QColor(pal["muted"])
+        self._accent = QColor(pal["accent"])
+        self._radius = s(12)
+        self._title = title
+        self._sub = subtitle
+        self._title_font = fonts.font(s(12), "Semibold")
+        self._sub_font = fonts.font(s(10), "Regular")
+        self._w, self._h = s(252), s(62)
+        self._pad = s(16)
+        self._close_r = QRectF(self._w - s(24), s(6), s(18), s(18))
+        self.resize(self._w, self._h)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(7000)
+        self._timer.timeout.connect(self._dismiss)
+
+    def show_at(self, mode):
+        """mode='corner' — правый нижний угол монитора, на котором курсор;
+        mode='cursor' — рядом с указателем. Учитывает мультимонитор."""
+        cur = QCursor.pos()
+        screen = QGuiApplication.screenAt(cur) or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        m = self._app._s(14)
+        if mode == "cursor":
+            x = cur.x() + m
+            y = cur.y() + m
+            if x + self._w > avail.right():
+                x = cur.x() - self._w - m
+            if y + self._h > avail.bottom():
+                y = cur.y() - self._h - m
+        else:  # corner — угол того монитора, где мышь
+            x = avail.right() - self._w - m
+            y = avail.bottom() - self._h - m
+        x = max(avail.left(), min(x, avail.right() - self._w))
+        y = max(avail.top(), min(y, avail.bottom() - self._h))
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        anim.fade(self, 0.0, 1.0, 200)
+        self._timer.start()
+
+    def _dismiss(self):
+        self._timer.stop()
+        anim.fade(self, 1.0, 0.0, 180, on_finished=self.close)
+
+    def mouseReleaseEvent(self, event):
+        self._timer.stop()
+        # ПКМ — просто закрыть тост; ✕ — тоже закрыть; ЛКМ — запустить загрузку.
+        if event.button() == Qt.RightButton or self._close_r.contains(event.position()):
+            self._dismiss()
+            return
+        cb = self._on_click
+        self.close()
+        if cb:
+            QTimer.singleShot(0, cb)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        s = self._app._s
+        w, h = self.width(), self.height()
+        p.setPen(QPen(self._border, 1))
+        p.setBrush(self._bg)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), self._radius, self._radius)
+        # акцентная полоска слева
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._accent)
+        p.drawRoundedRect(QRectF(s(7), h / 2 - s(12), s(3), s(24)), s(1.5), s(1.5))
+        tx = self._pad + s(2)
+        p.setFont(self._title_font)
+        p.setPen(self._title_col)
+        p.drawText(QRectF(tx, s(9), w - tx - s(22), s(20)),
+                   Qt.AlignVCenter | Qt.AlignLeft, self._title)
+        p.setFont(self._sub_font)
+        p.setPen(self._muted)
+        fm = QFontMetrics(self._sub_font)
+        sub = fm.elidedText(self._sub, Qt.ElideRight, int(w - tx - self._pad))
+        p.drawText(QRectF(tx, s(31), w - tx - self._pad, s(18)),
+                   Qt.AlignVCenter | Qt.AlignLeft, sub)
+        # ✕ (пожирнее и заметнее)
+        cr = self._close_r
+        xpen = QPen(self._muted, max(2.0, s(2.2)))
+        xpen.setCapStyle(Qt.RoundCap)
+        p.setPen(xpen)
+        p.drawLine(QPointF(cr.left() + s(4), cr.top() + s(4)),
+                   QPointF(cr.right() - s(4), cr.bottom() - s(4)))
+        p.drawLine(QPointF(cr.right() - s(4), cr.top() + s(4)),
+                   QPointF(cr.left() + s(4), cr.bottom() - s(4)))
+        p.end()
+
+
+# ------------------------------------------------------------------ #
 #  Иконка в системном трее
 # ------------------------------------------------------------------ #
 class TrayIcon:
@@ -511,6 +633,7 @@ class TrayIcon:
         self._hold_menu = None
         self._hold_watcher = None
         self._suppress_toggle = False
+        self._toast = None             # активный кастомный тост «Скачать это?»
         self._build_icon()
 
     def _default_icon(self):
@@ -534,8 +657,11 @@ class TrayIcon:
         if name:
             path = os.path.join(ICONS_DIR, name + ".png")
             if os.path.isfile(path):
-                color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
-                pm = tint_pixmap(path, color, 64)
+                if name in COLORED_ICONS:      # цветные (play) — не перекрашиваем
+                    pm = raw_pixmap(path, 64)
+                else:
+                    color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
+                    pm = tint_pixmap(path, color, 64)
                 if pm is not None and not pm.isNull():
                     return QIcon(pm)
         return self._default_icon()
@@ -550,8 +676,9 @@ class TrayIcon:
         # Контекстное меню (ПКМ) рисуем сами — нативное QMenu не ставим.
         self.icon.activated.connect(self._on_activated)
         self.animator = TrayAnimator(self)
-        # Меню по зажатию ЛКМ (клики оставляем прежней логике open/close окна).
-        self._hold_watcher = TrayHoldWatcher(self)
+        # Меню по зажатию ЛКМ пока отключено (класс TrayHoldWatcher оставлен на
+        # будущее). ЛКМ работает как обычно (open/close окна), меню — только ПКМ.
+        self._hold_watcher = None
 
     def set_icon(self, name):
         """Сменить иконку трея на лету (name — имя файла без расширения)."""
@@ -564,6 +691,22 @@ class TrayIcon:
             self.icon.showMessage(title, text, QSystemTrayIcon.Information, 3500)
         except Exception:
             pass
+
+    def show_toast(self, title, subtitle, on_click=None, position="corner"):
+        """Показать кастомный тост (предыдущий закрывается)."""
+        if self._toast is not None:
+            try:
+                self._toast.close()
+            except Exception:
+                pass
+        self._toast = Toast(self.app, title, subtitle, on_click)
+        self._toast.show_at(position)
+
+    def toast_download(self, url, title):
+        """Тост «Скачать это?»: клик — фоновая загрузка url, ✕ — закрыть.
+        Позиция — по настройке (угол / у курсора)."""
+        self.show_toast(title, url, lambda u=url: self.app.on_toast_clicked(u),
+                        self.app.settings.get("toast_position", "corner"))
 
     # --- события трея -------------------------------------------------- #
     def suppress_next_toggle(self):
@@ -588,15 +731,28 @@ class TrayIcon:
             self._show_menu()
 
     def _menu_items(self):
-        return [
-            (tr("Paste"), self._paste),
-            (tr("Open"),  self._show_app),
-            (tr("Exit"),  self._quit_app),
-        ]
+        # Во время фоновой загрузки (Paste) первый пункт — Stop (как в окне).
+        if self.app.is_tray_downloading():
+            first = (tr("Stop"), self._stop_paste)
+        else:
+            first = (tr("Paste"), self._paste)
+        return [first, (tr("Open"), self._show_app), (tr("Exit"), self._quit_app)]
 
     def _show_menu(self):
         self._menu_popup = TrayMenu(self.app, self._menu_items())
         self._menu_popup.popup_at(QCursor.pos())
+
+    def close_menus(self):
+        """Закрыть открытое контекстное меню (напр., по завершении фонового Job —
+        иначе останется устаревшая кнопка Stop)."""
+        for m in (self._menu_popup, self._hold_menu):
+            if m is not None:
+                try:
+                    m.close()
+                except Exception:
+                    pass
+        self._menu_popup = None
+        self._hold_menu = None
 
     def show_menu_hold(self):
         """Меню по зажатию ЛКМ; ведётся из TrayHoldWatcher. Возвращает виджет."""
@@ -612,6 +768,9 @@ class TrayIcon:
         except Exception:
             pass
         self.app.start_tray_download(text.strip())
+
+    def _stop_paste(self):
+        self.app.stop_tray_download()
 
     def _toggle_app(self):
         self.app.toggle_window()

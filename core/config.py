@@ -16,7 +16,6 @@ def defaults():
     return {
         "download_path":   os.path.join(os.path.expanduser("~"), "Downloads"),
         "embed_thumbnail": False,
-        "embed_metadata":  False,
         "convert_yt":      False,         # по умолчанию выключена
         "tray_icon":       "",            # имя файла в icons/ ("" => иконка по умолчанию)
         "theme":           "Glass",       # стартовая тема для нового пользователя
@@ -25,8 +24,13 @@ def defaults():
         "allow_dragging":  False,         # разрешить перетаскивание окна
         "ytdlp_updated":   0,             # когда в последний раз обновляли yt-dlp (epoch)
         "ytdlp_channel":   "stable",      # канал yt-dlp: "stable" | "nightly"
+        "clipboard_watch": False,         # следить за буфером и предлагать скачивание
+        "toast_position":  "corner",      # тост: "corner" (угол) | "cursor" (у мыши)
         "cookies_browser": "auto",        # браузер для cookies ("auto" | chrome | …)
         "cookies_file":    "",            # путь к своему cookies.txt (приоритетнее браузера)
+        "spotlight_enabled": True,        # включён ли Spotlight (глобальный хоткей)
+        "spotlight_combo":   "ctrl+shift+d",  # сочетание вызова Spotlight
+        "spotlight_dismiss": "focus",     # "focus" (скрывать при потере фокуса) | "manual"
     }
 
 

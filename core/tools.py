@@ -365,9 +365,14 @@ def have_pot():
             and os.path.isdir(os.path.join(POT_SERVER_DIR, "node_modules")))
 
 
-def pot_ytdlp_args():
-    """Аргументы yt-dlp для PO-token провайдера ([] если не готов или нет deno)."""
+def pot_ytdlp_args(url=""):
+    """Аргументы yt-dlp для PO-token провайдера. PO-токен нужен только YouTube,
+    поэтому для остальных сайтов провайдер не подключаем (быстрее). Пустой url =
+    «неизвестно» -> подключаем на всякий случай. [] если не готов/нет deno."""
     if not (have_pot() and have_deno()):
+        return []
+    u = (url or "").lower()
+    if url and not ("youtube.com" in u or "youtu.be" in u):
         return []
     return ["--plugin-dirs", POT_PLUGINS_DIR,
             "--extractor-args", "youtubepot-bgutilscript:server_home=" + POT_SERVER_DIR]

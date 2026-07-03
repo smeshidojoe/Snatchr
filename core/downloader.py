@@ -54,22 +54,111 @@ def browser_cookie_args(settings):
     return ["--cookies-from-browser", b] if b else []
 
 
+# Кэш браузерных кук: расшифровка базы браузера на каждый вызов yt-dlp медленная,
+# поэтому первый раз дампим куки в файл (roaming/Snatchr/cookies/cookies.txt) и
+# дальше переиспользуем его копии. Свежесть — TTL, чтобы куки не «протухали».
+_COOKIES_DIR   = os.path.join(APP_DIR, "cookies")
+_CANON_COOKIES = os.path.join(_COOKIES_DIR, "cookies.txt")
+_COOKIE_TTL    = 1200          # сек (20 мин)
+_cold_pending  = False         # идёт первый (холодный) дамп кук из браузера
+_cold_started  = 0.0
+
+
+def _canon_fresh():
+    try:
+        return (os.path.isfile(_CANON_COOKIES)
+                and time.time() - os.path.getmtime(_CANON_COOKIES) < _COOKIE_TTL)
+    except OSError:
+        return False
+
+
+def _del_cookie_copy(args):
+    """Удаляет приватную копию кук (use_*.txt) из args сразу после запуска —
+    она одноразовая (нужна только на один запуск yt-dlp)."""
+    try:
+        for i, a in enumerate(args):
+            if a == "--cookies" and i + 1 < len(args):
+                p = args[i + 1]
+                if os.path.basename(p).startswith("use_"):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                return
+    except Exception:
+        pass
+
+
+def _sweep_cookie_copies():
+    """Удаляет устаревшие приватные копии кук (use_*.txt старше 5 мин) — страховка
+    на случай, если процесс не успел удалить свою копию (краш/kill)."""
+    try:
+        now = time.time()
+        for n in os.listdir(_COOKIES_DIR):
+            if n.startswith("use_") and n.endswith(".txt"):
+                p = os.path.join(_COOKIES_DIR, n)
+                try:
+                    if now - os.path.getmtime(p) > 300:
+                        os.remove(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
 def cookie_args(settings):
-    """Куки, которые применяем ВСЕГДА: свой файл (если задан), иначе — браузер."""
-    return file_cookie_args(settings) or browser_cookie_args(settings)
+    """Куки: свой файл юзера (приоритет), иначе браузерные — с кэшем в файл, чтобы
+    не расшифровывать базу браузера при каждом вызове.
+
+    Первый вызов за TTL тянет из браузера И дампит в cookies.txt (yt-dlp сам
+    пишет jar в файл, переданный через --cookies); далее отдаём ПРИВАТНУЮ копию
+    этого файла (yt-dlp перезаписывает переданный файл — копия защищает
+    канонический при параллельных загрузках). При любом сбое честно откатываемся
+    на прямое чтение браузера — загрузка не ломается."""
+    global _cold_pending, _cold_started
+    fc = file_cookie_args(settings)
+    if fc:
+        return fc
+    bc = browser_cookie_args(settings)
+    if not bc:
+        return []
+    try:
+        os.makedirs(_COOKIES_DIR, exist_ok=True)
+    except OSError:
+        return bc
+    if _canon_fresh():
+        _cold_pending = False
+        try:
+            copy = os.path.join(_COOKIES_DIR, "use_%d.txt" % time.time_ns())
+            shutil.copyfile(_CANON_COOKIES, copy)
+            _sweep_cookie_copies()
+            return ["--cookies", copy]
+        except OSError:
+            return bc
+    # Холодный кэш: дампим из браузера в канонический. Пока первый дамп идёт,
+    # параллельные вызовы просто читают браузер (без записи файла) — чтобы не
+    # писать один файл из нескольких процессов.
+    if _cold_pending and (time.time() - _cold_started) < 60:
+        return bc
+    _cold_pending = True
+    _cold_started = time.time()
+    return bc + ["--cookies", _CANON_COOKIES]
 
 
 # ------------------------------------------------------------------ #
 def probe(url, no_playlist=True, timeout=60, cookies=None):
     """Информация о ссылке (dict). Бросает RuntimeError при ошибке."""
     args = [tools.YTDLP_EXE, "-J", "--no-warnings"]
-    args += tools.pot_ytdlp_args()      # PO-токен провайдер (обход YouTube 403)
+    args += tools.pot_ytdlp_args(url)   # PO-токен провайдер (только YouTube)
     if cookies:
         args += cookies
     if no_playlist:
         args.append("--no-playlist")
     args.append(url)
-    r = tools.run(args, timeout=timeout)
+    try:
+        r = tools.run(args, timeout=timeout)
+    finally:
+        _del_cookie_copy(args)          # одноразовую копию кук — сразу убрать
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError((r.stdout or r.stderr or "yt-dlp failed").strip())
     return json.loads(r.stdout)
@@ -294,10 +383,12 @@ def _expected_path(option, url, settings, title, out_dir):
 
 
 def build_download_args(option, url, settings, title=None, out_dir=None,
-                        cookies=True, impersonate=False):
+                        cookies=True, impersonate=False, info_json=None):
     """Аргументы yt-dlp для скачивания одиночной ссылки по выбранному варианту.
     cookies=False — команда БЕЗ кук (ретрай при сбое извлечения кук).
-    impersonate=True — притворяться браузером через curl_cffi (ретрай на 403)."""
+    impersonate=True — притворяться браузером через curl_cffi (ретрай на 403).
+    info_json=<файл> — качать из готовой info (--load-info-json), без повторного
+    извлечения (форматы/PO-токен уже получены на анализе)."""
     if out_dir is None:
         out_dir = settings.get("download_path") or os.path.join(
             os.path.expanduser("~"), "Downloads")
@@ -316,7 +407,8 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
         f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s",
     ]
-    args += tools.pot_ytdlp_args()      # PO-токен провайдер (обход YouTube 403)
+    if not info_json:                   # с готовой info извлечения нет — PO не нужен
+        args += tools.pot_ytdlp_args(url)   # PO-токен провайдер (только YouTube)
     if impersonate:
         args += ["--impersonate", "chrome"]   # обход 403 по TLS-отпечатку
     if cookies:
@@ -343,11 +435,26 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
     # Пост-процессинг из настроек.
     if settings.get("embed_thumbnail"):
         args.append("--embed-thumbnail")
-    if settings.get("embed_metadata"):
-        args.append("--embed-metadata")
 
-    args.append(url)
+    if info_json:
+        args += ["--load-info-json", info_json]   # качаем из готовой info
+    else:
+        args.append(url)
     return args
+
+
+def _write_info_json(info):
+    """Пишет info во временный .json (для --load-info-json). Путь или None."""
+    if not info:
+        return None
+    try:
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".info.json", prefix="snatchr_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(info, f)
+        return path
+    except Exception:
+        return None
 
 
 def _clean_size(s):
@@ -458,6 +565,31 @@ def friendly_error(text, default=None):
 def is_youtube(url):
     u = (url or "").lower()
     return "youtube.com" in u or "youtu.be" in u
+
+
+# Популярные сайты для мониторинга буфера обмена (yt-dlp умеет намного больше,
+# но здесь — узкий список, чтобы не всплывать на любой ссылке).
+_SUPPORTED_HOSTS = (
+    "youtube.com", "youtu.be", "instagram.com", "tiktok.com",
+    "reddit.com", "redd.it", "pornhub.com", "vimeo.com", "twitch.tv",
+    # Русскоязычные сервисы (yt-dlp их поддерживает).
+    "vk.com", "vkvideo.ru", "ok.ru", "rutube.ru",
+)
+
+
+def is_supported_url(url):
+    """http(s)-ссылка на один из известных сайтов (для тоста из буфера обмена)."""
+    u = (url or "").strip()
+    if not (u.lower().startswith("http://") or u.lower().startswith("https://")):
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(u).netloc or "").split("@")[-1].split(":")[0].lower()
+    except Exception:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return any(host == h or host.endswith("." + h) for h in _SUPPORTED_HOSTS)
 
 
 def is_playlist_url(url):
@@ -644,11 +776,14 @@ def _stream(args, hooks, log, progress=True):
     return rc == 0, dest
 
 
-def run_job(option, url, settings, hooks, title=None):
+def run_job(option, url, settings, hooks, title=None, info=None):
     """
     Полный цикл одного задания: yt-dlp -> (fallback streamlink для Twitch) ->
     конвертация. Возвращает (ok, dest, log). Безопасно прерывается на любом
     этапе (kill процесса + чистка недокачанных кусков).
+
+    info — готовая info с анализа: пробуем быстрый путь (--load-info-json) без
+    повторного извлечения; при любой неудаче откатываемся к обычному.
     """
     log = logbook.Log(url)
     log.event("Starting download (yt-dlp)")
@@ -671,12 +806,38 @@ def run_job(option, url, settings, hooks, title=None):
     # App-Bound Encryption / залоченная БД), повторяем БЕЗ кук — публичное видео
     # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
     use_cookies = True
-    ok, dest = _stream(build_download_args(option, url, settings, title, job_dir),
-                       hooks, log, progress=True)
-    # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
-    if not hooks.is_stopped():
-        dest = _resolve(dest)
-        ok = bool(dest)
+    ok, dest = False, ""
+
+    # Быстрый путь: качаем из готовой info (--load-info-json), без повторного
+    # извлечения. При любой неудаче — обычное извлечение (полный фолбэк).
+    info_file = _write_info_json(info)
+    if info_file and not hooks.is_stopped():
+        log.event("Fast path: load-info-json (no re-extraction)")
+        _args = build_download_args(option, url, settings, title, job_dir,
+                                    info_json=info_file)
+        ok, dest = _stream(_args, hooks, log, progress=True)
+        _del_cookie_copy(_args)          # одноразовую копию кук — сразу убрать
+        if not hooks.is_stopped():
+            dest = _resolve(dest)
+            ok = bool(dest)
+        try:
+            os.remove(info_file)
+        except OSError:
+            pass
+        if not ok and not hooks.is_stopped():
+            log.event("load-info-json failed — full extraction fallback")
+            _rm_dir(job_dir)
+            job_dir = _new_job_dir()
+            expected = _expected_path(option, url, settings, title, job_dir)
+
+    if not ok and not hooks.is_stopped():
+        _args = build_download_args(option, url, settings, title, job_dir)
+        ok, dest = _stream(_args, hooks, log, progress=True)
+        _del_cookie_copy(_args)
+        # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
+        if not hooks.is_stopped():
+            dest = _resolve(dest)
+            ok = bool(dest)
     if (not ok and not hooks.is_stopped() and cookie_args(settings)
             and is_cookie_error(log.text())):
         log.event("Cookie extraction failed — retrying without cookies")
@@ -699,10 +860,10 @@ def run_job(option, url, settings, hooks, title=None):
         _rm_dir(job_dir)
         job_dir = _new_job_dir()
         expected = _expected_path(option, url, settings, title, job_dir)
-        ok, dest = _stream(
-            build_download_args(option, url, settings, title, job_dir,
-                                cookies=use_cookies, impersonate=True),
-            hooks, log, progress=True)
+        _args = build_download_args(option, url, settings, title, job_dir,
+                                    cookies=use_cookies, impersonate=True)
+        ok, dest = _stream(_args, hooks, log, progress=True)
+        _del_cookie_copy(_args)
         if not hooks.is_stopped():
             dest = _resolve(dest)
             ok = bool(dest)

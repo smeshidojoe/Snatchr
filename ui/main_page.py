@@ -184,7 +184,7 @@ class MainPage(WindowDragMixin, QWidget):
         self.tc_to_lbl.setFont(tc_lbl_font)
         self.tc_to_lbl.setStyleSheet(tc_lbl_css)
         self.tc_to_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        tc_font = fonts.mono(s(12))
+        tc_font = fonts.font(s(12), "Medium")   # SF Pro (а не моно) — как в остальном UI
         self.tc_start = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
                                      self._pal["disabled_bg"], self._pal["disabled_text"])
         self.tc_end = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
@@ -871,11 +871,21 @@ class MainPage(WindowDragMixin, QWidget):
         self.btn_download.setEnabled(True)
         self._animate_button_to_stop()
         title = self._info.get("title") if self._info else None
-        self._dl = DownloadWorker(option, url, self.settings, title, self)
+        self._last_dl_url = url
+        self._last_dl_title = title
+        # Быстрый путь: если анализ дал форматы с готовыми URL — качаем через
+        # --load-info-json (без повторного извлечения). Иначе обычный путь.
+        info = self._info
+        has_urls = bool(info and info.get("formats")
+                        and any(f.get("url") for f in info["formats"]))
+        self._dl = DownloadWorker(option, url, self.settings, title, self,
+                                  info=info if has_urls else None)
         self._dl.progress.connect(self._on_progress)
         self._dl.status.connect(self._on_status)
         self._dl.finished_ok.connect(self._on_dl_finished)
         self._dl.failed.connect(self._on_dl_failed)
+        # мост в Spotlight: показать эту загрузку в истории (и дать отменить оттуда)
+        self.app.report_win_dl_start(url, self._dl, self._dl_convert)
         self._dl.start()
 
     def _start_multi_download(self):
@@ -930,6 +940,7 @@ class MainPage(WindowDragMixin, QWidget):
             else:
                 overall = frac * 0.5 if getattr(self, "_dl_convert", False) else frac
             self.progress_bar.set_value(overall)
+            self.app.report_win_dl_progress(overall)     # мост в Spotlight
 
     def _on_status(self, text):
         self.lbl_progress.setText(text)
@@ -977,12 +988,16 @@ class MainPage(WindowDragMixin, QWidget):
         self._animate_button_to_download(text=tr("Download"))
 
     def _on_dl_finished(self, dest):
+        # через мост: записать в историю + завершить строку-прогресс в Spotlight
+        self.app.report_win_dl_done(dest, getattr(self, "_last_dl_url", ""),
+                                    getattr(self, "_last_dl_title", None))
         self._show_status(f"{tr('Saved to')} {self._display_path(self.settings.get('download_path',''))}",
                           self.OK_COLOR, self._ok_pm)
         self._set_state("ready")
         self._animate_button_to_download(text=tr("Download"))
 
     def _on_dl_failed(self, msg):
+        self.app.report_win_dl_fail()          # убрать строку-прогресс в Spotlight
         if (msg or "").strip() == "Stopped":
             self._show_status(tr("Stopped"), self.MUTED_COLOR, None)
         else:

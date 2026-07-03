@@ -3,7 +3,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QIcon
 
-from core.constants import theme_dir, DEFAULT_THEME
+from core.constants import THEMES_DIR, theme_dir, DEFAULT_THEME
 from core import themes
 
 # Цвет иконок нижней панели / инфо (обычный и при наведении).
@@ -13,13 +13,15 @@ ICON_HOVER = themes.color(DEFAULT_THEME, "icon_hover")
 
 
 def _resolve_path(theme, filename):
-    path = os.path.join(theme_dir(themes.assets_name(theme)), filename)
-    if not os.path.isfile(path):
-        # Тема без нужного ассета -> берём иконку из темы по умолчанию.
-        path = os.path.join(theme_dir(themes.assets_name(DEFAULT_THEME)), filename)
-    if not os.path.isfile(path):
-        return None
-    return path
+    # Глифы общие для всех тем — лежат прямо в assets/Themes (перекрашиваются на
+    # лету под цвет темы). Оставлен фолбэк на старое расположение внутри папки темы.
+    path = os.path.join(THEMES_DIR, filename)
+    if os.path.isfile(path):
+        return path
+    legacy = os.path.join(theme_dir(themes.assets_name(theme)), filename)
+    if os.path.isfile(legacy):
+        return legacy
+    return None
 
 
 def themed_pixmap(theme, filename, color, size):
@@ -46,6 +48,21 @@ def themed_pixmap(theme, filename, color, size):
     painter.end()
 
     return QPixmap.fromImage(out)
+
+
+# Иконки трея, которые НЕ перекрашиваем под тему панели задач (они цветные и
+# должны оставаться собой — напр., синяя «play»).
+COLORED_ICONS = {"play"}
+
+
+def raw_pixmap(path, size):
+    """Иконка как есть (без перекраски), масштабированная под size."""
+    if not path or not os.path.isfile(path):
+        return None
+    pm = QPixmap(path)
+    if pm.isNull():
+        return None
+    return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
 def tint_pixmap(path, color, size):

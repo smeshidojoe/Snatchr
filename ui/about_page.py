@@ -1,23 +1,18 @@
-import os
 import threading
 import webbrowser
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics, QImage, QPixmap
-from PySide6.QtWidgets import QWidget, QLabel, QFrame
+from PySide6.QtWidgets import QWidget, QLabel
 
 from PIL import Image, ImageDraw
 
-from core.constants import (
-    APP_NAME, APP_VERSION, ICONS_DIR, THEMES, PROFILE_IMG, DEVELOPER_URL,
-    LANGUAGES, DEFAULT_LANGUAGE
-)
+from core.constants import APP_NAME, APP_VERSION, PROFILE_IMG, DEVELOPER_URL
 from core import updater
 from core import fonts
-from core import i18n
 from core import themes
 from core.i18n import tr
-from ui.widgets import LinkButton, ClickableLabel, Selector, WindowDragMixin
+from ui.widgets import LinkButton, ClickableLabel, WindowDragMixin
 
 
 class AboutPage(WindowDragMixin, QWidget):
@@ -66,17 +61,18 @@ class AboutPage(WindowDragMixin, QWidget):
         return lbl
 
     def _build(self):
+        # About стал компактнее (иконка/тема/язык переехали в Настройки), поэтому
+        # оставшиеся элементы (от заголовка до «Check for Updates») крупнее.
         s = self.app._s
-        pad = s(16)
         cx = self.width_ // 2
 
         # 0. About
-        self._center_label(tr("About"), fonts.font(s(14), "Semibold"),
-                            self.TITLE_COLOR, s(12))
+        self._center_label(tr("About"), fonts.font(s(16), "Semibold"),
+                            self.TITLE_COLOR, s(16))
 
         # 1. Логотип
-        d = s(60)
-        logo_y = s(38)
+        d = s(88)
+        logo_y = s(54)
         self._logo_pm = self._make_logo_pixmap(d)
         logo = QLabel(self)
         logo.setPixmap(self._logo_pm)
@@ -85,80 +81,36 @@ class AboutPage(WindowDragMixin, QWidget):
         logo.setGeometry(cx - d // 2, logo_y, d, d)
 
         # 2. Snatchr
-        name_y = logo_y + d + s(6)
-        self._center_label(APP_NAME, fonts.font(s(13), "Bold"),
+        name_y = logo_y + d + s(12)
+        self._center_label(APP_NAME, fonts.font(s(17), "Bold"),
                             self.TITLE_COLOR, name_y)
 
-        # 3. Version (на 5px ниже)
-        ver_y = logo_y + d + s(31)
-        self._center_label(f"{tr('Version')} {APP_VERSION}", fonts.font(s(10), "Regular"),
+        # 3. Version
+        ver_y = logo_y + d + s(42)
+        self._center_label(f"{tr('Version')} {APP_VERSION}", fonts.font(s(12), "Regular"),
                             self.ICON_COLOR, ver_y)
 
         # 4. Check for Updates (+ статус)
-        upd_y = logo_y + d + s(52)
-        upd_font = fonts.font(s(11), "Regular")
+        upd_y = logo_y + d + s(72)
+        upd_font = fonts.font(s(13), "Regular")
         # Ширина под самую длинную подпись (на русском «Проверить обновления» /
         # «Обновить и перезапустить» длиннее) — иначе текст обрезается.
         fm = QFontMetrics(upd_font)
         bw = max(fm.horizontalAdvance(tr("Check for Updates")),
-                 fm.horizontalAdvance(tr("Update & Restart"))) + s(28)
+                 fm.horizontalAdvance(tr("Update & Restart"))) + s(32)
         self.btn_update = LinkButton(self, tr("Check for Updates"), upd_font,
                                      self.LINK, self.LINK_HOVER, self._check_updates)
-        self.btn_update.setGeometry(cx - bw // 2, upd_y, bw, s(26))
+        self.btn_update.setGeometry(cx - bw // 2, upd_y, bw, s(30))
 
-        st_y = logo_y + d + s(80)
-        self.update_status = self._center_label("", fonts.font(s(11), "Regular"),
+        st_y = logo_y + d + s(106)
+        self.update_status = self._center_label("", fonts.font(s(12), "Regular"),
                                                 self.MUTED_COLOR, st_y)
 
-        # 5. Menu Bar Icon / 6. Theme / 7. Language — сразу под статусом «Check…».
-        sep_y       = st_y + s(28)
-        icon_row_y  = sep_y + s(14)
-        theme_row_y = icon_row_y + s(36)
-        lang_row_y  = theme_row_y + s(36)
-
-        # Разделительная линия над «Menu Bar Icon».
-        sep = QFrame(self)
-        sep.setStyleSheet(f"background-color: {self.SEP_LINE}; border: none;")
-        sep.setGeometry(pad, sep_y, self.width_ - 2 * pad, max(1, s(1)))
-
-        self._build_select_row(tr("Menu Bar Icon"), pad, icon_row_y, self._icon_values(),
-                               self._current_icon_display(), self._on_icon_change,
-                               icons=self._icon_icons())
-        self._build_select_row(tr("Theme"), pad, theme_row_y, list(THEMES),
-                               self.settings.get("theme", THEMES[0]), self._on_theme_change)
-        self._build_select_row(tr("Language"), pad, lang_row_y, list(LANGUAGES),
-                               self.settings.get("language", DEFAULT_LANGUAGE),
-                               self._on_language_change)
-
-        # 8. «2026 Developed by …» — внизу (почта убрана).
-        developed_y = self.height_ - s(30)
+        # 5. «2026 Developed by …» — внизу (почта убрана).
+        developed_y = self.height_ - s(32)
         self._build_developed_line(cx, developed_y)
 
     # ------------------------------------------------------------------ #
-    def _build_select_row(self, label, x, y, values, current, command, icons=None):
-        s = self.app._s
-        menu_w = s(140)
-
-        lbl = QLabel(label, self)
-        lbl.setFont(fonts.font(s(12), "Medium"))
-        lbl.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
-        lbl.move(x, y + s(5))
-        lbl.adjustSize()
-
-        combo = Selector(self, fonts.font(s(11), "Regular"),
-                         self.CARD_BG, self.SEL_CHIP, self.TEXT_COLOR,
-                         self.SEL_CHEVRON, s(7), s(22),
-                         accent=self._pal["seg_sel"], border=self._pal["border"],
-                         on_accent=self._pal["on_accent"])
-        for v in values:
-            combo.add_item(v, icons.get(v) if icons else None)
-        if current in values:
-            combo.set_current(current)
-        menu_x = self.width_ - x - menu_w
-        combo.setGeometry(menu_x, y, menu_w, s(26))
-        combo.changed.connect(command)
-        return combo
-
     def _build_developed_line(self, cx, y):
         """«2026 Developed by SmeshidoJoe» — имя кликабельно (ссылка на GitHub)."""
         s = self.app._s
@@ -208,69 +160,6 @@ class AboutPage(WindowDragMixin, QWidget):
         out = Image.new("RGBA", (d, d), (0, 0, 0, 0))
         out.paste(bg, (0, 0), mask)
         return out
-
-    # --- Menu Bar Icon -------------------------------------------------- #
-    def _icon_values(self):
-        self._icon_map = {}
-        names = []
-        if os.path.isdir(ICONS_DIR):
-            for fname in sorted(os.listdir(ICONS_DIR)):
-                stem, ext = os.path.splitext(fname)
-                if ext.lower() in (".png", ".ico"):
-                    disp = stem.replace("_", " ").title()
-                    self._icon_map[disp] = stem
-                    names.append(disp)
-        if not names:
-            self._icon_map["Default"] = ""
-            names = ["Default"]
-        return names
-
-    def _icon_icons(self):
-        """{display: QPixmap} — иконка для пункта селектора, перекрашенная под
-        тему панели задач Windows (чёрная на светлой, белая на тёмной), как и
-        сама иконка в трее."""
-        from core import tools
-        from core.icons import tint_pixmap
-        color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
-        result = {}
-        for disp, stem in self._icon_map.items():
-            if stem:
-                path = os.path.join(ICONS_DIR, stem + ".png")
-                pm = tint_pixmap(path, color, 48)
-                if pm is not None:
-                    result[disp] = pm
-        return result
-
-    def _current_icon_display(self):
-        stem = self.settings.get("tray_icon", "")
-        for disp, st in self._icon_map.items():
-            if st == stem:
-                return disp
-        return next(iter(self._icon_map), "Default")
-
-    def _on_icon_change(self, choice):
-        stem = self._icon_map.get(choice, "")
-        self.settings["tray_icon"] = stem
-        if self.app.tray is not None:
-            self.app.tray.set_icon(stem)
-        self.app.save_settings()
-
-    # --- Theme ---------------------------------------------------------- #
-    def _on_theme_change(self, choice):
-        if choice == self.settings.get("theme"):
-            return
-        self.settings["theme"] = choice
-        self.app.save_settings()
-        self.app.apply_appearance()      # применяем тему сразу
-
-    # --- Language ------------------------------------------------------- #
-    def _on_language_change(self, choice):
-        if choice == self.settings.get("language"):
-            return
-        self.settings["language"] = choice
-        i18n.set_language(choice)
-        self.app.save_settings()
-        self.app.apply_appearance()      # применяем язык сразу
 
     # --- Updates -------------------------------------------------------- #
     def _check_updates(self):

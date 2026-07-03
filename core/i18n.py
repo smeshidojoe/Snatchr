@@ -17,6 +17,8 @@ _RU = {
     "Post-Processing": "Постобработка",
     "Processing": "Обработка",
     "Usage": "Режим работы",
+    "General": "Общее",
+    "Advanced": "Дополнительно",
     "Cookies": "Cookies",
     "Browser for cookies": "Браузер для cookies",
     "Use cookies file…": "Указать файл cookies…",
@@ -25,6 +27,12 @@ _RU = {
     "Embed Thumbnail": "Встроить обложку",
     "Embed Metadata": "Встроить метаданные",
     "Convert Youtube Videos": "Конвертировать видео с YouTube",
+    "Watch clipboard for links": "Следить за буфером обмена",
+    "Download this?": "Скачать это?",
+    "Downloaded": "Скачано",
+    "Toast": "Тост",
+    "Corner": "В углу",
+    "At cursor": "У курсора",
     "Pinned": "Закреплено",
     "Auto-hide": "Автоскрытие",
     "Allow Dragging": "Перетаскивание окна",
@@ -38,6 +46,18 @@ _RU = {
     "Exit": "Выход",
     "Check for Updates": "Проверить обновления",
     "Version": "Версия",
+    "Paste URL Here": "Вставьте ссылку сюда",
+    "Copy link": "Копировать ссылку",
+    "Remove": "Удалить",
+    "Spotlight": "Spotlight",
+    "Enable Spotlight": "Включить Spotlight",
+    "Shortcut": "Сочетание",
+    "Press keys…": "Нажмите клавиши…",
+    "Discard current trim?": "Сбросить текущую обрезку?",
+    "Discard": "Сбросить",
+    "Cancel": "Отмена",
+    "Playlists: open the link in the main window":
+        "Плейлисты — открой ссылку в окне программы",
     "Menu Bar Icon": "Иконка в трее",
     "Theme": "Тема",
     "Language": "Язык",
@@ -129,6 +149,16 @@ _RU = {
     "The position resets the next time the window is shown.":
         "Перетаскивайте окно за пустую область сверху.\n"
         "Позиция сбрасывается при следующем открытии окна.",
+    "When you copy a link from a supported site, a toast\n"
+    "appears offering to download it in the background.":
+        "Когда вы копируете ссылку с поддерживаемого сайта,\n"
+        "появляется тост с предложением скачать её в фоне.",
+    "A quick launcher (global shortcut) to paste a link, download\n"
+    "it, and trim clips. Auto-hide closes it when it loses focus;\n"
+    "Pinned keeps it open until you press the shortcut again.":
+        "Быстрый вызов (глобальное сочетание): вставить ссылку, скачать\n"
+        "и обрезать ролик. Автоскрытие закрывает окно при потере фокуса;\n"
+        "Закреплено — держит открытым, пока не нажмёте сочетание снова.",
 }
 
 _TRANSLATIONS = {

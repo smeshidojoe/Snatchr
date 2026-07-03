@@ -223,6 +223,32 @@ class ThumbWorker(QThread):
             self.done.emit(b"")
 
 
+class SpotlightThumbWorker(QThread):
+    """Для строки-прогресса Spotlight: спрашивает у yt-dlp URL обложки видео и
+    скачивает её байты — чтобы превью появилось сразу, не дожидаясь конца
+    загрузки (как fetching в окне). Ошибки глушим — превью просто не будет."""
+    done = Signal(bytes)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self._url = url
+
+    def run(self):
+        try:
+            r = tools.run([tools.YTDLP_EXE, "--no-warnings", "--no-playlist",
+                           "--print", "thumbnail", self._url], timeout=40)
+            out = (r.stdout or "").strip().splitlines() if r else []
+            turl = out[0].strip() if out else ""
+            if not turl or turl.upper() == "NA":
+                self.done.emit(b"")
+                return
+            req = urllib.request.Request(turl, headers={"User-Agent": "Snatchr"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                self.done.emit(resp.read())
+        except Exception:
+            self.done.emit(b"")
+
+
 class MultiProbeWorker(QThread):
     """Анализ списка ссылок по очереди (для Multiple Links)."""
     item = Signal(int, object, str)   # индекс, info|None, текст ошибки
@@ -309,12 +335,13 @@ class DownloadWorker(QThread):
     finished_ok = Signal(str)     # путь к файлу (или "")
     failed = Signal(str)          # путь к лог-файлу / "Stopped" / "failed"
 
-    def __init__(self, option, url, settings, title=None, parent=None):
+    def __init__(self, option, url, settings, title=None, parent=None, info=None):
         super().__init__(parent)
         self._option = option
         self._url = url
         self._settings = settings
         self._title = title
+        self._info = info          # готовая info с анализа -> быстрый путь загрузки
         self._proc = None
         self._stopped = False
 
@@ -326,7 +353,8 @@ class DownloadWorker(QThread):
                        self._set_proc, lambda: self._stopped)
         try:
             ok, dest, log = downloader.run_job(self._option, self._url,
-                                               self._settings, hooks, self._title)
+                                               self._settings, hooks, self._title,
+                                               info=self._info)
             if self._stopped:
                 self.failed.emit("Stopped")
             elif ok:

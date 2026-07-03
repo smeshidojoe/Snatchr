@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 # Репозиторий для проверки обновлений (релизы на GitHub).
 # TODO: указать реальный "owner/repo".
@@ -23,7 +23,7 @@ FONTS_DIR   = os.path.join(ASSETS_DIR, "fonts")
 THEMES_DIR  = os.path.join(ASSETS_DIR, "Themes")    # ассеты по темам
 PROFILE_IMG = os.path.join(ASSETS_DIR, "profile.png")
 
-DEFAULT_THEME = "Deep Ocean"
+DEFAULT_THEME = "Glass"
 
 
 def theme_dir(theme):
@@ -34,8 +34,8 @@ def theme_dir(theme):
 # Список тем берём из реестра тем (см. core/themes.py).
 def _theme_names():
     try:
-        from core.themes import THEMES as _T
-        return list(_T.keys())
+        from core.themes import enabled_themes
+        return enabled_themes()
     except Exception:
         return [DEFAULT_THEME]
 

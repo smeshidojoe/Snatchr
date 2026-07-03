@@ -1,4 +1,11 @@
+import os
 import sys
+
+# Отключаем аппаратное декодирование в Qt Multimedia (FFmpeg-бэкенд): у VP9 через
+# HW-декодер маленький пул кадров, и при перемотке превью в панели обрезки он
+# переполняется («Static surface pool size exceeded» / vp9 get_buffer failed).
+# Программное декодирование коротких роликов дешёвое и стабильное.
+os.environ.setdefault("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", "")
 
 from PySide6.QtWidgets import QApplication
 
@@ -6,6 +13,24 @@ from core import updater
 from app import App
 from tray import TrayIcon
 from core.constants import APP_NAME
+
+_INSTANCE_MUTEX = None
+
+
+def _is_only_instance():
+    """True — мы единственный инстанс; False — Snatchr уже запущен (тогда выходим,
+    чтобы не плодить иконки в трее). Именованный мьютекс живёт до конца процесса."""
+    global _INSTANCE_MUTEX
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        k.CreateMutexW.restype = wintypes.HANDLE
+        k.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        _INSTANCE_MUTEX = k.CreateMutexW(None, False, "Snatchr-Single-Instance-Mutex")
+        return k.GetLastError() != 183          # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True                              # не блокируем запуск при ошибке
 
 
 def _set_app_identity(app):
@@ -22,6 +47,10 @@ def _set_app_identity(app):
 
 
 if __name__ == "__main__":
+    # Защита от нескольких запусков: если Snatchr уже работает — тихо выходим.
+    if not _is_only_instance():
+        sys.exit(0)
+
     # Страховка: если с прошлого запуска остался распакованный апдейт —
     # применяем то, что не заблокировано (сам exe заменяет внешний помощник).
     try:

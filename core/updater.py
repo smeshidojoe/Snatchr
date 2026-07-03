@@ -16,6 +16,7 @@
 
 import os
 import sys
+import shutil
 import zipfile
 import subprocess
 import urllib.request
@@ -134,62 +135,84 @@ def apply_pending_update(target=None):
         return False
 
 
-def _ps_quote(p):
-    # Одинарные кавычки в PowerShell экранируются удвоением апострофа,
-    # иначе путь с U+0027 (C:\Users\O'Brien\…) ломает разбор команды.
+def _ps_lit(p):
+    # Строковый литерал PowerShell: одинарные кавычки, апостроф удваивается
+    # (путь C:\Users\O'Brien\… не должен ломать разбор).
     return "'" + str(p).replace("'", "''") + "'"
 
 
+NEW_EXE = os.path.join(UPDATE_DIR, "Snatchr-new.exe")
+
+
+def _extract_new_exe():
+    """Достаёт наш exe из скачанного zip в _update/Snatchr-new.exe. Делаем это,
+    пока приложение ещё работает: файл новый, блокировок нет. На любой глубине
+    архива; иначе — первый .exe. Возвращает путь или None."""
+    if not has_pending_update():
+        return None
+    try:
+        want = os.path.basename(sys.executable).lower()   # напр. snatchr.exe
+        with zipfile.ZipFile(UPDATE_ZIP, "r") as zf:
+            names = zf.namelist()
+            pick = next((n for n in names if os.path.basename(n).lower() == want), None)
+            if pick is None:
+                pick = next((n for n in names if n.lower().endswith(".exe")), None)
+            if pick is None:
+                return None
+            with zf.open(pick) as src, open(NEW_EXE, "wb") as out:
+                shutil.copyfileobj(src, out)
+        return NEW_EXE
+    except Exception:
+        return None
+
+
 def restart_to_update():
-    """Запускает внешнего помощника (PowerShell): он ждёт, пока exe реально
-    разблокируется (в onefile файл держат и загрузчик, и сам процесс),
-    распаковывает zip поверх папки установки и перезапускает exe. Пишет лог в
-    _update/helper.log. Работает только во frozen-режиме."""
+    """Готовит новый exe и запускает помощника (PowerShell), который ждёт, пока
+    ТЕКУЩИЙ процесс полностью завершится (пока exe нельзя удалить), подменяет exe
+    и запускает новый. После вызова приложение обязано немедленно завершиться
+    (os._exit) — иначе onefile-процесс продолжает держать файл. Только frozen."""
     if not is_frozen() or not has_pending_update():
         return False
+    new_exe = _extract_new_exe()
+    if not new_exe or not os.path.isfile(new_exe):
+        return False
+    # zip больше не нужен (exe уже извлечён) — убираем, чтобы не мешал.
+    try:
+        os.remove(UPDATE_ZIP)
+    except OSError:
+        pass
 
-    exe_q = _ps_quote(sys.executable)
-    zip_q = _ps_quote(UPDATE_ZIP)
-    target_q = _ps_quote(install_dir())
-    log_q = _ps_quote(os.path.join(UPDATE_DIR, "helper.log"))
-
-    # Ждём разблокировки exe, распаковываем zip во временную папку, находим наш
-    # exe на любой глубине (устойчиво к архиву, где файлы лежат в подпапке) и
-    # копируем его вместе с соседями в папку установки. Все шаги — в helper.log.
+    log = os.path.join(UPDATE_DIR, "helper.log")
+    # Скрипт с путями-литералами (устойчив к Юникоду в путях). Цикл: пробуем
+    # удалить старый exe — получится только когда процесс реально вышел; затем
+    # копируем новый на его место и запускаем.
     script = (
-        "$ErrorActionPreference='SilentlyContinue'; "
-        f"$exe={exe_q}; $zip={zip_q}; $target={target_q}; $log={log_q}; "
-        "$name=[System.IO.Path]::GetFileName($exe); "
-        "function L($m){ ('[' + (Get-Date -Format o) + '] ' + $m) | Out-File -FilePath $log -Append -Encoding utf8 }; "
-        "L('helper started; exe=' + $exe); "
-        "$ok=$false; "
-        "for($i=0;$i -lt 120;$i++){ "
-        "  try{ $fs=[System.IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); $ok=$true; break } "
-        "  catch{ Start-Sleep -Milliseconds 500 } "
-        "} "
-        "L('exe unlocked=' + $ok); "
-        "Start-Sleep -Milliseconds 400; "
-        "$tmp=Join-Path $env:TEMP ('snatchr_upd_' + [Guid]::NewGuid().ToString('N')); "
-        "try{ "
-        "  Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force; "
-        "  L('extracted to ' + $tmp); "
-        "  $src=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $name | Select-Object -First 1; "
-        "  if($src){ "
-        "    L('found ' + $name + ' in ' + $src.Directory.FullName); "
-        "    Copy-Item -Path (Join-Path $src.Directory.FullName '*') -Destination $target -Recurse -Force; "
-        "    L('copied into ' + $target); "
-        "  } else { L('ERROR: ' + $name + ' not found in archive') } "
-        "}catch{ L('ERROR: ' + $_.Exception.Message) } "
-        "try{ Remove-Item -LiteralPath $zip -Force }catch{}; "
-        "try{ Remove-Item -LiteralPath $tmp -Recurse -Force }catch{}; "
-        "Start-Process -FilePath $exe; "
-        "L('relaunched')"
+        "$ErrorActionPreference='SilentlyContinue';\n"
+        f"$old={_ps_lit(sys.executable)}; $new={_ps_lit(new_exe)}; $log={_ps_lit(log)};\n"
+        "function L($m){ ('['+(Get-Date -Format o)+'] '+$m) | Out-File -LiteralPath $log -Append -Encoding utf8 }\n"
+        "L('helper started')\n"
+        "$gone=$false\n"
+        "for($i=0;$i -lt 150;$i++){\n"
+        "  try{ Remove-Item -LiteralPath $old -Force -ErrorAction Stop; $gone=$true; break }\n"
+        "  catch{ Start-Sleep -Milliseconds 400 }\n"
+        "}\n"
+        "L('old removed='+$gone)\n"
+        "try{ Copy-Item -LiteralPath $new -Destination $old -Force -ErrorAction Stop }\n"
+        "catch{ L('copy err: '+$_.Exception.Message) }\n"
+        "if(-not (Test-Path -LiteralPath $old)){ try{ Move-Item -LiteralPath $new -Destination $old -Force }catch{} }\n"
+        "Start-Process -FilePath $old\n"
+        "Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue\n"
+        "L('done')\n"
     )
     try:
         os.makedirs(UPDATE_DIR, exist_ok=True)
+        # -EncodedCommand (base64 UTF-16LE) полностью обходит проблемы кавычек и
+        # кодировок командной строки — важно для путей с кириллицей.
+        import base64
+        enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         subprocess.Popen(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-WindowStyle", "Hidden", "-Command", script],
+             "-WindowStyle", "Hidden", "-EncodedCommand", enc],
             creationflags=_DETACHED, close_fds=True)
         return True
     except Exception:
