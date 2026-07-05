@@ -47,6 +47,17 @@ def _set_app_identity(app):
 
 
 if __name__ == "__main__":
+    # Самоприменение обновления: этот же exe (Snatchr-new.exe) запущен с флагом
+    # --apply-update <старый_exe> — ждём выхода старого, подменяем его собой и
+    # запускаем. Обрабатываем ДО мьютекса — это не «второй инстанс».
+    if "--apply-update" in sys.argv:
+        try:
+            i = sys.argv.index("--apply-update")
+            updater.apply_self_update(sys.argv[i + 1] if i + 1 < len(sys.argv) else "")
+        except Exception:
+            pass
+        sys.exit(0)
+
     # Защита от нескольких запусков: если Snatchr уже работает — тихо выходим.
     if not _is_only_instance():
         sys.exit(0)
@@ -55,6 +66,7 @@ if __name__ == "__main__":
     # применяем то, что не заблокировано (сам exe заменяет внешний помощник).
     try:
         updater.apply_pending_update()
+        updater.cleanup_applied()      # убрать Snatchr-new.exe, если апдейт применён
     except Exception:
         pass
 

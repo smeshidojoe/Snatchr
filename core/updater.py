@@ -166,15 +166,67 @@ def _extract_new_exe():
         return None
 
 
+def _log(msg):
+    """Пишет строку в _update/helper.log (для диагностики обновления)."""
+    try:
+        import datetime
+        os.makedirs(UPDATE_DIR, exist_ok=True)
+        with open(os.path.join(UPDATE_DIR, "helper.log"), "a", encoding="utf-8") as f:
+            f.write("[%s] %s\n"
+                    % (datetime.datetime.now().isoformat(timespec="seconds"), msg))
+    except Exception:
+        pass
+
+
+def apply_self_update(target):
+    """Выполняется НОВЫМ exe (Snatchr-new.exe), запущенным с --apply-update: ждёт,
+    пока старый target (текущий exe) освободится, подменяет его собой и запускает.
+    Полностью на Python — надёжно и без проблем с Юникодом в путях."""
+    import time
+    src = sys.executable
+    if not target or not os.path.isfile(src):
+        return False
+    ok = False
+    for _ in range(200):                 # до ~80 c ждём выхода старого процесса
+        try:
+            shutil.copyfile(src, target)   # target разблокируется после выхода старого
+            ok = True
+            break
+        except (PermissionError, OSError):
+            time.sleep(0.4)
+    _log("self-apply copy ok=%s -> %s" % (ok, target))
+    # Запускаем целевой exe (обновлённый при успехе; старый — чтобы юзер не остался
+    # без программы, если подмена не удалась).
+    try:
+        subprocess.Popen([target], creationflags=_DETACHED, close_fds=True,
+                         cwd=os.path.dirname(target) or None)
+    except Exception as exc:
+        _log("relaunch err: %s" % exc)
+    return ok
+
+
+def cleanup_applied():
+    """При старте убирает Snatchr-new.exe, если он уже совпадает с текущим exe
+    (обновление применилось). Иначе оставляем — можно повторить."""
+    if not is_frozen() or not os.path.isfile(NEW_EXE):
+        return
+    try:
+        if os.path.getsize(NEW_EXE) == os.path.getsize(sys.executable):
+            os.remove(NEW_EXE)
+    except OSError:
+        pass
+
+
 def restart_to_update():
-    """Готовит новый exe и запускает помощника (PowerShell), который ждёт, пока
-    ТЕКУЩИЙ процесс полностью завершится (пока exe нельзя удалить), подменяет exe
-    и запускает новый. После вызова приложение обязано немедленно завершиться
-    (os._exit) — иначе onefile-процесс продолжает держать файл. Только frozen."""
+    """Готовит новый exe и запускает подмену. Основной способ — сам новый exe с
+    флагом --apply-update (полный путь, без зависимости от PowerShell); фолбэк —
+    помощник PowerShell. После вызова приложение обязано немедленно завершиться
+    (os._exit), чтобы освободить свой exe-файл. Только frozen."""
     if not is_frozen() or not has_pending_update():
         return False
     new_exe = _extract_new_exe()
     if not new_exe or not os.path.isfile(new_exe):
+        _log("restart_to_update: no new exe extracted")
         return False
     # zip больше не нужен (exe уже извлечён) — убираем, чтобы не мешал.
     try:
@@ -182,6 +234,21 @@ def restart_to_update():
     except OSError:
         pass
 
+    # Основной способ: новый exe сам себя применяет (запуск по полному пути).
+    try:
+        subprocess.Popen([new_exe, "--apply-update", sys.executable],
+                         creationflags=_DETACHED, close_fds=True)
+        _log("launched self-apply helper: %s" % new_exe)
+        return True
+    except Exception as exc:
+        _log("self-apply launch failed: %s — fallback to PowerShell" % exc)
+
+    return _restart_via_powershell(new_exe)
+
+
+def _restart_via_powershell(new_exe):
+    """Фолбэк-помощник на PowerShell: ждёт освобождения exe, копирует новый и
+    запускает."""
     log = os.path.join(UPDATE_DIR, "helper.log")
     # Скрипт с путями-литералами (устойчив к Юникоду в путях). Цикл: пробуем
     # удалить старый exe — получится только когда процесс реально вышел; затем
@@ -210,10 +277,17 @@ def restart_to_update():
         # кодировок командной строки — важно для путей с кириллицей.
         import base64
         enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        # Полный путь к powershell.exe — не полагаемся на PATH (частая причина сбоя).
+        ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        if not os.path.isfile(ps):
+            ps = "powershell"
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-WindowStyle", "Hidden", "-EncodedCommand", enc],
             creationflags=_DETACHED, close_fds=True)
+        _log("launched PowerShell helper")
         return True
-    except Exception:
+    except Exception as exc:
+        _log("PowerShell helper launch failed: %s" % exc)
         return False
