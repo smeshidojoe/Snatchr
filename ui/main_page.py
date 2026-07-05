@@ -988,9 +988,12 @@ class MainPage(WindowDragMixin, QWidget):
         self._animate_button_to_download(text=tr("Download"))
 
     def _on_dl_finished(self, dest):
-        # через мост: записать в историю + завершить строку-прогресс в Spotlight
+        # через мост: записать в историю + завершить строку-прогресс в Spotlight.
+        # Обложку берём с анализа (постер сайта), а не кадром из видео.
+        turl = self._info.get("thumbnail") if self._info else None
         self.app.report_win_dl_done(dest, getattr(self, "_last_dl_url", ""),
-                                    getattr(self, "_last_dl_title", None))
+                                    getattr(self, "_last_dl_title", None),
+                                    thumb_url=turl)
         self._show_status(f"{tr('Saved to')} {self._display_path(self.settings.get('download_path',''))}",
                           self.OK_COLOR, self._ok_pm)
         self._set_state("ready")

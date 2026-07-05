@@ -150,7 +150,7 @@ def _probe_with_cookies(url, settings):
     """probe(url) с куками (файл/браузер). Если извлечение кук из браузера падает
     (Chrome App-Bound Encryption / залоченная БД) — повторяем без кук, чтобы
     публичные ссылки всё равно анализировались."""
-    ck = downloader.cookie_args(settings or {})
+    ck = downloader.cookie_args(settings or {}, url)
     try:
         return downloader.probe(url, cookies=ck)
     except Exception as exc:

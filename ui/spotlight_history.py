@@ -10,7 +10,7 @@ import os
 import math
 
 from PySide6.QtCore import (
-    Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer, QEvent
+    Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPixmap, QFontMetrics, QPainterPath,
@@ -21,6 +21,7 @@ from core import fonts, themes
 from core.icons import themed_pixmap
 from core.trimmer import res_label
 from ui import anim
+from ui.widgets import SmoothScroll
 
 
 def _blend(c0, c1, t):
@@ -454,31 +455,7 @@ class HistoryList(QWidget):
         self._content = QWidget()
         self._content.setStyleSheet("background: transparent;")
         self._area.setWidget(self._content)
-        # плавный скролл колёсиком
-        self._scroll_anim = None
-        self._scroll_target = 0
-        self._area.viewport().installEventFilter(self)
-
-    def eventFilter(self, obj, ev):
-        if obj is self._area.viewport() and ev.type() == QEvent.Wheel:
-            self._smooth_scroll(ev.angleDelta().y())
-            return True
-        return super().eventFilter(obj, ev)
-
-    def _smooth_scroll(self, delta):
-        sb = self._area.verticalScrollBar()
-        running = (self._scroll_anim is not None
-                   and self._scroll_anim.state() == QPropertyAnimation.Running)
-        base = self._scroll_target if running else sb.value()
-        target = max(sb.minimum(), min(sb.maximum(), int(base - delta * 0.55)))
-        self._scroll_target = target
-        a = QPropertyAnimation(sb, b"value", self)
-        a.setDuration(240)
-        a.setStartValue(sb.value())
-        a.setEndValue(target)
-        a.setEasingCurve(QEasingCurve.OutCubic)
-        a.start()
-        self._scroll_anim = a
+        self._smooth_scroll = SmoothScroll(self._area, parent=self)
 
     def resizeEvent(self, event):
         p = self._pad

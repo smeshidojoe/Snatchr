@@ -9,7 +9,8 @@ from core.constants import ICONS_DIR, THEMES, LANGUAGES, DEFAULT_LANGUAGE
 from core.i18n import tr
 from core.icons import themed_icon
 from ui.widgets import (
-    IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin
+    IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
+    SmoothScroll
 )
 
 # Отображаемая подпись -> значение cookies_browser в конфиге.
@@ -246,6 +247,7 @@ class SettingsPage(WindowDragMixin, QWidget):
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
         area.setGeometry(0, top, self.width_, self.height_ - top)
         self._scroll_area = area
+        self._smooth_scroll = SmoothScroll(area, parent=self)
 
         content = QWidget()
         content.setStyleSheet("background: transparent;")

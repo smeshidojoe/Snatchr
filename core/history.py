@@ -76,16 +76,48 @@ def _thumb_path(entry_id):
     return os.path.join(THUMBS_DIR, entry_id + ".jpg")
 
 
-def add(path, url, title=None):
-    """Добавляет запись о скачанном файле (снимает обложку) и возвращает её.
-    None — если файла нет (нечего добавлять)."""
+def _download_thumb(thumb_url, out_path):
+    """Скачивает картинку-обложку по URL в out_path. Путь или None."""
+    if not thumb_url or thumb_url.upper() == "NA":
+        return None
+    try:
+        import urllib.request
+        req = urllib.request.Request(thumb_url, headers={"User-Agent": "Snatchr"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+        if not data:
+            return None
+        with open(out_path, "wb") as f:
+            f.write(data)
+        return out_path
+    except Exception:
+        return None
+
+
+def add(path, url, title=None, thumb_bytes=None, thumb_url=None):
+    """Добавляет запись о скачанном файле и возвращает её. None — если файла нет.
+
+    Обложка: приоритет — постер сайта из yt-dlp (готовые байты thumb_bytes или
+    thumb_url), т.к. это официальная картинка, а не случайный кадр. Если её нет —
+    запасной вариант: кадр из самого файла через ffmpeg."""
     if not path or not os.path.isfile(path):
         return None
     entry_id = uuid.uuid4().hex[:12]
     thumb = None
     try:
         os.makedirs(THUMBS_DIR, exist_ok=True)
-        thumb = trimmer.thumbnail(path, _thumb_path(entry_id), width=320)
+        tp = _thumb_path(entry_id)
+        if thumb_bytes:
+            try:
+                with open(tp, "wb") as f:
+                    f.write(thumb_bytes)
+                thumb = tp
+            except OSError:
+                thumb = None
+        elif thumb_url:
+            thumb = _download_thumb(thumb_url, tp)
+        if not thumb:
+            thumb = trimmer.thumbnail(path, tp, width=320)   # фолбэк — кадр из видео
     except Exception:
         thumb = None
     # Разрешение/длительность снимаем с готового файла (для Paste/Toast/Spotlight,

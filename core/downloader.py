@@ -106,43 +106,11 @@ def _sweep_cookie_copies():
         pass
 
 
-def cookie_args(settings):
-    """Куки: свой файл юзера (приоритет), иначе браузерные — с кэшем в файл, чтобы
-    не расшифровывать базу браузера при каждом вызове.
-
-    Первый вызов за TTL тянет из браузера И дампит в cookies.txt (yt-dlp сам
-    пишет jar в файл, переданный через --cookies); далее отдаём ПРИВАТНУЮ копию
-    этого файла (yt-dlp перезаписывает переданный файл — копия защищает
-    канонический при параллельных загрузках). При любом сбое честно откатываемся
-    на прямое чтение браузера — загрузка не ломается."""
-    global _cold_pending, _cold_started
-    fc = file_cookie_args(settings)
-    if fc:
-        return fc
-    bc = browser_cookie_args(settings)
-    if not bc:
-        return []
-    try:
-        os.makedirs(_COOKIES_DIR, exist_ok=True)
-    except OSError:
-        return bc
-    if _canon_fresh():
-        _cold_pending = False
-        try:
-            copy = os.path.join(_COOKIES_DIR, "use_%d.txt" % time.time_ns())
-            shutil.copyfile(_CANON_COOKIES, copy)
-            _sweep_cookie_copies()
-            return ["--cookies", copy]
-        except OSError:
-            return bc
-    # Холодный кэш: дампим из браузера в канонический. Пока первый дамп идёт,
-    # параллельные вызовы просто читают браузер (без записи файла) — чтобы не
-    # писать один файл из нескольких процессов.
-    if _cold_pending and (time.time() - _cold_started) < 60:
-        return bc
-    _cold_pending = True
-    _cold_started = time.time()
-    return bc + ["--cookies", _CANON_COOKIES]
+def cookie_args(settings, url=""):
+    """Куки, которые применяем ВСЕГДА: свой файл (если задан), иначе — свежие из
+    браузера. Кэширование кук в файл отключено — для всех сайтов (в т.ч. YouTube)
+    куки тянутся заново каждый раз (надёжнее для сессионной авторизации)."""
+    return file_cookie_args(settings) or browser_cookie_args(settings)
 
 
 # ------------------------------------------------------------------ #
@@ -412,7 +380,7 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
     if impersonate:
         args += ["--impersonate", "chrome"]   # обход 403 по TLS-отпечатку
     if cookies:
-        args += cookie_args(settings)   # куки: свой файл или браузер
+        args += cookie_args(settings, url)   # куки: свой файл или браузер
     loc = tools.ffmpeg_location()
     if loc:
         args += ["--ffmpeg-location", loc]
@@ -838,7 +806,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         if not hooks.is_stopped():
             dest = _resolve(dest)
             ok = bool(dest)
-    if (not ok and not hooks.is_stopped() and cookie_args(settings)
+    if (not ok and not hooks.is_stopped() and cookie_args(settings, url)
             and is_cookie_error(log.text())):
         log.event("Cookie extraction failed — retrying without cookies")
         use_cookies = False

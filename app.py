@@ -672,11 +672,11 @@ class App(QWidget):
         if self.spotlight is not None:
             self.spotlight.update_window_download(self._win_dl["id"], frac)
 
-    def report_win_dl_done(self, dest, url="", title=None):
+    def report_win_dl_done(self, dest, url="", title=None, thumb_url=None):
         d = self._win_dl
         self._win_dl = None
-        entry = self.record_download(dest, url, title, notify_spotlight=False) \
-            if dest else None
+        entry = self.record_download(dest, url, title, notify_spotlight=False,
+                                     thumb_url=thumb_url) if dest else None
         if self.spotlight is not None and d is not None:
             self.spotlight.finish_window_download(d["id"], entry)
         elif entry is not None and self.spotlight is not None:
@@ -713,11 +713,14 @@ class App(QWidget):
     def resume_hotkey(self):
         self._apply_hotkey()
 
-    def record_download(self, dest, url, title=None, notify_spotlight=True):
+    def record_download(self, dest, url, title=None, notify_spotlight=True,
+                        thumb_bytes=None, thumb_url=None):
         """Добавляет скачанный файл в единую историю и (если Spotlight открыт)
-        наезжает записью в список. Возвращает запись истории или None."""
+        наезжает записью в список. Возвращает запись истории или None.
+        thumb_bytes/thumb_url — обложка сайта (постер), приоритетнее кадра ffmpeg."""
         from core import history
-        entry = history.add(dest, url, title)
+        entry = history.add(dest, url, title, thumb_bytes=thumb_bytes,
+                            thumb_url=thumb_url)
         if entry is not None and notify_spotlight and self.spotlight is not None:
             self.spotlight.on_external_download(entry)
         return entry

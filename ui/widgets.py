@@ -2,7 +2,8 @@ import math
 import time
 
 from PySide6.QtCore import (
-    Qt, QSize, QRectF, QPointF, QPoint, Signal, QEasingCurve, QTimer
+    Qt, QSize, QRectF, QPointF, QPoint, Signal, QEasingCurve, QTimer,
+    QObject, QEvent
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPolygonF, QFontMetrics, QPixmap, QGuiApplication,
@@ -14,6 +15,66 @@ from PySide6.QtWidgets import (
 
 from core.i18n import tr
 from ui import anim
+
+
+class SmoothScroll(QObject):
+    """Инерционная прокрутка колёсиком (как на macOS): щелчок колеса добавляет
+    импульс к скорости, а таймер на ~120 fps двигает область с плавным затуханием
+    (трение). Импульсы складываются — быстрый флик едет дальше и быстрее, один
+    щелчок — неспеша и очень плавно. Ставится один раз на QScrollArea.
+
+    distance — путь одного щелчка (px); friction — «вязкость» (ближе к 1 = дольше
+    и мягче докатывается)."""
+
+    def __init__(self, area, distance=115, friction=0.87, parent=None):
+        super().__init__(parent or area)
+        self._area = area
+        self._vp = area.viewport()   # сравниваем по идентичности (без C++-разыменования)
+        self._friction = friction
+        self._impulse = distance * (1.0 - friction) / 120.0   # 120 = delta одного щелчка
+        self._pos = 0.0
+        self._vel = 0.0
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
+        self._timer.setInterval(8)   # ~120 кадров/с — тот самый «маковый» смузи
+        self._timer.timeout.connect(self._step)
+        self._vp.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if obj is self._vp and ev.type() == QEvent.Wheel:
+            try:
+                self._on_wheel(ev.angleDelta().y())
+            except RuntimeError:
+                return False         # область уже уничтожена (пересоздание страницы)
+            return True
+        return super().eventFilter(obj, ev)
+
+    def _on_wheel(self, delta):
+        sb = self._area.verticalScrollBar()
+        if not self._timer.isActive():
+            self._pos = float(sb.value())    # синхронизируемся перед новым разгоном
+            self._vel = 0.0
+        self._vel += -delta * self._impulse  # импульс складывается со скоростью
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def _step(self):
+        try:
+            sb = self._area.verticalScrollBar()
+        except RuntimeError:
+            self._timer.stop()
+            return
+        self._pos += self._vel
+        self._vel *= self._friction
+        lo, hi = sb.minimum(), sb.maximum()
+        if self._pos <= lo:
+            self._pos, self._vel = float(lo), 0.0
+        elif self._pos >= hi:
+            self._pos, self._vel = float(hi), 0.0
+        sb.setValue(int(round(self._pos)))
+        if abs(self._vel) < 0.35:            # почти остановились — гасим таймер
+            self._vel = 0.0
+            self._timer.stop()
 
 
 def rounded_pixmap(src, w, h, radius):

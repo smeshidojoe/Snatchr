@@ -82,8 +82,11 @@ def res_label(height):
 
 
 def frame_at(path, ts, out_path, width=0, height=0):
-    """Извлекает один кадр на позиции ts (сек) в out_path (jpg). -ss ДО -i —
-    быстрый seek по ключевым кадрам. Возвращает out_path или None."""
+    """Извлекает один кадр на позиции ts (сек) в out_path (jpg). -ss ПОСЛЕ -i —
+    точный (декодирующий) seek: для обложки важнее корректный кадр, чем скорость.
+    Быстрый seek (-ss до -i) на VP9/4K попадает на не-ключевой кадр и выдаёт
+    битый «зелёный» кадр. ts у обложки ≤ 1с, поэтому декодирование дешёвое.
+    Возвращает out_path или None."""
     if not path or not os.path.isfile(path):
         return None
     ts = max(0.0, float(ts or 0.0))
@@ -95,7 +98,7 @@ def frame_at(path, ts, out_path, width=0, height=0):
         vf = f"scale={width}:-2"
     elif height:
         vf = f"scale=-2:{height}"
-    args = [tools.FFMPEG_EXE, "-y", "-ss", f"{ts:.3f}", "-i", path,
+    args = [tools.FFMPEG_EXE, "-y", "-i", path, "-ss", f"{ts:.3f}",
             "-frames:v", "1", "-q:v", "3"]
     if vf:
         args += ["-vf", vf]

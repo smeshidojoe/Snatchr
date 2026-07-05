@@ -223,15 +223,21 @@ class TrayAnimator:
         self._draw_frac = 0.0      # отрисованная доля (плавно догоняет целевую)
         self._base_pm = None       # иконка пользователя (для кроссфейда)
         self._check_pm = None      # заранее отрендеренная галочка/крестик
+        self._spin = False         # индикатор без прогресса (вращающийся спиннер)
+        self._angle = 0.0          # угол спиннера
 
     def is_active(self):
         return self._phase != "idle"
 
     # --- управление ---------------------------------------------------- #
-    def start(self):
+    def start(self, spin=False):
+        """spin=False — кольцо-прогресс (Paste, set_fraction). spin=True —
+        неопределённый вращающийся спиннер (несколько загрузок Spotlight)."""
         self._base_pm = self._tray.base_pixmap(self._size)
         self._frac = 0.0
         self._draw_frac = 0.0
+        self._spin = spin
+        self._angle = 0.0
         self._phase = "start"
         self._t = 0.0
         if not self._timer.isActive():
@@ -261,25 +267,29 @@ class TrayAnimator:
     # --- покадровая логика --------------------------------------------- #
     def _tick(self):
         dt = self._timer.interval()
+        if self._spin:
+            self._angle = (self._angle + 4) % 360   # медленное вращение спиннера
         if self._phase == "start":
             self._t += dt / 240.0
             self._draw_frac += (self._frac - self._draw_frac) * 0.25
-            ring = self._ring_pixmap(self._draw_frac)
-            self._set(self._crossfade(self._base_pm, ring, min(1.0, self._t)))
+            self._set(self._crossfade(self._base_pm, self._active_pixmap(),
+                                      min(1.0, self._t)))
             if self._t >= 1.0:
                 self._phase, self._t = "ring", 0.0
         elif self._phase == "ring":
-            self._draw_frac += (self._frac - self._draw_frac) * 0.20
-            # Перерисовываем иконку, только когда видимая дуга реально изменилась
-            # (иначе — десятки лишних setIcon в секунду на всё время загрузки).
-            if abs(self._draw_frac - self._last_ring) >= 0.004:
-                self._last_ring = self._draw_frac
-                self._set(self._ring_pixmap(self._draw_frac))
+            if self._spin:
+                self._set(self._spin_pixmap(self._angle))   # каждый кадр — вращение
+            else:
+                self._draw_frac += (self._frac - self._draw_frac) * 0.20
+                # Перерисовываем, только когда видимая дуга реально изменилась.
+                if abs(self._draw_frac - self._last_ring) >= 0.004:
+                    self._last_ring = self._draw_frac
+                    self._set(self._ring_pixmap(self._draw_frac))
         elif self._phase == "finish":
             self._t += dt / 280.0
             self._draw_frac += (1.0 - self._draw_frac) * 0.30
-            ring = self._ring_pixmap(self._draw_frac)
-            self._set(self._crossfade(ring, self._check_pm, min(1.0, self._t)))
+            self._set(self._crossfade(self._active_pixmap(), self._check_pm,
+                                      min(1.0, self._t)))
             if self._t >= 1.0:
                 self._phase, self._t = "hold", 0.0
         elif self._phase == "hold":
@@ -325,6 +335,32 @@ class TrayAnimator:
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawArc(rect, 90 * 16, -int(360 * 16 * frac))   # от 12 часов по часовой
+        p.end()
+        return QPixmap.fromImage(img)
+
+    def _active_pixmap(self):
+        """Текущий «рабочий» кадр: спиннер (spin) или кольцо-прогресс."""
+        return (self._spin_pixmap(self._angle) if self._spin
+                else self._ring_pixmap(self._draw_frac))
+
+    def _spin_pixmap(self, angle):
+        """Неопределённый спиннер: дуга ~110°, вращается по кругу."""
+        sz = self._size
+        img = self._blank()
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        m = sz * 0.16
+        rect = QRectF(m, m, sz - 2 * m, sz - 2 * m)
+        pw = sz * 0.13
+        track = QPen(QColor(255, 255, 255, 55), pw)
+        track.setCapStyle(Qt.RoundCap)
+        p.setPen(track)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(rect, 0, 360 * 16)
+        arc = QPen(self.RING_ORANGE, pw)
+        arc.setCapStyle(Qt.RoundCap)
+        p.setPen(arc)
+        p.drawArc(rect, int(-angle) * 16, 110 * 16)
         p.end()
         return QPixmap.fromImage(img)
 

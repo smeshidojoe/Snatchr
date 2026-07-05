@@ -240,7 +240,6 @@ class Spotlight(QWidget):
         self.activateWindow()
         self.search.edit().setFocus()
         self.search.edit().selectAll()
-        self._stop_tray_ring()                  # окно снова видно — кольцо не нужно
         self._prune_timer.start()
         a = QPropertyAnimation(self, b"windowOpacity", self)
         a.setDuration(170)
@@ -387,6 +386,7 @@ class Spotlight(QWidget):
                             "convert": convert, "url": url,
                             "thumb": self._fetch_preview(url, row)}
         worker.start()
+        self._update_tray_ring()         # запустить спиннер в трее
         self.search.edit().clear()       # поле снова свободно для новых ссылок
 
     def _fetch_preview(self, url, row):
@@ -401,6 +401,7 @@ class Spotlight(QWidget):
             if not pm.loadFromData(data):
                 return
             try:
+                r._thumb_bytes = data      # сохраним постер для истории (не кадр)
                 r.set_preview(pm)
             except RuntimeError:
                 pass   # строку уже удалили (упавшая/отменённая загрузка)
@@ -424,8 +425,14 @@ class Spotlight(QWidget):
 
     def _on_done(self, dl_id, dest):
         d = self._dls.pop(dl_id, None)
+        tb = None
+        if d is not None and d.get("row") is not None:
+            try:
+                tb = getattr(d["row"], "_thumb_bytes", None)   # постер от yt-dlp
+            except RuntimeError:
+                tb = None
         entry = self.app.record_download(dest, d["url"] if d else "", None,
-                                         notify_spotlight=False)
+                                         notify_spotlight=False, thumb_bytes=tb)
         if d is not None and d["row"] is not None and entry is not None:
             d["row"].finish(entry, pulse=self.isVisible())
         elif entry is not None and self.isVisible():
@@ -506,24 +513,22 @@ class Spotlight(QWidget):
 
     # --- кольцо в трее, пока спотлайт скрыт, а загрузка идёт ------------ #
     def _update_tray_ring(self):
+        """Пока в Spotlight есть активные загрузки — иконка в трее крутится
+        (спиннер, как fetching). Когда ВСЕ завершились — галочка и возврат к
+        иконке. Добавление новых к идущим не сбрасывает вращение."""
         tray = self.app.tray
         if tray is None:
             return
-        active = self._dls
-        if self.isVisible() or not active:
-            if self._tray_ring_on and not active:
-                tray.animator.finish(True)     # все загрузки завершились — галочка
-                self._tray_ring_on = False
-            elif self._tray_ring_on:
-                self._stop_tray_ring()          # окно открыто — просто убрать кольцо
-            return
-        if self.app.is_tray_downloading():
-            return                              # не конфликтуем с Paste
-        if not self._tray_ring_on:
-            tray.animator.start()
+        want = bool(self._dls) and not self.app.is_tray_downloading()
+        if want and not self._tray_ring_on:
+            tray.animator.start(spin=True)      # неопределённый вращающийся спиннер
             self._tray_ring_on = True
-        frac = sum(d["frac"] for d in active.values()) / max(1, len(active))
-        tray.animator.set_fraction(frac)
+        elif not want and self._tray_ring_on:
+            self._tray_ring_on = False
+            if not self._dls:
+                tray.animator.finish(True)      # все загрузки готовы — галочка
+            else:
+                tray.animator.abort()           # прервано (напр. Paste) — без галочки
 
     def _stop_tray_ring(self):
         if self._tray_ring_on and self.app.tray is not None:
