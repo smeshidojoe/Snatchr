@@ -9,6 +9,7 @@
 """
 
 import os
+import time
 
 from PySide6.QtCore import (
     Qt, QRectF, QUrl, QThread, Signal, QPointF, QTimer, QEasingCurve
@@ -473,19 +474,30 @@ class TrimPanel(QWidget):
         return s(280) + s(56) + s(44) + s(30)
 
     def open_for(self, path):
+        # Тот же файл, что открывали в прошлый раз: НЕ чистим превью и filmstrip —
+        # прошлый кадр/полоса остаются на месте, а новый кадр 0 идентичен, поэтому
+        # реоткрытие без черноты и моргания «как будто перезапустилась обрезка».
+        # (Файл при закрытии выгружался, тут снова загружаем — блокировки нет.)
+        same = bool(path and self._path
+                    and os.path.normpath(path) == os.path.normpath(self._path))
         self._path = path
         self._busy = False
         self._abandoned = False
         self._dirty = False              # новый файл — изменений ещё нет
         self._btn_play.set_glyph("play")
-        self._preview.clear()
-        self._bar.set_video(0.0, None)
+        if not same:
+            self._preview.clear()
+            self._bar.set_video(0.0, None)
         if path and os.path.isfile(path):
             self._player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
-            self._player.pause()
+        self._player.setPosition(0)
+        self._player.pause()
         self._layout()
 
     def stop(self):
+        # Закрыли обрезку — ВЫГРУЖАЕМ файл (снимаем блокировку, чтобы его можно было
+        # удалить/переместить). Превью не чистим: последний кадр остаётся, и повторное
+        # открытие того же файла проходит бесшовно.
         try:
             self._player.stop()
             self._player.setSource(QUrl())
@@ -493,20 +505,14 @@ class TrimPanel(QWidget):
             pass
         # Незавершённую обрезку отменяем (убиваем ffmpeg) и помечаем как брошенную,
         # чтобы её результат не «дописался» и не попал в историю после закрытия.
+        # НЕ ждём воркеры на UI-потоке (это подвешивало окно при закрытии) — только
+        # сигналим стоп/убиваем процесс; потоки завершатся в фоне, а _abandoned
+        # гарантирует, что их результат уже не применится.
         self._abandoned = True
         tw = self._trim_worker
         if tw is not None:
             try:
-                tw.stop()
-                if tw.isRunning():
-                    tw.wait(2000)
-            except Exception:
-                pass
-        sw = self._strip_worker
-        if sw is not None:
-            try:
-                if sw.isRunning():
-                    sw.wait(1500)
+                tw.stop()          # kill_tree(ffmpeg) — процесс умирает, поток выйдет сам
             except Exception:
                 pass
 
@@ -558,6 +564,8 @@ class TrimPanel(QWidget):
         self._strip_worker.start()
 
     def _on_strip(self, path):
+        if self._abandoned:
+            return                       # панель закрыта — поздний filmstrip игнорируем
         if path and os.path.isfile(path):
             pm = QPixmap(path)
             if not pm.isNull():
@@ -566,16 +574,26 @@ class TrimPanel(QWidget):
     def _on_frame(self, frame):
         if not frame.isValid():
             return
+        playing = self._player.playbackState() == QMediaPlayer.PlayingState
+        if playing:
+            # Троттлим рендер до ~30 к/с и масштабируем «быстро» — иначе полноразмерный
+            # SmoothTransformation на UI-потоке не успевает за декодером (тормоза,
+            # звук при этом идёт ровно). Пауза/скраб — плавное качество.
+            now = time.monotonic()
+            if now - getattr(self, "_last_frame_ts", 0.0) < 0.032:
+                return
+            self._last_frame_ts = now
         img = frame.toImage()
         if img.isNull():
             return
-        self._show_image(QPixmap.fromImage(img))
+        self._show_image(QPixmap.fromImage(img), smooth=not playing)
 
-    def _show_image(self, pm):
+    def _show_image(self, pm, smooth=True):
         if pm.isNull() or self._preview.width() <= 0:
             return
+        mode = Qt.SmoothTransformation if smooth else Qt.FastTransformation
         scaled = pm.scaled(self._preview.width(), self._preview.height(),
-                           Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                           Qt.KeepAspectRatio, mode)
         self._preview.setPixmap(scaled)
 
     def _on_position(self, ms):

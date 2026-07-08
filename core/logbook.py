@@ -1,13 +1,16 @@
 """
 Понятный человеку лог загрузки. Заголовочные строки переводятся на язык
 программы (i18n.tr), вывод утилит добавляется как есть. При ошибке лог можно
-сохранить на рабочий стол.
+сохранить в %APPDATA%/Snatchr/logs.
 """
 
 import os
 import time
 
 from core import i18n
+from core.config import APP_DIR
+
+LOG_DIR = os.path.join(APP_DIR, "logs")
 
 
 class Log:
@@ -36,12 +39,11 @@ class Log:
         return "\n".join(self._lines)
 
     def save_error(self):
-        """Сохраняет лог на рабочий стол; возвращает путь (или '')."""
-        base = os.path.join(os.path.expanduser("~"), "Desktop")
-        if not os.path.isdir(base):
-            base = os.path.expanduser("~")
-        path = os.path.join(base, "Snatchr-error-" + time.strftime("%Y%m%d-%H%M%S") + ".log")
+        """Сохраняет лог в %APPDATA%/Snatchr/logs; возвращает путь (или '')."""
         try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            path = os.path.join(
+                LOG_DIR, "error-" + time.strftime("%Y%m%d-%H%M%S") + ".log")
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.text())
             return path

@@ -94,7 +94,7 @@ def _download_thumb(thumb_url, out_path):
         return None
 
 
-def add(path, url, title=None, thumb_bytes=None, thumb_url=None):
+def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
     """Добавляет запись о скачанном файле и возвращает её. None — если файла нет.
 
     Обложка: приоритет — постер сайта из yt-dlp (готовые байты thumb_bytes или
@@ -132,6 +132,7 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None):
         "url": (url or "").strip(),
         "host": host_label(url),
         "title": title or os.path.splitext(os.path.basename(path))[0],
+        "uploader": uploader or "",
         "path": path,
         "thumb": thumb or "",
         "height": media.get("height") or 0,

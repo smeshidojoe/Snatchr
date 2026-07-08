@@ -852,11 +852,6 @@ class DownloadButton(QWidget):
         self.setCursor(Qt.PointingHandCursor if e else Qt.ArrowCursor)
         self.update()
 
-    def set_palette(self, bg, hover):
-        self._bg = QColor(bg)
-        self._hover = QColor(hover)
-        self.update()
-
     def set_text(self, text):
         self._text = text
         self._text_alpha = 1.0
@@ -1170,7 +1165,7 @@ class InfoCardRow(QWidget):
                  title_color, text_color, muted_color,
                  thumb_w, thumb_h, radius, height,
                  with_check=False, cb_colors=None):
-        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
         super().__init__(parent)
         self.setFixedHeight(height)
         self._tw, self._th, self._r = thumb_w, thumb_h, radius
@@ -1198,15 +1193,21 @@ class InfoCardRow(QWidget):
         vbox = QVBoxLayout()
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(1)
+        # Ignored по горизонтали: длинный заголовок НЕ раздувает ширину строки
+        # (иначе список становится шире вьюпорта, гориз. скролл выключен и правый
+        # край — напр. счётчик/Select-All в шапке — уезжает за границу и не виден).
         self.title = QLabel(title, self)
         self.title.setFont(title_font)
         self.title.setStyleSheet(f"color: {title_color}; background: transparent;")
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.uploader = QLabel(uploader, self)
         self.uploader.setFont(sub_font)
         self.uploader.setStyleSheet(f"color: {text_color}; background: transparent;")
+        self.uploader.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.duration = QLabel(duration, self)
         self.duration.setFont(mono_font)
         self.duration.setStyleSheet(f"color: {muted_color}; background: transparent;")
+        self.duration.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         vbox.addStretch(1)
         vbox.addWidget(self.title)
         vbox.addWidget(self.uploader)

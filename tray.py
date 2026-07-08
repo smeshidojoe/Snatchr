@@ -56,13 +56,19 @@ class TrayMenu(QWidget):
         self._hold = hold
 
         self._app = app
-        self._items = items
+        # items: (label, callback[, kind]). kind="danger" — двухступенчатое
+        # подтверждение (первый клик взводит: подпись -> Confirm, подсветка красная).
+        self._items = [(it[0], it[1], it[2] if len(it) > 2 else None) for it in items]
+        self._labels = [it[0] for it in self._items]
+        self._armed = -1                       # индекс взведённого danger-пункта
         s = app._s
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._font = fonts.font(s(11), "Regular")
         self._field_bg = QColor(pal["field_bg"])
         self._text_color = QColor(pal["text"])
         self._accent = QColor(pal["seg_sel"])
+        self._danger = QColor(pal.get("error", "#e05a5a"))
+        self._cur_color = QColor(self._accent)   # текущий цвет подсветки (анимируется)
         self._border = QColor(pal["border"])
         self._on_accent = QColor(pal["on_accent"])
         self._radius = s(9)
@@ -71,8 +77,9 @@ class TrayMenu(QWidget):
         self._row_h = fm.height() + s(14)
         self._pad = s(5)
         self._text_x = self._pad + s(10)
-        longest = max((fm.horizontalAdvance(lbl) for lbl, _ in items), default=s(80))
-        self._w = longest + s(40)
+        widths = [fm.horizontalAdvance(lbl) for lbl in self._labels]
+        widths.append(fm.horizontalAdvance(tr("Confirm")))   # чтобы Confirm не обрезался
+        self._w = max(widths, default=s(80)) + s(40)
 
         self._hover = -1
         self._hi_pos = 0.0
@@ -115,10 +122,24 @@ class TrayMenu(QWidget):
             self._animate_hi(idx)
 
     def release_at(self, gpos):
-        idx = self._idx_at_global(gpos)
+        self._activate(self._idx_at_global(gpos))
+
+    def _activate(self, idx):
+        """Клик по пункту. danger-пункт при первом клике взводится (Confirm +
+        красная подсветка), при втором — выполняется. Прочие — сразу выполняются."""
+        if idx < 0:
+            self.close()
+            return
+        label, cb, kind = self._items[idx]
+        if kind == "danger" and self._armed != idx:
+            self._armed = idx
+            self._labels[idx] = tr("Confirm")
+            self._animate_color(self._danger)   # подсветка под курсором -> красная
+            self.update()
+            return
         self.close()
-        if idx >= 0:
-            QTimer.singleShot(0, self._items[idx][1])
+        if cb:
+            QTimer.singleShot(0, cb)
 
     # --- мышь ---------------------------------------------------------- #
     def _row_at(self, y):
@@ -133,18 +154,39 @@ class TrayMenu(QWidget):
             self._hover = idx
             self._animate_hi(idx)
 
+    def hideEvent(self, event):
+        # Клик по кнопке-«три точки» при открытом Popup сначала закрывает меню
+        # (этот hide), а затем доходит до кнопки и переоткрыл бы его. Метим время
+        # закрытия — вызыватель по нему гасит переоткрытие (см. _show_more_menu).
+        try:
+            self._app._menu_closed_ts = time.monotonic()
+        except Exception:
+            pass
+        super().hideEvent(event)
+
     def mouseReleaseEvent(self, event):
         if self._hold:
             return
         # «Хвост» открывающего клика игнорируем, чтобы меню не закрылось сразу.
         if time.monotonic() - self._opened_at < 0.18:
             return
-        idx = self._row_at(event.position().y())
-        self.close()
-        if idx >= 0:
-            QTimer.singleShot(0, self._items[idx][1])
+        self._activate(self._row_at(event.position().y()))
+
+    def _target_color(self, idx):
+        return self._danger if (idx >= 0 and idx == self._armed) else self._accent
+
+    def _animate_color(self, target):
+        c0 = QColor(self._cur_color)
+        tc = QColor(target)
+
+        def tick(p):
+            self._cur_color = _blend(c0, tc, p)
+            self.update()
+        anim.animate(self, 0.0, 1.0, 160, tick,
+                     easing=QEasingCurve.OutCubic, attr="_col_anim")
 
     def _animate_hi(self, to_idx):
+        self._animate_color(self._target_color(to_idx))   # синий/красный под курсором
         frm = self._hi_pos
         a0 = self._hi_alpha
         if to_idx < 0:
@@ -179,7 +221,7 @@ class TrayMenu(QWidget):
 
         if self._hi_alpha > 0.01:
             hy = self._pad + self._hi_pos * self._row_h
-            acc = QColor(self._accent)
+            acc = QColor(self._cur_color)
             acc.setAlphaF(max(0.0, min(1.0, self._hi_alpha)))
             p.setPen(Qt.NoPen)
             p.setBrush(acc)
@@ -187,7 +229,7 @@ class TrayMenu(QWidget):
                               self._radius - 2, self._radius - 2)
 
         p.setFont(self._font)
-        for i, (label, _) in enumerate(self._items):
+        for i, label in enumerate(self._labels):
             ry = self._pad + i * self._row_h
             cover = max(0.0, 1.0 - abs(i - self._hi_pos)) * self._hi_alpha
             p.setPen(_blend(self._text_color, self._on_accent, cover))
@@ -254,15 +296,6 @@ class TrayAnimator:
         self._t = 0.0
         if not self._timer.isActive():
             self._timer.start()
-
-    def abort(self):
-        """Мгновенно убрать кольцо без галочки (напр., Spotlight снова открыт, а
-        загрузка ещё идёт — прогресс теперь виден в окне Spotlight)."""
-        if self._phase == "idle":
-            return
-        self._timer.stop()
-        self._phase = "idle"
-        self._tray.icon.setIcon(self._tray._resolve_icon())
 
     # --- покадровая логика --------------------------------------------- #
     def _tick(self):
@@ -552,7 +585,7 @@ class Toast(QWidget):
     не показываются (Focus Assist / настройки), поэтому рисуем свой. Клик —
     выполнить действие, ✕ — закрыть, авто-скрытие через ~7 c."""
 
-    def __init__(self, app, title, subtitle, on_click):
+    def __init__(self, app, title, subtitle, on_click, sticky=False, on_dismiss=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
                          | Qt.NoDropShadowWindowHint)
@@ -561,6 +594,8 @@ class Toast(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self._app = app
         self._on_click = on_click
+        self._sticky = sticky        # не гаснет по таймеру (напр., анонс обновления)
+        self._on_dismiss = on_dismiss  # вызывается при закрытии ✕/ПКМ
         s = app._s
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._bg = QColor(pal["card_bg"])
@@ -605,7 +640,8 @@ class Toast(QWidget):
         self.show()
         self.raise_()
         anim.fade(self, 0.0, 1.0, 200)
-        self._timer.start()
+        if not self._sticky:            # sticky-тост висит, пока его не закроют
+            self._timer.start()
 
     def _dismiss(self):
         self._timer.stop()
@@ -613,8 +649,10 @@ class Toast(QWidget):
 
     def mouseReleaseEvent(self, event):
         self._timer.stop()
-        # ПКМ — просто закрыть тост; ✕ — тоже закрыть; ЛКМ — запустить загрузку.
+        # ПКМ — просто закрыть тост; ✕ — тоже закрыть; ЛКМ — запустить действие.
         if event.button() == Qt.RightButton or self._close_r.contains(event.position()):
+            if self._on_dismiss:        # напр., запомнить «этот апдейт отклонили»
+                self._on_dismiss()
             self._dismiss()
             return
         cb = self._on_click
@@ -728,14 +766,17 @@ class TrayIcon:
         except Exception:
             pass
 
-    def show_toast(self, title, subtitle, on_click=None, position="corner"):
-        """Показать кастомный тост (предыдущий закрывается)."""
+    def show_toast(self, title, subtitle, on_click=None, position="corner",
+                   sticky=False, on_dismiss=None):
+        """Показать кастомный тост (предыдущий закрывается). sticky=True — висит,
+        пока не закроют (напр., анонс обновления)."""
         if self._toast is not None:
             try:
                 self._toast.close()
             except Exception:
                 pass
-        self._toast = Toast(self.app, title, subtitle, on_click)
+        self._toast = Toast(self.app, title, subtitle, on_click,
+                            sticky=sticky, on_dismiss=on_dismiss)
         self._toast.show_at(position)
 
     def toast_download(self, url, title):
@@ -767,28 +808,13 @@ class TrayIcon:
             self._show_menu()
 
     def _menu_items(self):
-        # Во время фоновой загрузки (Paste) первый пункт — Stop (как в окне).
-        if self.app.is_tray_downloading():
-            first = (tr("Stop"), self._stop_paste)
-        else:
-            first = (tr("Paste"), self._paste)
-        return [first, (tr("Open"), self._show_app), (tr("Exit"), self._quit_app)]
+        return [(tr("Paste"), self._paste),
+                (tr("Open"), self._show_app),
+                (tr("Exit"), self._quit_app)]
 
     def _show_menu(self):
         self._menu_popup = TrayMenu(self.app, self._menu_items())
         self._menu_popup.popup_at(QCursor.pos())
-
-    def close_menus(self):
-        """Закрыть открытое контекстное меню (напр., по завершении фонового Job —
-        иначе останется устаревшая кнопка Stop)."""
-        for m in (self._menu_popup, self._hold_menu):
-            if m is not None:
-                try:
-                    m.close()
-                except Exception:
-                    pass
-        self._menu_popup = None
-        self._hold_menu = None
 
     def show_menu_hold(self):
         """Меню по зажатию ЛКМ; ведётся из TrayHoldWatcher. Возвращает виджет."""
@@ -804,9 +830,6 @@ class TrayIcon:
         except Exception:
             pass
         self.app.start_tray_download(text.strip())
-
-    def _stop_paste(self):
-        self.app.stop_tray_download()
 
     def _toggle_app(self):
         self.app.toggle_window()

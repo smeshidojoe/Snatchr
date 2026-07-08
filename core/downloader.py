@@ -28,9 +28,13 @@ TMP_ROOT = os.path.join(APP_DIR, "tmp")   # временные папки заг
 SEP = " · "          # разделитель блоков в подписи
 MIN_HEIGHT = 480     # ниже 480p не показываем
 
-# Best Quality: максимальное разрешение, предпочитая VP9, но НИКОГДА не AV1
-# (av1 декодируется тяжело и часто не нужен). Если VP9 нет — лучший не-AV1 кодек.
-BEST_VIDEO_FMT = "bv*[vcodec~='vp0?9']+ba/bv*[vcodec!^=av01]+ba/b"
+# Best Quality: максимальное РАЗРЕШЕНИЕ среди не-AV1 кодеков. При равном
+# разрешении yt-dlp сам предпочтёт VP9 кодеку H.264 (штатный порядок сортировки
+# vcodec: av1 > vp9 > h264), поэтому явный VP9-first здесь не нужен и вреден.
+# Раньше стоял "bv*[vcodec~='vp0?9']+ba" первым: он брал ЛУЧШИЙ VP9 ЛЮБОГО
+# разрешения — и когда YouTube (обычно с куками) отдаёт VP9 только в 360p, а
+# H.264 в 1080p, скачивалось 360p. AV1 исключаем — тяжело декодируется.
+BEST_VIDEO_FMT = "bv*[vcodec!^=av01]+ba/b"
 # Совместимость: максимальное разрешение с кодеком AVC (обычно до 1080p).
 AVC_VIDEO_FMT = "bv*[vcodec^=avc]+ba/b"
 PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
@@ -54,24 +58,6 @@ def browser_cookie_args(settings):
     return ["--cookies-from-browser", b] if b else []
 
 
-# Кэш браузерных кук: расшифровка базы браузера на каждый вызов yt-dlp медленная,
-# поэтому первый раз дампим куки в файл (roaming/Snatchr/cookies/cookies.txt) и
-# дальше переиспользуем его копии. Свежесть — TTL, чтобы куки не «протухали».
-_COOKIES_DIR   = os.path.join(APP_DIR, "cookies")
-_CANON_COOKIES = os.path.join(_COOKIES_DIR, "cookies.txt")
-_COOKIE_TTL    = 1200          # сек (20 мин)
-_cold_pending  = False         # идёт первый (холодный) дамп кук из браузера
-_cold_started  = 0.0
-
-
-def _canon_fresh():
-    try:
-        return (os.path.isfile(_CANON_COOKIES)
-                and time.time() - os.path.getmtime(_CANON_COOKIES) < _COOKIE_TTL)
-    except OSError:
-        return False
-
-
 def _del_cookie_copy(args):
     """Удаляет приватную копию кук (use_*.txt) из args сразу после запуска —
     она одноразовая (нужна только на один запуск yt-dlp)."""
@@ -86,23 +72,6 @@ def _del_cookie_copy(args):
                         pass
                 return
     except Exception:
-        pass
-
-
-def _sweep_cookie_copies():
-    """Удаляет устаревшие приватные копии кук (use_*.txt старше 5 мин) — страховка
-    на случай, если процесс не успел удалить свою копию (краш/kill)."""
-    try:
-        now = time.time()
-        for n in os.listdir(_COOKIES_DIR):
-            if n.startswith("use_") and n.endswith(".txt"):
-                p = os.path.join(_COOKIES_DIR, n)
-                try:
-                    if now - os.path.getmtime(p) > 300:
-                        os.remove(p)
-                except OSError:
-                    pass
-    except OSError:
         pass
 
 
@@ -411,6 +380,29 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
     return args
 
 
+def cleanup_temp():
+    """Стартовая уборка мусора (single-instance гарантирует, что чужих активных
+    файлов нет): недокачанные папки заданий APP_DIR/tmp/* и осиротевшие
+    snatchr_*.info.json в системном %TEMP% (остаются после краша/kill). Чистим
+    ТОЛЬКО своё — по префиксу/расположению."""
+    try:
+        if os.path.isdir(TMP_ROOT):
+            for n in os.listdir(TMP_ROOT):
+                _rm_dir(os.path.join(TMP_ROOT, n))
+    except OSError:
+        pass
+    try:
+        import tempfile
+        import glob
+        for p in glob.glob(os.path.join(tempfile.gettempdir(), "snatchr_*.info.json")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _write_info_json(info):
     """Пишет info во временный .json (для --load-info-json). Путь или None."""
     if not info:
@@ -563,6 +555,44 @@ def is_supported_url(url):
 def is_playlist_url(url):
     u = (url or "").lower()
     return ("list=" in u) or ("/playlist" in u)
+
+
+def is_channel_url(url):
+    """Ссылка на КАНАЛ/ПРОФИЛЬ (а не на одно видео): yt-dlp по такой начинает
+    перечислять все видео канала. Ловим YouTube (@handle, /channel/, /c/, /user/)
+    и TikTok-профиль (/@user без /video/). Одиночные видео (/watch, /shorts/,
+    youtu.be/ID, tiktok .../video/ID) каналами НЕ считаются."""
+    from urllib.parse import urlparse
+    try:
+        pr = urlparse((url or "").strip())
+    except Exception:
+        return False
+    host = (pr.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = pr.path or ""
+    if "youtube.com" in host:
+        if ("/watch" in path or "/shorts/" in path or "/clip/" in path
+                or "v=" in (pr.query or "")):
+            return False
+        return bool(re.match(r"^/(@[^/]+|channel/|c/|user/)", path))
+    if "tiktok.com" in host:
+        # профиль: /@user  (одиночное видео: /@user/video/ID)
+        return bool(re.match(r"^/@[^/]+/?$", path))
+    return False
+
+
+def is_downloadable_single(text):
+    """True только если text — ОДНА ссылка на одиночное видео поддерживаемого
+    сайта: без лишнего текста рядом, без плейлиста, без страницы канала/профиля.
+    Для авто-триггеров (тост из буфера, Paste): не всплывать на скопированном
+    тексте со ссылкой внутри и не запускать анализ целого канала/плейлиста."""
+    t = (text or "").strip()
+    if not t or len(t.split()) != 1:        # рядом со ссылкой есть посторонний текст
+        return False
+    return (is_supported_url(t)
+            and not is_playlist_url(t)
+            and not is_channel_url(t))
 
 
 def slim_info(info):

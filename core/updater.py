@@ -291,3 +291,42 @@ def _restart_via_powershell(new_exe):
     except Exception as exc:
         _log("PowerShell helper launch failed: %s" % exc)
         return False
+
+
+def relaunch_app():
+    """Перезапуск ТОГО ЖЕ приложения (без обновления). Отвязанный помощник ждёт
+    выхода текущего процесса по PID (иначе новый экземпляр упрётся в single-
+    instance-мьютекс), затем стартует exe заново. Вызывающий обязан сразу выйти
+    (os._exit) после вызова. Возвращает True при успешном запуске помощника."""
+    exe = os.path.abspath(sys.executable)
+    pid = os.getpid()
+    if is_frozen():
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';\n"
+            f"$exe={_ps_lit(exe)}; $procId={pid};\n"
+            "try{ Wait-Process -Id $procId -Timeout 30 }catch{}\n"
+            "Start-Process -FilePath $exe\n"
+        )
+        try:
+            import base64
+            enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                              "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+            if not os.path.isfile(ps):
+                ps = "powershell"
+            subprocess.Popen(
+                [ps, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-EncodedCommand", enc],
+                creationflags=_DETACHED, close_fds=True)
+            _log("relaunch_app: helper launched")
+            return True
+        except Exception as exc:
+            _log("relaunch_app failed: %s" % exc)
+            return False
+    # dev-режим: перезапуск интерпретатора с теми же аргументами (мьютекс-гонку
+    # игнорируем — фича в основном для собранного exe).
+    try:
+        subprocess.Popen([sys.executable] + sys.argv, close_fds=True)
+        return True
+    except Exception:
+        return False

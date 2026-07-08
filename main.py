@@ -70,6 +70,13 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Уборка мусора прошлых запусков (папки заданий + осиротевшие info.json в %TEMP%).
+    try:
+        from core import downloader
+        downloader.cleanup_temp()
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
     _set_app_identity(app)
     # Окно живёт в трее: не закрываем приложение, когда окно скрыто.
@@ -80,5 +87,7 @@ if __name__ == "__main__":
     tray = TrayIcon(window)
     window.tray = tray
     tray.run()
+    window.sync_autostart()       # привести реестр автозапуска к настройке
+    window.start_update_watch()   # фоновая проверка обновлений + тост-анонс
 
     sys.exit(app.exec())

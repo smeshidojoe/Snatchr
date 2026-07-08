@@ -2,18 +2,23 @@ from PySide6.QtCore import Qt, QTimer, QEasingCurve
 from PySide6.QtGui import QPalette, QColor, QPixmap, QImage
 from PySide6.QtWidgets import QWidget, QLineEdit, QTextEdit, QLabel
 
-from core import fonts, downloader, tools, cache, themes
+import os
+import uuid
+
+from core import fonts, downloader, tools, cache, themes, history
 from core.i18n import tr
 from core.icons import themed_icon, themed_pixmap
 from core.workers import (
-    ProbeWorker, ThumbWorker, DownloadWorker, SetupWorker,
-    MultiProbeWorker, MultiDownloadWorker, PlaylistProbeWorker,
+    ProbeWorker, ThumbWorker, SetupWorker,
+    MultiProbeWorker, PlaylistProbeWorker,
 )
 from ui.widgets import (
     IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
-    DownloadButton, ProgressBar, Spinner, ScrollList, InfoCardRow,
+    DownloadButton, Spinner, ScrollList, InfoCardRow,
     PlaylistHeader, TimeCodeEdit, rounded_pixmap,
 )
+from ui.spotlight_history import HistoryList
+from ui.download_scheduler import DownloadScheduler
 from ui import anim
 
 
@@ -68,6 +73,18 @@ class MainPage(WindowDragMixin, QWidget):
         self._mprobe = self._mdl = None
         self._active_worker = None     # активный probe/playlist worker (анти-гонка)
         self._analyzing_url = ""
+        # История окна + параллельный планировщик (общий с логикой Spotlight).
+        self._sched = DownloadScheduler(app, self)
+        self._sched.progress.connect(self._on_row_progress)
+        self._sched.finished.connect(self._on_row_done)
+        self._sched.failed.connect(self._on_row_failed)
+        self._dl_source = "window"     # тег источника для зеркала загрузок
+        self._dls = {}                 # dl_id -> {row,frac,convert,url,title,thumb_url}
+        self._mirrors = {}             # dl_id -> row (зеркала загрузок из Spotlight)
+        self._pending_row = None       # проанализированная строка (ждёт Download)
+        self._pending_entry = None
+        self._fetching_row = None      # строка идущего анализа ссылки
+        self._collapsing = False       # идёт плавное сворачивание режима мультиссылок
 
         self._analyze_timer = QTimer(self)
         self._analyze_timer.setSingleShot(True)
@@ -80,6 +97,7 @@ class MainPage(WindowDragMixin, QWidget):
         self._build()
         self._layout()
         self._set_state("idle")
+        self.history.rebuild(history.load())      # показать накопленную историю
 
     @staticmethod
     def _default_option(mode):
@@ -241,6 +259,13 @@ class MainPage(WindowDragMixin, QWidget):
         self.list = ScrollList(self, self.PROG_TRACK, self.MUTED_COLOR)
         self.list.hide()
 
+        # История окна (общая с Spotlight по содержимому). Одиночная ссылка после
+        # анализа выезжает сюда pending-строкой; Download превращает её в загрузку.
+        self.history = HistoryList(self.app, self, allow_trim=False, draw_bg=False)
+        self.history.stopClicked.connect(self._cancel_row)
+        self.history.copyClicked.connect(self._copy_row)
+        self.history.moreClicked.connect(self._more_row)
+
         # Статус + Download + прогресс.
         self.status_box = QWidget(self)
         self.status_icon = QLabel(self.status_box)
@@ -258,19 +283,6 @@ class MainPage(WindowDragMixin, QWidget):
                                            disabled_text=self._pal["disabled_text"])
         self.btn_download.clicked.connect(self._on_download_click)
 
-        self.lbl_size = QLabel(self)
-        self.lbl_size.setFont(fonts.mono(s(9)))
-        self.lbl_size.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
-        self.lbl_size.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        self.lbl_size.hide()
-        self.lbl_progress = QLabel(self)
-        self.lbl_progress.setFont(fonts.mono(s(10)))
-        self.lbl_progress.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
-        self.lbl_progress.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        self.lbl_progress.hide()
-        self.progress_bar = ProgressBar(self, self.PROG_TRACK, self.DL_BG, s(3))
-        self.progress_bar.hide()
-
     # ------------------------------------------------------------------ #
     def _layout(self):
         s = self.app._s
@@ -279,8 +291,14 @@ class MainPage(WindowDragMixin, QWidget):
         extra = self._extra
         fy, fh = s(12), s(34)
 
-        if self._is_multi():
-            self.url_text.setGeometry(pad, fy, w - 2 * pad, fh + extra)
+        # Доп. высоту окна (+50) в режиме мультиссылок отдаём БОЛЬШОМУ полю ввода
+        # (растёт под много ссылок). В плейлисте поле одиночное и фиксированное —
+        # там +50 должны достаться СПИСКУ (низ якорится к Download и растёт с окном),
+        # иначе верхний блок просто съезжает вниз, а список не увеличивается.
+        multi_input = self._is_multi() or self._collapsing
+        input_extra = extra if multi_input else 0
+        if multi_input:
+            self.url_text.setGeometry(pad, fy, w - 2 * pad, fh + input_extra)
             self.url_text.show()
             self.url_edit.hide()
             self.btn_cancel.hide()
@@ -293,7 +311,7 @@ class MainPage(WindowDragMixin, QWidget):
                                         fy + (fh - cw) // 2, cw, cw)
             self.btn_cancel.setVisible(bool(self.url_edit.text()))
 
-        input_bottom = fy + fh + extra
+        input_bottom = fy + fh + input_extra
         ml_y = input_bottom + s(8)
         # [From] [00:00:00]  [To] [00:00:00] — справа; чекбокс Multiple Links на
         # остатке слева. Всё в одном ряду — при разворачивании Multiple Links ряд
@@ -338,7 +356,26 @@ class MainPage(WindowDragMixin, QWidget):
         self._stop_w = s(110)
         self._status_y = self._dl_y - s(22)
 
-        self.list.setGeometry(pad, info_y, w - 2 * pad, self._status_y - s(6) - info_y)
+        # История/список тянутся почти до кнопки Download — зону статус-строки
+        # (она нужна лишь изредка для мульти/ошибок) историей перекрываем.
+        base_rect = (pad, info_y, w - 2 * pad, self._dl_y - s(10) - info_y)
+        self.history.setGeometry(*base_rect)
+        # Плейлист: закреплённая шапка над списком; сам список ниже на её высоту.
+        ph = getattr(self, "pl_header", None)
+        if self._state == "playlist_ready" and ph is not None:
+            hh = s(30)
+            ph.setGeometry(pad, info_y, w - 2 * pad, hh)
+            ph.show()
+            ph.raise_()
+            self.list.setGeometry(pad, info_y + hh + s(6), w - 2 * pad,
+                                  base_rect[3] - hh - s(6))
+        else:
+            if ph is not None:
+                ph.hide()
+            self.list.setGeometry(*base_rect)
+        # Спиннер/надпись «Fetching…» держим поверх истории (иначе она их закрывает).
+        self.spinner.raise_()
+        self.lbl_msg.raise_()
 
         # «Use cookies file…» — в правом нижнем углу инфо-блока (над статусом).
         cw = s(130)
@@ -402,6 +439,13 @@ class MainPage(WindowDragMixin, QWidget):
             self._reset_info()
             self._set_state("idle")
             return
+        # Ссылка на канал/профиль (yt-dlp иначе перечисляет ВСЕ видео канала) —
+        # не анализируем, показываем понятную ошибку.
+        if downloader.is_channel_url(url):
+            self._reset_info()
+            self.lbl_msg.setText(tr("Channel links aren't supported — paste a video link."))
+            self._set_state("error")
+            return
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
             self._ensure_tools(then_analyze=True)
             return
@@ -423,8 +467,13 @@ class MainPage(WindowDragMixin, QWidget):
             self._pl.error.connect(self._on_probe_error)
             self._pl.start()
             return
+        # Строка «Fetching…» появляется прямо в истории (блок с спиннером); после
+        # анализа она превратится в pending (обложка + инфо).
+        self._remove_pending()
+        self._fetching_row = self.history.insert_fetching(
+            {"id": uuid.uuid4().hex[:12], "url": url, "host": history.host_label(url),
+             "title": "", "path": None, "thumb": "", "ts": 0})
         self._set_state("fetching")
-        self.lbl_msg.setText(tr("Fetching info…"))
         # Старые воркеры не убиваем (terminate падает) — игнорируем их результат.
         self._probe = ProbeWorker(url, self.settings, self)
         self._active_worker = self._probe
@@ -452,14 +501,16 @@ class MainPage(WindowDragMixin, QWidget):
 
         self._pl_entries = entries
         self.list.clear()
-        # Шапка: слева — название плейлиста, справа — Deselect All + счётчик.
+        # Шапка ЗАКРЕПЛЕНА над списком (дочерний виджет страницы, не строка скролла)
+        # — тайтл/счётчик/Select-All всегда видны при прокрутке. Позиция — в _layout.
+        self._clear_pl_header()
         self.pl_header = PlaylistHeader(
-            self.list, info.get("title") or tr("Playlist"), len(entries),
+            self, info.get("title") or tr("Playlist"), len(entries),
             fonts.font(s(11), "Semibold"), fonts.font(s(10), "Medium"),
             fonts.font(s(10), "Regular"),
             self.TITLE_COLOR, self.TEXT_COLOR, self.TITLE_COLOR, self.MUTED_COLOR, s(30))
         self.pl_header.toggled.connect(self._on_pl_toggle)
-        self.list.add_row(self.pl_header)
+        self.pl_header.show()
 
         self._pl_rows = []
         self._pl_thumb_workers = []
@@ -491,6 +542,14 @@ class MainPage(WindowDragMixin, QWidget):
         self.sel_format.set_current(tr("Best Quality"))
         self._selected = self._default_option(self.seg_type.value())
         self._set_state("playlist_ready")
+        self._layout()                   # разместить закреплённую шапку сразу
+
+    def _clear_pl_header(self):
+        ph = getattr(self, "pl_header", None)
+        if ph is not None:
+            ph.setParent(None)
+            ph.deleteLater()
+        self.pl_header = None
 
     def _on_pl_toggle(self):
         """Кнопка Deselect All / Select All: инвертирует выбор всех клипов."""
@@ -518,13 +577,9 @@ class MainPage(WindowDragMixin, QWidget):
         sel = [(i, r) for i, r in enumerate(self._pl_rows) if r.is_checked()]
         if not sel:
             return
-        jobs = [(self._pl_entries[i]["url"], opt, self._pl_entries[i].get("title"))
-                for i, _ in sel]
-        self._dl_context = "playlist"
-        self._dl_rows = [r for _, r in sel]   # строки, выровненные с jobs
-        # Для плейлистов Embed-опции принудительно выключаем (даже если галочки
-        # включены) — массовая выгрузка субтитров/обложек ненадёжна.
-        self._run_batch(jobs, settings=self._no_embed_settings())
+        items = [(self._pl_entries[i], opt) for i, _ in sel]
+        self._enqueue_history(items)
+        self._finish_batch_enqueue()
 
     def _ensure_tools(self, then_analyze=False):
         self._tools_ready = False
@@ -555,25 +610,102 @@ class MainPage(WindowDragMixin, QWidget):
 
     def _apply_info(self, info):
         self._info = info
-        self.lbl_title.setText(info.get("title") or tr("Unknown"))
-        self.lbl_uploader.setText(info.get("uploader") or info.get("channel") or tr("Unknown"))
-        self.lbl_duration.setText(self._fmt_duration(info.get("duration")))
-        self._set_placeholder_thumb()
-        turl = info.get("thumbnail")
-        if turl:
-            self._thumb = ThumbWorker(turl, self)
-            self._thumb.done.connect(self._on_thumb)
-            self._thumb.start()
         self._populate_selector()
+        # Вместо карточки — pending-строка в истории (подсвечена; ждёт Download).
+        url = self._analyzing_url
+        entry = {"id": uuid.uuid4().hex[:12], "url": url,
+                 "host": history.host_label(url), "title": info.get("title") or "",
+                 "uploader": info.get("uploader") or info.get("channel") or "",
+                 "duration": info.get("duration") or 0,
+                 "path": None, "thumb": "", "ts": 0, "_thumb_url": info.get("thumbnail")}
+        if self._fetching_row is not None:
+            entry["id"] = self._fetching_row.entry.get("id", entry["id"])
+            self._fetching_row.to_pending(entry)      # «Fetching…» -> обложка+инфо
+            self._pending_row = self._fetching_row
+            self._fetching_row = None
+        else:
+            # Мог остаться прежний pending (повторный анализ той же кэш-ссылки) —
+            # убираем его, иначе появится дубль строки.
+            self._remove_pending()
+            self._pending_row = self.history.insert_pending(entry)
+        self._pending_entry = entry                   # после _remove_pending (тот его чистит)
+        self._fetch_row_thumb(info.get("thumbnail"), url, self._pending_row)
         self._set_state("ready")
+
+    def _remove_pending(self):
+        """Убирает pending/fetching-строку (сменили/стёрли ссылку до старта)."""
+        for attr in ("_pending_row", "_fetching_row"):
+            row = getattr(self, attr, None)
+            if row is not None:
+                try:
+                    self.history.remove_row(row)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._pending_entry = None
+
+    def _fetch_row_thumb(self, thumb_url, url, row):
+        """Тянет постер в pending/загрузочную строку (и запоминает байты для истории)."""
+        if not thumb_url or row is None:
+            return
+        tw = ThumbWorker(thumb_url, self)
+
+        def on_done(data, r=row):
+            if not data:
+                return
+            pm = QPixmap()
+            if not pm.loadFromData(data):
+                return
+            try:
+                r._thumb_bytes = data
+                r.set_preview(pm)
+            except RuntimeError:
+                pass
+        tw.done.connect(on_done)
+        tw.finished.connect(tw.deleteLater)   # не копим воркеры — чистим по завершении
+        tw.start()
+
+    def on_window_shown(self):
+        """Окно показали: обновляем историю (rebuild сохраняет pending/загрузки)."""
+        if self._state not in ("multi_idle", "multi_fetching", "multi_ready",
+                               "playlist_fetching", "playlist_ready"):
+            self.history.rebuild(history.prune_missing())
+        self.app.sync_view_mirrors(self)     # подтянуть идущие загрузки из Spotlight
+        # Поле ввода при возврате не должно оказываться «выделенным» (Qt по фокусу
+        # окна выделяет весь текст) — снимаем выделение, курсор в конец.
+        QTimer.singleShot(0, self._deselect_url)
+
+    def _deselect_url(self):
+        self.url_edit.deselect()
+        self.url_edit.setCursorPosition(len(self.url_edit.text()))
+
+    def on_external_download(self, entry):
+        """Ролик, скачанный в другом месте (Spotlight/Paste/Toast), — вживую
+        наезжает в историю окна, если оно открыто (иначе подхватится при показе)."""
+        if entry is not None and self.isVisible():
+            self.history.insert_new(entry)
 
     def _on_probe_error(self, msg):
         if self.sender() is not self._active_worker:
             return
-        # Показываем конкретную причину (бот-чек / регион / приватное / …),
-        # а не общее «не удалось прочитать» — ссылка часто читается, но заблокирована.
-        self.lbl_msg.setText(
-            downloader.friendly_error(msg, default="Could not read this link."))
+        # Лог неудачного анализа в %APPDATA%/Snatchr/logs (для диагностики).
+        try:
+            from core import logbook
+            log = logbook.Log(self._analyzing_url)
+            log.event("Analyze failed")
+            log.raw(msg)
+            log.save_error()
+        except Exception:
+            pass
+        # Вместо надписи — строка анализа превращается в красный крестик и уезжает.
+        row = self._fetching_row or self._pending_row
+        self._fetching_row = None
+        self._pending_row = None
+        self._pending_entry = None
+        if row is not None:
+            row.to_error()
+            QTimer.singleShot(2600, lambda r=row: self.history.remove_row(r))
+        self.lbl_msg.setText("")
         self._set_state("error")
         # Куки браузера не помогли/не читаются (бот-чек или Chrome-шифрование) —
         # предлагаем указать свой файл cookies.
@@ -597,21 +729,6 @@ class MainPage(WindowDragMixin, QWidget):
             self.btn_cookies.hide()
             self._analyze_timer.start()   # повторный анализ уже с файлом кук
 
-    def _on_thumb(self, data):
-        if not data:
-            return
-        img = QImage.fromData(data)
-        if img.isNull():
-            return
-        pm = rounded_pixmap(QPixmap.fromImage(img), self._thumb_w, self._thumb_h, self._thumb_r)
-        if pm:
-            self.thumb.setPixmap(pm)
-
-    def _set_placeholder_thumb(self):
-        base = QPixmap(self._thumb_w, self._thumb_h)
-        base.fill(QColor(self.FIELD_BG))
-        self.thumb.setPixmap(rounded_pixmap(base, self._thumb_w, self._thumb_h, self._thumb_r))
-
     # ------------------------------------------------------------------ #
     #  Multiple Links
     # ------------------------------------------------------------------ #
@@ -623,9 +740,15 @@ class MainPage(WindowDragMixin, QWidget):
         self.url_text.blockSignals(True)
         self.url_text.clear()
         self.url_text.blockSignals(False)
+        # Смена режима = свежий старт: поле чистим и убираем проанализированную,
+        # но не запущенную (pending/fetching) строку — иначе она «зависала» бы в
+        # истории (в т.ч. после скрытия/открытия окна).
+        self.url_edit.blockSignals(True)
         self.url_edit.clear()
-        self.app.set_main_expanded(checked)   # анимация роста/сжатия окна + relayout
+        self.url_edit.blockSignals(False)
+        self._remove_pending()
         if checked:
+            self._animate_history_out()       # история уезжает вниз с прозрачностью
             self._populate_multi_selector()
             self.btn_download.fade_text(tr("Analyze"))
             self.btn_download.animate_bg(self.ANALYZE_BG)
@@ -633,7 +756,43 @@ class MainPage(WindowDragMixin, QWidget):
         else:
             self.btn_download.fade_text(tr("Download"))
             self.btn_download.animate_bg(self.DL_BG)
+            self._collapsing = True           # держим большое поле, пока окно ужимается
+            QTimer.singleShot(310, self._end_collapse)
             self._set_state("idle")
+        self._apply_expand()                  # рост/сжатие окна под список выбора
+
+    def _end_collapse(self):
+        self._collapsing = False
+        self._layout()                        # переключаем на одиночное поле ввода
+
+    def _apply_expand(self):
+        """Окно выше на 50px, пока показан список выбора (мультиссылки/плейлист).
+        Для плейлиста растим только когда список ГОТОВ (не во время «Fetching…»),
+        иначе окно дёргается вверх ещё до появления списка."""
+        want = self._is_multi() or self._state == "playlist_ready"
+        if want != (self._extra > 0):
+            self.app.set_main_expanded(want)   # смена высоты сама релэйаутит
+        else:
+            # Высота та же (напр. плейлист +50 -> мультиссылки +50), но раскладка
+            # под новый режим (поле/список/шапка) должна перестроиться.
+            self._layout()
+
+    def _animate_history_out(self):
+        """История плавно уезжает вниз с opacity (при входе в режим списка выбора)."""
+        h = self.history
+        if not h.isVisible():
+            return
+        y0 = h.y()
+        h.raise_()
+
+        def restore():
+            h.setGraphicsEffect(None)
+            h.hide()
+            h.move(h.x(), y0)
+        anim.fade(h, 1.0, 0.0, 220, on_finished=restore)
+        anim.animate(self, 0, self.app._s(30), 220,
+                     lambda v: h.move(h.x(), y0 + int(v)),
+                     easing=QEasingCurve.InCubic, attr="_hist_out_anim")
 
     def _multi_urls(self):
         out = []
@@ -763,27 +922,35 @@ class MainPage(WindowDragMixin, QWidget):
     # ------------------------------------------------------------------ #
     def _set_state(self, state):
         self._state = state
-        single_info = (state == "ready")
+        # Карточки одиночного видео больше нет — вместо неё pending-строка в истории.
         for wdg in (self.thumb, self.lbl_title, self.lbl_uploader, self.lbl_duration):
-            wdg.setVisible(single_info)
+            wdg.setVisible(False)
         if state != "error":
             self.btn_cookies.hide()   # кнопка кук — только в состоянии ошибки
-        self.lbl_msg.setVisible(state in ("fetching", "error", "libraries",
+        # Одиночный анализ («fetching») теперь показывается строкой в самой истории
+        # (спиннер в блоке), поэтому общий lbl_msg/спиннер для него не нужен.
+        self.lbl_msg.setVisible(state in ("error", "libraries",
                                           "multi_fetching", "playlist_fetching"))
-        self.list.setVisible(state in ("multi_ready", "playlist_ready", "downloading")
-                             and len(self.list.rows()) > 0)
-        if state in ("fetching", "libraries", "multi_fetching", "playlist_fetching"):
+        # Список выбора (мульти/плейлист) и история окна взаимоисключающи: пока виден
+        # список — историю прячем; в остальных «одиночных» состояниях — показываем.
+        list_visible = (state in ("multi_ready", "playlist_ready", "downloading")
+                        and len(self.list.rows()) > 0)
+        self.list.setVisible(list_visible)
+        self.history.setVisible(not list_visible and state not in (
+            "multi_idle", "multi_fetching", "playlist_fetching", "libraries"))
+        if state in ("libraries", "multi_fetching", "playlist_fetching"):
             self.spinner.start()
         else:
             self.spinner.stop()
         self._refresh_download_enabled()
         self._update_timecodes_enabled()
+        self._apply_expand()          # плейлист/мульти-выбор — окно выше на 50px
 
     def _update_timecodes_enabled(self):
-        """Таймкоды доступны только для одиночного видео (state=ready) длиннее
-        3 минут и вне режима Multiple Links; иначе — выключены (и сброшены)."""
-        dur = (self._info or {}).get("duration") or 0
-        en = (not self._is_multi() and self._state == "ready" and dur >= 180)
+        """Таймкоды доступны для одиночного видео (state=ready) вне режима
+        Multiple Links; иначе — выключены (и сброшены). Лимит минимальной
+        длины видео снят."""
+        en = (not self._is_multi() and self._state == "ready")
         # Метки цвет не меняют (всегда основной) — инактив только на полях ввода.
         for f in (self.tc_start, self.tc_end):
             f.setEnabled(en)
@@ -828,6 +995,8 @@ class MainPage(WindowDragMixin, QWidget):
     def _reset_info(self):
         self._info = None
         self._active_worker = None
+        self._remove_pending()             # проанализированная строка уезжает обратно
+        self._clear_pl_header()            # убрать закреплённую шапку плейлиста
         self.lbl_msg.setText("")
         self.list.clear()
         # Селектор форматов возвращаем в дефолт.
@@ -840,9 +1009,7 @@ class MainPage(WindowDragMixin, QWidget):
     #  Скачивание
     # ------------------------------------------------------------------ #
     def _on_download_click(self):
-        if self._state == "downloading":
-            self._stop_download()
-        elif self._is_multi():
+        if self._is_multi():
             if self._multi_analyzed:
                 self._start_multi_download()
             else:
@@ -853,9 +1020,13 @@ class MainPage(WindowDragMixin, QWidget):
             self._start_download()
 
     def _start_download(self):
-        url = (self.url_edit.text() or "").strip()
-        if not url or self._selected is None:
+        """Download по одиночной ссылке: pending-строка становится загрузкой
+        (свой прогресс + стоп), планировщик уважает лимит. Поле ввода очищается —
+        можно кидать следующую ссылку, история копится."""
+        if self._pending_row is None or self._pending_entry is None or self._selected is None:
             return
+        entry = self._pending_entry
+        url = entry["url"]
         sec = self._section_arg()
         if sec == "invalid":
             return                       # ошибка интервала уже показана
@@ -863,212 +1034,235 @@ class MainPage(WindowDragMixin, QWidget):
         if sec:
             option = dict(self._selected)
             option["section"] = sec
-        # Будет ли конвертация — чтобы вести ОДИН прогресс-бар 0..100% на всё
-        # задание: скачивание (видео+аудио) -> первая половина, конвертация ->
-        # вторая (как у фонового Paste), без сброса полосы между этапами.
-        self._dl_convert = bool(downloader.should_convert(option, url, self.settings))
-        self._set_state("downloading")
-        self.btn_download.setEnabled(True)
-        self._animate_button_to_stop()
-        title = self._info.get("title") if self._info else None
-        self._last_dl_url = url
-        self._last_dl_title = title
-        # Быстрый путь: если анализ дал форматы с готовыми URL — качаем через
-        # --load-info-json (без повторного извлечения). Иначе обычный путь.
-        info = self._info
-        has_urls = bool(info and info.get("formats")
-                        and any(f.get("url") for f in info["formats"]))
-        self._dl = DownloadWorker(option, url, self.settings, title, self,
-                                  info=info if has_urls else None)
-        self._dl.progress.connect(self._on_progress)
-        self._dl.status.connect(self._on_status)
-        self._dl.finished_ok.connect(self._on_dl_finished)
-        self._dl.failed.connect(self._on_dl_failed)
-        # мост в Spotlight: показать эту загрузку в истории (и дать отменить оттуда)
-        self.app.report_win_dl_start(url, self._dl, self._dl_convert)
-        self._dl.start()
+        row = self._pending_row
+        self._pending_row = None
+        self._pending_entry = None
+        row.start_downloading()
+        dl_id = entry["id"]
+        convert = bool(downloader.should_convert(option, url, self.settings))
+        self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
+                            "title": entry.get("title") or None,
+                            "uploader": entry.get("uploader") or None,
+                            "thumb_url": entry.get("_thumb_url")}
+        self._sched.submit(dl_id, option, url, entry.get("title") or None, managed=True)
+        self.app.mirror_start("window", dl_id, entry)
+        self.app.report_active_downloads("window", len(self._dls))
+        # Поле свободно для следующей ссылки; состояние — в idle (история видна).
+        self.url_edit.blockSignals(True)
+        self.url_edit.clear()
+        self.url_edit.blockSignals(False)
+        self.btn_cancel.hide()
+        self._info = None
+        self._analyzing_url = ""
+        self._reset_info()
+        self._set_state("idle")
+
+    # --- построчные загрузки в окне (общий планировщик) ----------------- #
+    def _on_row_progress(self, dl_id, p):
+        d = self._dls.get(dl_id)
+        if d is None:
+            return
+        if p.get("stage") == "convert":
+            frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
+        else:
+            base = p.get("frac") or 0.0
+            frac = base * 0.5 if d["convert"] else base
+        d["frac"] = frac
+        if d["row"] is not None:
+            d["row"].set_progress(frac)
+        self.app.mirror_progress("window", dl_id, frac)
+
+    def _on_row_done(self, dl_id, dest):
+        d = self._dls.pop(dl_id, None)
+        tb = None
+        if d is not None and d.get("row") is not None:
+            try:
+                tb = getattr(d["row"], "_thumb_bytes", None)
+            except RuntimeError:
+                tb = None
+        # Пишем в историю без авто-уведомлений — зеркало финиширует строку в
+        # Spotlight (mirror_finish).
+        entry = self.app.record_download(
+            dest, d["url"] if d else "", d.get("title") if d else None,
+            notify_window=False, thumb_bytes=tb,
+            thumb_url=d.get("thumb_url") if d else None,
+            uploader=d.get("uploader") if d else None)
+        if entry is None:
+            # «Завершилось», но файла нет (пропал/не записался) — трактуем как сбой:
+            # убираем строку и зеркало, показываем ошибку.
+            if d is not None and d.get("row") is not None:
+                self.history.remove_row(d["row"])
+            self.app.mirror_remove("window", dl_id)
+            self.app.report_active_downloads("window", len(self._dls))
+            self._show_status(tr("Download failed"), self.ERR_COLOR, self._err_pm)
+            return
+        if d is not None and d.get("row") is not None:
+            d["row"].finish(entry, pulse=True)
+        self.app.mirror_finish("window", dl_id, entry)
+        self.app.report_active_downloads("window", len(self._dls))
+
+    def _on_row_failed(self, dl_id, msg):
+        d = self._dls.pop(dl_id, None)
+        if d is None:
+            return                       # уже отменено пользователем (Stop)
+        if d.get("row") is not None:
+            self.history.remove_row(d["row"])
+        self.app.mirror_remove("window", dl_id)
+        self.app.report_active_downloads("window", len(self._dls))
+        if (msg or "").strip() and msg.strip() != "Stopped":
+            self._show_status(msg, self.ERR_COLOR, self._err_pm)
+
+    def _cancel_row(self, entry):
+        dl_id = entry.get("id")
+        if self.cancel_own(dl_id):
+            return
+        if dl_id in self._mirrors:
+            self.app.request_cancel(dl_id)   # владелец — Spotlight
+
+    def cancel_own(self, dl_id):
+        d = self._dls.pop(dl_id, None)
+        if d is None:
+            return False
+        self._sched.cancel(dl_id)
+        if d.get("row") is not None:
+            self.history.remove_row(d["row"])
+        self.app.mirror_remove("window", dl_id)
+        self.app.report_active_downloads("window", len(self._dls))
+        return True
+
+    # --- зеркала загрузок из Spotlight --------------------------------- #
+    def add_mirror(self, dl_id, entry):
+        if dl_id in self._mirrors:
+            return
+        row = self.history.insert_downloading(entry)
+        self._mirrors[dl_id] = row
+        self._fetch_row_thumb(entry.get("_thumb_url"), entry.get("url", ""), row)
+
+    def update_mirror(self, dl_id, frac):
+        r = self._mirrors.get(dl_id)
+        if r is not None:
+            r.set_progress(frac)
+
+    def finish_mirror(self, dl_id, entry):
+        r = self._mirrors.pop(dl_id, None)
+        if r is None:
+            return
+        if entry is not None:
+            r.finish(entry, pulse=True)
+        else:
+            self.history.remove_row(r)
+
+    def remove_mirror(self, dl_id):
+        r = self._mirrors.pop(dl_id, None)
+        if r is not None:
+            self.history.remove_row(r)
+
+    def set_mirror_meta(self, dl_id, thumb_bytes, title, uploader):
+        r = self._mirrors.get(dl_id)
+        if r is None:
+            return
+        try:
+            if thumb_bytes:
+                pm = QPixmap()
+                if pm.loadFromData(thumb_bytes):
+                    r._thumb_bytes = thumb_bytes
+                    r.set_preview(pm)
+            if title and not r.entry.get("title"):
+                r.entry["title"] = title
+            if uploader and not r.entry.get("uploader"):
+                r.entry["uploader"] = uploader
+            r._sub = r._make_sub()
+            r.update()
+        except RuntimeError:
+            pass
+
+    def active_downloads(self):
+        """Снимок своих идущих загрузок (для зеркалирования при открытии другого
+        окна): [(dl_id, entry, frac)]."""
+        out = []
+        for dl_id, d in self._dls.items():
+            out.append((dl_id, {
+                "id": dl_id, "url": d["url"], "host": history.host_label(d["url"]),
+                "title": d.get("title") or "", "uploader": d.get("uploader") or "",
+                "path": None, "thumb": "", "ts": 0,
+                "_thumb_url": d.get("thumb_url")}, d.get("frac", 0.0)))
+        return out
+
+    def _copy_row(self, entry):
+        path = entry.get("path", "")
+        if path and os.path.isfile(path):
+            self.app._copy_file_to_clipboard(path)
+
+    def _more_row(self, entry, gpos):
+        import time as _t
+        if _t.monotonic() - getattr(self.app, "_menu_closed_ts", 0.0) < 0.25:
+            return                       # повторный клик — Popup уже закрылся
+        from tray import TrayMenu
+        items = [
+            (tr("Open"), lambda e=entry: self.app.play_file(e.get("path", ""))),
+            (tr("Remove From List"), lambda e=entry: self._remove_entry(e)),
+            (tr("Delete"), lambda e=entry: self._delete_entry(e), "danger"),
+        ]
+        self._more_menu = TrayMenu(self.app, items)
+        self._more_menu.popup_at(gpos)
+
+    def _remove_entry(self, entry):
+        history.remove(entry.get("id", ""))
+        self.app.refresh_histories()
+
+    def _delete_entry(self, entry):
+        self.app.delete_file(entry)
+        self.app.refresh_histories()
 
     def _start_multi_download(self):
         if not self._multi_jobs:
             return
-        self._dl_context = "multi"
-        self._dl_rows = None      # карточки без построчного статуса
-        self._run_batch(self._multi_jobs)
+        opt = self._selected
+        infos = getattr(self, "_multi_infos", [])
+        items = []
+        for j, job in enumerate(self._multi_jobs):
+            url = job[0]
+            title = job[2] if len(job) > 2 else None
+            info = infos[j] if j < len(infos) and infos[j] else {}
+            items.append(({"url": url, "title": title,
+                           "thumbnail": info.get("thumbnail"),
+                           "uploader": info.get("uploader") or info.get("channel"),
+                           "duration": info.get("duration")}, opt))
+        self._enqueue_history(items)
+        self._finish_batch_enqueue()
 
-    def _no_embed_settings(self):
-        """Копия настроек с выключенными Embed-опциями (для плейлистов)."""
-        s = dict(self.settings)
-        s["embed_thumbnail"] = False
-        s["embed_metadata"] = False
-        return s
+    def _enqueue_history(self, items):
+        """Ставит выбранные ролики (мульти/плейлист) в историю окна на загрузку
+        через общий планировщик (лимит parallel_downloads)."""
+        for e, opt in items:
+            url = e["url"]
+            entry = {"id": uuid.uuid4().hex[:12], "url": url,
+                     "host": history.host_label(url), "title": e.get("title") or "",
+                     "uploader": e.get("uploader") or "", "duration": e.get("duration") or 0,
+                     "path": None, "thumb": "", "ts": 0, "_thumb_url": e.get("thumbnail")}
+            row = self.history.insert_downloading(entry)
+            dl_id = entry["id"]
+            convert = bool(downloader.should_convert(opt, url, self.settings))
+            self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
+                                "title": entry["title"] or None,
+                                "uploader": entry["uploader"] or None,
+                                "thumb_url": entry.get("_thumb_url")}
+            self._sched.submit(dl_id, opt, url, entry["title"] or None, managed=True)
+            self._fetch_row_thumb(entry.get("_thumb_url"), url, row)
+            self.app.mirror_start("window", dl_id, entry)
+        self.app.report_active_downloads("window", len(self._dls))
 
-    def _run_batch(self, jobs, settings=None):
-        self._set_state("downloading")
-        self.btn_download.setEnabled(True)
-        self._animate_button_to_stop()
-        self._mdl_total = len(jobs)
-        self._mdl_done = 0
-        self._mdl_fail = 0
-        self._batch_stopped = False
-        self._mdl = MultiDownloadWorker(jobs, settings or self.settings, self)
-        self._mdl.item_progress.connect(self._on_multi_progress)
-        self._mdl.item_status.connect(self._on_multi_status)
-        self._mdl.item_done.connect(self._on_multi_item_done)
-        self._mdl.all_done.connect(self._on_multi_all_done)
-        self._mdl.start()
-
-    def _stop_download(self):
-        if self._dl is not None:
-            self._dl.stop()
-        if self._mdl is not None:
-            self._batch_stopped = True
-            self._mdl.stop()
-
-    def _on_progress(self, p):
-        parts = [x for x in (p.get("percent_str"), p.get("speed"),
-                             ("ETA " + p["eta"]) if p.get("eta") else "") if x]
-        self.lbl_progress.setText("   ·   ".join(parts))
-        if p.get("size"):
-            self.lbl_size.setText(tr("File Size ~") + p["size"])
-        frac = p.get("frac")
-        if frac is not None:
-            # Единая полоса: конвертация — вторая половина; скачивание — первая
-            # (или вся полоса, если конвертации не будет). «Converting…» остаётся
-            # в подписи (percent_str), полоса назад не откатывается.
-            if p.get("stage") == "convert":
-                overall = 0.5 + 0.5 * frac
-            else:
-                overall = frac * 0.5 if getattr(self, "_dl_convert", False) else frac
-            self.progress_bar.set_value(overall)
-            self.app.report_win_dl_progress(overall)     # мост в Spotlight
-
-    def _on_status(self, text):
-        self.lbl_progress.setText(text)
-
-    def _on_multi_status(self, idx, text):
-        self.lbl_progress.setText(f"{idx + 1}/{self._mdl_total}   ·   {text}")
-
-    def _on_multi_progress(self, idx, p):
-        # Этап конвертации: не двигаем общую полосу назад — только подпись.
-        if p.get("stage") == "convert":
-            self.lbl_progress.setText(f"{idx + 1}/{self._mdl_total}   ·   "
-                                      f"{p.get('percent_str', 'Converting…')}")
-            return
-        self.lbl_progress.setText(f"{idx + 1}/{self._mdl_total}   ·   "
-                                  f"{p.get('percent_str','')}   ·   {p.get('speed','')}")
-        if p.get("size"):
-            self.lbl_size.setText(tr("File Size ~") + p["size"])
-        frac = (idx + (p.get("frac") or 0.0)) / max(1, self._mdl_total)
-        self.progress_bar.set_value(frac)
-
-    def _on_multi_item_done(self, idx, ok, info):
-        self._mdl_done += 1
-        if not ok:
-            self._mdl_fail += 1
-        rows = getattr(self, "_dl_rows", None)
-        if rows and idx < len(rows):
-            rows[idx].set_detail("✓" if ok else "✗",
-                                 self.OK_COLOR if ok else self.ERR_COLOR)
-
-    def _on_multi_all_done(self):
-        total = self._mdl_total
-        fail = getattr(self, "_mdl_fail", 0)
-        folder = self._display_path(self.settings.get("download_path", ""))
-        if getattr(self, "_batch_stopped", False):
-            self._show_status(tr("Stopped"), self.MUTED_COLOR, None)
-        elif fail and fail >= total:
-            self._show_status(tr("All downloads failed"), self.ERR_COLOR, self._err_pm)
-        elif fail:
-            self._show_status(f"{tr('Saved with errors')} ({total - fail}/{total})",
-                              self.ERR_COLOR, self._err_pm)
-        else:
-            self._show_status(f"{tr('Saved to')} {folder}", self.OK_COLOR, self._ok_pm)
-        ctx = getattr(self, "_dl_context", "multi")
-        self._set_state("playlist_ready" if ctx == "playlist" else "multi_ready")
-        self._animate_button_to_download(text=tr("Download"))
-
-    def _on_dl_finished(self, dest):
-        # через мост: записать в историю + завершить строку-прогресс в Spotlight.
-        # Обложку берём с анализа (постер сайта), а не кадром из видео.
-        turl = self._info.get("thumbnail") if self._info else None
-        self.app.report_win_dl_done(dest, getattr(self, "_last_dl_url", ""),
-                                    getattr(self, "_last_dl_title", None),
-                                    thumb_url=turl)
-        self._show_status(f"{tr('Saved to')} {self._display_path(self.settings.get('download_path',''))}",
-                          self.OK_COLOR, self._ok_pm)
-        self._set_state("ready")
-        self._animate_button_to_download(text=tr("Download"))
-
-    def _on_dl_failed(self, msg):
-        self.app.report_win_dl_fail()          # убрать строку-прогресс в Spotlight
-        if (msg or "").strip() == "Stopped":
-            self._show_status(tr("Stopped"), self.MUTED_COLOR, None)
-        else:
-            # msg уже человекочитаемое объяснение (401/403/private/…).
-            self._show_status(msg or tr("Download failed"), self.ERR_COLOR, self._err_pm)
-        self._set_state("ready")
-        self._animate_button_to_download(text=tr("Download"))
-
-    # ------------------------------------------------------------------ #
-    #  Анимации Download <-> Stop + прогресс
-    # ------------------------------------------------------------------ #
-    def _animate_button_to_stop(self):
-        self.btn_download.fade_text(tr("Stop"))
-        self.btn_download.animate_bg(self.STOP_BG, 320)
-        full, stop_w = self._dl_full_w, self._stop_w
-        x, y, h = self._dl_pad, self._dl_y, self._dl_h
-
-        def shrink(v):
-            self.btn_download.setGeometry(x, y, int(round(v)), h)
-
-        def show_progress():
-            self._reveal_progress()
-
-        # Сжимаем кнопку, и сразу после — показываем прогресс (snizu-вверх + opacity).
-        anim.animate(self, full, stop_w, 320, shrink,
-                     easing=QEasingCurve.InOutCubic, on_finished=show_progress,
-                     attr="_btn_anim")
-
-    def _reveal_progress(self):
-        s = self.app._s
-        x, y = self._dl_pad, self._dl_y
-        px = x + self._stop_w + s(10)
-        pw = self._dl_full_w - self._stop_w - s(10)
-        size_y = y + s(2)          # «File Size ~…» сверху
-        bar_y = y + s(13)          # полоса толщиной 12
-        text_y = y + s(27)         # проценты/скорость/ETA снизу
-        self.lbl_size.setText("")
-        self.lbl_size.setGeometry(px, size_y, pw, s(10))
-        self.progress_bar.set_value(0.0)
-        self.progress_bar.setGeometry(px, bar_y, pw, s(12))
-        self.lbl_progress.setText("")
-        self.lbl_progress.setGeometry(px, text_y, pw, s(11))
-        for wdg in (self.lbl_size, self.progress_bar, self.lbl_progress):
-            wdg.show()
-            anim.fade(wdg, 0.0, 1.0, 220)
-
-        def slide(v):
-            o = int(round(v))
-            self.lbl_size.move(px, size_y + o)
-            self.progress_bar.move(px, bar_y + o)
-            self.lbl_progress.move(px, text_y + o)
-        anim.animate(self, s(12), 0, 220, slide,
-                     easing=QEasingCurve.OutCubic, attr="_prog_anim")
-
-    def _animate_button_to_download(self, text="Download"):
-        x, y, h = self._dl_pad, self._dl_y, self._dl_h
-        cur = self.btn_download.width()
-        self.btn_download.fade_text(text)
-        self.btn_download.animate_bg(self.ANALYZE_BG if text == tr("Analyze") else self.DL_BG, 320)
-        for wdg in (self.lbl_size, self.lbl_progress, self.progress_bar):
-            anim.fade(wdg, 1.0, 0.0, 180, on_finished=wdg.hide)
-
-        def done():
-            self.btn_download.setGeometry(x, y, self._dl_full_w, h)
-            self._refresh_download_enabled()
-        anim.animate(self, cur, self._dl_full_w, 340,
-                     lambda v: self.btn_download.setGeometry(x, y, int(round(v)), h),
-                     easing=QEasingCurve.InOutCubic, on_finished=done, attr="_btn_anim")
+    def _finish_batch_enqueue(self):
+        """После постановки пачки в историю — вернуть окно к виду истории."""
+        self.list.clear()
+        self.url_edit.blockSignals(True)
+        self.url_edit.clear()
+        self.url_edit.blockSignals(False)
+        self.btn_cancel.hide()
+        if self._is_multi():
+            self.cb_multi.setChecked(False)   # выключит Multiple Links + свернёт окно
+        self._reset_info()
+        self._set_state("idle")
 
     # ------------------------------------------------------------------ #
     #  Статус
@@ -1107,13 +1301,3 @@ class MainPage(WindowDragMixin, QWidget):
         h, rem = divmod(secs, 3600)
         m, ss = divmod(rem, 60)
         return f"{h}:{m:02d}:{ss:02d}" if h else f"{m:02d}:{ss:02d}"
-
-    @staticmethod
-    def _display_path(path, limit=44):
-        p = path or ""
-        if len(p) >= 2 and p[1] == ":":
-            p = p[2:]
-        p = p.replace("\\", "/")
-        if len(p) > limit:
-            p = "…" + p[-(limit - 1):]
-        return p

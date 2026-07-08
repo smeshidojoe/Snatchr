@@ -226,15 +226,6 @@ def activate_ytdlp_channel(channel, progress=None):
     return True
 
 
-def ensure_ytdlp(progress=None, on_status=None):
-    """Проверка при запуске: если yt-dlp.exe нет — скачиваем его."""
-    if not have_ytdlp():
-        if on_status:
-            on_status("Downloading yt-dlp…")
-        download_ytdlp(progress)
-    return YTDLP_EXE
-
-
 def update_ytdlp(progress=None, channel="stable"):
     """
     Обновить yt-dlp свежей версией выбранного канала. Скачивание идёт в .part и

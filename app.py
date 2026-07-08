@@ -114,7 +114,19 @@ class App(QWidget):
 
         # Spotlight (Ctrl+Shift+D) — создаётся лениво при первом вызове хоткея.
         self.spotlight = None
-        self._win_dl = None            # активная одиночная загрузка окна (для моста)
+        # Координатор спиннера в трее: любая активная загрузка (окно/спотлайт/Paste/
+        # Toast) — иконка крутится; когда суммарно 0 — галочка. Каждый источник
+        # сообщает своё число активных загрузок.
+        self._active_counts = {}
+        self._ring_on = False
+        self._toast_ring_id = None      # id Toast-загрузки, владеющей детерм. кольцом
+        self._ring_cooldown = False     # идёт завершающая анимация (галочка/крестик)
+        self._toast_active = False      # идёт Toast-загрузка — новые тосты не показываем
+        # Периодически убираем из истории удалённые с диска файлы (для обоих окон).
+        self._hist_prune_timer = QTimer(self)
+        self._hist_prune_timer.setInterval(1000)
+        self._hist_prune_timer.timeout.connect(self._prune_histories)
+        self._hist_prune_timer.start()
         self._hotkey = None
         self._apply_hotkey()
         QApplication.instance().aboutToQuit.connect(self._stop_hotkey)
@@ -562,6 +574,68 @@ class App(QWidget):
             os._exit(0)
         # Если не frozen (разработка) — апдейт применится при следующем ручном запуске.
 
+    # ------------------------------------------------------------------ #
+    #  Фоновая проверка обновлений + тост-анонс
+    # ------------------------------------------------------------------ #
+    def start_update_watch(self):
+        """Тихая проверка новых версий: первая через ~8 c после старта, далее
+        периодически (раз в 6 ч). Только для собранного exe."""
+        from core import updater
+        if not updater.is_frozen():
+            return
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(6 * 60 * 60 * 1000)   # 6 часов
+        self._update_timer.timeout.connect(self._check_update_bg)
+        self._update_timer.start()
+        QTimer.singleShot(8000, self._check_update_bg)
+
+    def set_update_notify(self, on):
+        self.settings["update_notify"] = bool(on)
+        self.save_settings()
+
+    def _check_update_bg(self):
+        if not self.settings.get("update_notify", True):
+            return
+        from core.workers import UpdateCheckWorker
+        self._upd_check = UpdateCheckWorker(self)
+        self._upd_check.done.connect(self._on_update_check)
+        self._upd_check.start()
+
+    def _on_update_check(self, result):
+        if not isinstance(result, dict) or result.get("status") != "available":
+            return
+        if not self.settings.get("update_notify", True):
+            return
+        version = result.get("version") or ""
+        url = result.get("download_url")
+        if not url:
+            return
+        if version and version == self.settings.get("update_dismissed_version", ""):
+            return                       # этот апдейт уже отклонили
+        self._pending_update = {"version": version, "url": url}
+        if self.tray is not None:
+            from core.i18n import tr
+            self.tray.show_toast(tr("Update available"), version,
+                                 on_click=self._on_update_toast_click,
+                                 position="corner", sticky=True,
+                                 on_dismiss=self._on_update_toast_dismiss)
+
+    def _on_update_toast_click(self):
+        pu = getattr(self, "_pending_update", None)
+        if not pu:
+            return
+        self.show_near_tray()            # показать окно
+        self.open_about()                # перейти на About
+        # запустить скачивание с уже известным URL (как кнопка в About)
+        QTimer.singleShot(350, lambda u=pu["url"]: self.start_app_update(u))
+
+    def _on_update_toast_dismiss(self):
+        pu = getattr(self, "_pending_update", None)
+        v = pu.get("version") if pu else ""
+        if v:
+            self.settings["update_dismissed_version"] = v
+            self.save_settings()
+
     def _maybe_first_run_setup(self):
         """После первого открытия окна: если бинарников нет (yt-dlp/ffmpeg/
         ffprobe) — качаем их в блокирующем оверлее."""
@@ -647,46 +721,17 @@ class App(QWidget):
             self._hotkey.stop()
             self._hotkey = None
 
-    def toggle_spotlight(self):
+    def _ensure_spotlight(self):
+        """Создаёт (но не показывает) окно Spotlight, если его ещё нет. Нужно для
+        фоновых загрузок (Paste/Toast), которые кладут строку в историю, даже
+        когда Spotlight не открывали."""
         if self.spotlight is None:
             from ui.spotlight import Spotlight
             self.spotlight = Spotlight(self)
-            if self._win_dl is not None:      # уже идёт загрузка из окна — покажем
-                self.spotlight.attach_window_download(self._win_dl)
-        self.spotlight.toggle()
+        return self.spotlight
 
-    # --- мост: загрузка из окна программы отражается в истории Spotlight --- #
-    def report_win_dl_start(self, url, worker, convert):
-        import uuid
-        dl_id = uuid.uuid4().hex[:12]
-        self._win_dl = {"id": dl_id, "url": url, "worker": worker,
-                        "frac": 0.0, "convert": convert}
-        if self.spotlight is not None:
-            self.spotlight.attach_window_download(self._win_dl)
-        return dl_id
-
-    def report_win_dl_progress(self, frac):
-        if self._win_dl is None:
-            return
-        self._win_dl["frac"] = frac
-        if self.spotlight is not None:
-            self.spotlight.update_window_download(self._win_dl["id"], frac)
-
-    def report_win_dl_done(self, dest, url="", title=None, thumb_url=None):
-        d = self._win_dl
-        self._win_dl = None
-        entry = self.record_download(dest, url, title, notify_spotlight=False,
-                                     thumb_url=thumb_url) if dest else None
-        if self.spotlight is not None and d is not None:
-            self.spotlight.finish_window_download(d["id"], entry)
-        elif entry is not None and self.spotlight is not None:
-            self.spotlight.on_external_download(entry)
-
-    def report_win_dl_fail(self):
-        d = self._win_dl
-        self._win_dl = None
-        if self.spotlight is not None and d is not None:
-            self.spotlight.remove_window_download(d["id"])
+    def toggle_spotlight(self):
+        self._ensure_spotlight().toggle()
 
     # --- настройки Spotlight ------------------------------------------- #
     def set_spotlight_enabled(self, on):
@@ -713,24 +758,32 @@ class App(QWidget):
     def resume_hotkey(self):
         self._apply_hotkey()
 
-    def record_download(self, dest, url, title=None, notify_spotlight=True,
-                        thumb_bytes=None, thumb_url=None):
-        """Добавляет скачанный файл в единую историю и (если Spotlight открыт)
-        наезжает записью в список. Возвращает запись истории или None.
-        thumb_bytes/thumb_url — обложка сайта (постер), приоритетнее кадра ffmpeg."""
+    def record_download(self, dest, url, title=None, notify_window=True,
+                        thumb_bytes=None, thumb_url=None, uploader=None):
+        """Пишет скачанный файл в единую историю и (вживую) отражает его в окне.
+        Идущие загрузки зеркалятся отдельно (mirror_*); сюда попадают только
+        завершённые (в т.ч. обрезанные клипы). Возвращает запись или None.
+        thumb_bytes/thumb_url — обложка-постер (приоритетнее кадра ffmpeg)."""
         from core import history
         entry = history.add(dest, url, title, thumb_bytes=thumb_bytes,
-                            thumb_url=thumb_url)
-        if entry is not None and notify_spotlight and self.spotlight is not None:
-            self.spotlight.on_external_download(entry)
+                            thumb_url=thumb_url, uploader=uploader)
+        if entry is not None and notify_window:
+            self.main_page.on_external_download(entry)
         return entry
 
     # ------------------------------------------------------------------ #
     #  Фоновая загрузка из трея («Вставить»): Best Quality, окно не нужно.
     # ------------------------------------------------------------------ #
     def start_tray_download(self, url):
-        """Скачивает ссылку из буфера в Best Quality в фоне (те же настройки и
-        конвертация, что и при открытом окне). Прогресс — на иконке трея."""
+        """Paste из трея: фоновая загрузка в Best Quality → строка в истории
+        Spotlight. Подчиняется общему лимиту очереди (managed); без копии в буфер и
+        без тоста (это привилегия Toast)."""
+        self._bg_download(url, copy_on_done=False, announce=False, managed=True)
+
+    def _bg_download(self, url, copy_on_done, announce=False, managed=True):
+        """Общий путь фоновой загрузки (Paste/Toast): кладёт строку-прогресс в
+        историю Spotlight (окно можно не открывать). copy_on_done — скопировать
+        файл в буфер по завершении (для Toast, если включено в настройках)."""
         from core.i18n import tr
         from core import downloader, tools
         url = (url or "").strip()
@@ -738,27 +791,17 @@ class App(QWidget):
             if self.tray is not None:
                 self.tray.notify(tr("Paste a video link first"))
             return
-        if getattr(self, "_tray_dl", None) is not None:
+        # Плейлист/канал/ссылка с посторонним текстом — в фон не льём.
+        if not downloader.is_downloadable_single(url):
             if self.tray is not None:
-                self.tray.notify(tr("A download is already running"))
+                self.tray.notify(tr("Link not supported."))
             return
         # Без бинарников фоновая загрузка невозможна — открываем окно (там докачка).
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
             self.show_near_tray()
             return
-
-        option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
-        self._tray_convert = downloader.should_convert(option, url, self.settings)
-        self._tray_url = url
-
-        from core.workers import DownloadWorker
-        self._tray_dl = DownloadWorker(option, url, self.settings, None, self)
-        self._tray_dl.progress.connect(self._on_tray_progress)
-        self._tray_dl.finished_ok.connect(self._on_tray_done)
-        self._tray_dl.failed.connect(self._on_tray_failed)
-        self._tray_dl.start()
-        if self.tray is not None:
-            self.tray.animator.start()
+        self._ensure_spotlight().start_bg_download(
+            url, copy_on_done=copy_on_done, announce=announce, managed=managed)
 
     # ------------------------------------------------------------------ #
     #  Мониторинг буфера обмена
@@ -771,6 +814,48 @@ class App(QWidget):
     def set_toast_position(self, mode):
         self.settings["toast_position"] = mode
         self.save_settings()
+
+    def set_toast_copy_file(self, on):
+        """Копировать ли скачанный по Toast файл в буфер обмена."""
+        self.settings["toast_copy_file"] = bool(on)
+        self.save_settings()
+
+    def set_autostart(self, on):
+        """Автозапуск при старте Windows (ключ реестра HKCU\\...\\Run)."""
+        from core import autostart
+        on = bool(on)
+        autostart.set_enabled(on)
+        self.settings["autostart"] = on
+        self.save_settings()
+
+    def sync_autostart(self):
+        """При старте реестр — источник истины: приводим настройку в соответствие
+        реальному состоянию автозапуска (юзер мог убрать запись вручную/другим
+        софтом). Если запись есть, но путь к exe устарел (после обновления) —
+        переписываем на актуальный."""
+        from core import autostart
+        reg = autostart.is_enabled()
+        if reg != self.settings.get("autostart", False):
+            self.settings["autostart"] = reg
+            self.save_settings()
+        if reg:
+            autostart.set_enabled(True)   # обновить путь к exe на случай переезда
+
+    def set_parallel_downloads(self, n):
+        self.settings["parallel_downloads"] = max(1, min(3, int(n)))
+        self.save_settings()
+
+    def reset_and_restart(self):
+        """Удаляет ТОЛЬКО config.json и перезапускает Snatchr."""
+        from core import updater, config
+        try:
+            if os.path.isfile(config.CONFIG_PATH):
+                os.remove(config.CONFIG_PATH)
+        except OSError:
+            pass
+        updater.relaunch_app()
+        # Немедленно завершаемся, чтобы освободить мьютекс single-instance.
+        os._exit(0)
 
     def apply_clipboard_watch(self):
         """Подключает/отключает слежение за буфером по настройке."""
@@ -799,54 +884,159 @@ class App(QWidget):
         if not text or text == self._clip_last:
             return
         self._clip_last = text
-        if self.tray is not None and downloader.is_supported_url(text):
+        if self._toast_active:
+            return          # уже качается ролик по тосту — новый тост не показываем
+        # Строгая проверка: одна ссылка на ОДНО видео, без лишнего текста рядом,
+        # без плейлиста и без страницы канала/профиля (иначе тост не всплывает).
+        if self.tray is not None and downloader.is_downloadable_single(text):
             from core.i18n import tr
             self.tray.toast_download(text, tr("Download this?"))
 
     def on_toast_clicked(self, url):
-        """Клик по тосту «Скачать это?» — запускаем фоновую загрузку."""
+        """Клик по тосту «Скачать это?» — фоновая загрузка с приоритетом (managed=
+        False, стартует сразу, минуя очередь) + копия файла в буфер по завершении
+        (если включено) + тост «Downloaded» по готовности."""
         if url:
-            self.start_tray_download(url)
+            self._bg_download(url, copy_on_done=self.settings.get("toast_copy_file", True),
+                              announce=True, managed=False)
 
-    def is_tray_downloading(self):
-        return getattr(self, "_tray_dl", None) is not None
-
-    def stop_tray_download(self):
-        dl = getattr(self, "_tray_dl", None)
-        if dl is not None:
-            dl.stop()
-
-    def _on_tray_progress(self, p):
-        if self.tray is None:
-            return
-        if p.get("stage") == "convert":
-            frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
-        else:
-            d = p.get("frac") or 0.0
-            frac = d * 0.5 if getattr(self, "_tray_convert", False) else d
-        self.tray.animator.set_fraction(frac)
-
-    def _on_tray_done(self, dest):
+    def show_download_toast(self, dest):
+        """Тост «Downloaded» с открытием папки по клику (после фоновой Toast-загрузки)."""
         from core.i18n import tr
-        self._tray_dl = None
-        self._copy_file_to_clipboard(dest)      # готовый файл — в буфер (можно вставить)
-        self.record_download(dest, getattr(self, "_tray_url", ""), None)  # в историю
-        if self.tray is not None:
-            self.tray.close_menus()      # убрать устаревшую кнопку Stop, если меню открыто
-            self.tray.animator.finish(True)
-            name = os.path.basename(dest) if dest else ""
-            # Тост об успехе — всегда в углу монитора, где мышь (независимо от режима).
+        if self.tray is not None and dest:
+            name = os.path.basename(dest)
             self.tray.show_toast(tr("Downloaded"), name,
                                  lambda d=dest: self._open_in_folder(d), position="corner")
 
-    def _on_tray_failed(self, msg):
-        from core.i18n import tr
-        self._tray_dl = None
+    # --- живое зеркало идущих загрузок между окном и Spotlight ---------- #
+    def _views(self):
+        vs = [self.main_page]
+        if self.spotlight is not None:
+            vs.append(self.spotlight)
+        return vs
+
+    def _other_views(self, source):
+        return [v for v in self._views() if getattr(v, "_dl_source", "") != source]
+
+    def mirror_start(self, source, dl_id, entry):
+        for v in self._other_views(source):
+            v.add_mirror(dl_id, dict(entry))
+
+    def mirror_progress(self, source, dl_id, frac):
+        for v in self._other_views(source):
+            v.update_mirror(dl_id, frac)
+
+    def mirror_finish(self, source, dl_id, entry):
+        for v in self._other_views(source):
+            v.finish_mirror(dl_id, entry)
+
+    def mirror_remove(self, source, dl_id):
+        for v in self._other_views(source):
+            v.remove_mirror(dl_id)
+
+    def mirror_meta(self, source, dl_id, thumb_bytes, title, uploader):
+        """Постер/название/автор, добытые для строки-загрузки, — в строку-зеркало."""
+        for v in self._other_views(source):
+            v.set_mirror_meta(dl_id, thumb_bytes, title, uploader)
+
+    def request_cancel(self, dl_id):
+        """Stop нажали на строке-зеркале — просим владельца загрузки отменить её."""
+        for v in self._views():
+            if v.cancel_own(dl_id):
+                return
+
+    def sync_view_mirrors(self, target):
+        """При открытии окна/Spotlight — подтянуть уже идущие загрузки из другого
+        места как строки-зеркала (чтобы они были видны сразу, а не после старта)."""
+        for v in self._views():
+            if v is target:
+                continue
+            for dl_id, entry, frac in v.active_downloads():
+                target.add_mirror(dl_id, entry)
+                target.update_mirror(dl_id, frac)
+
+    def refresh_histories(self):
+        """Немедленно пересобирает историю в окне и Spotlight из файла (после
+        удаления/переименования ролика в одном из мест — отражается в обоих)."""
+        from core import history
+        items = history.load()
+        try:
+            self.main_page.history.rebuild(items)
+        except Exception:
+            pass
+        if self.spotlight is not None:
+            try:
+                self.spotlight.history.rebuild(items)
+            except Exception:
+                pass
+
+    def _prune_histories(self):
+        """Тик (1с): если файлы истории удалили с диска — убираем ТОЛЬКО пропавшие
+        строки (не пересобирая весь список) и стираем их из файла истории. Работает
+        лишь когда что-то показано (иначе при показе история и так пересоберётся)."""
+        win = self.main_page.isVisible()
+        spot = self.spotlight is not None and self.spotlight.isVisible()
+        if not win and not spot:
+            return
+        from core import history
+        gone = set()
+        if win:
+            gone.update(self.main_page.history.drop_missing())
+        if spot:
+            gone.update(self.spotlight.history.drop_missing())
+        for entry_id in gone:
+            if entry_id:
+                history.remove(entry_id)
+
+    def report_active_downloads(self, source, n):
+        """Источник (spotlight/window) сообщает число своих активных загрузок."""
+        self._active_counts[source] = int(n)
+        self._apply_ring()
+
+    def _apply_ring(self):
+        """Спиннер в трее, пока суммарно есть активные загрузки (даже одна). Если
+        идёт детерминированное кольцо Toast или его завершающая анимация
+        (галочка/крестик) — оно владеет иконкой, спиннер не вмешивается."""
+        if (self.tray is None or self._toast_ring_id is not None
+                or self._ring_cooldown):
+            return
+        total = sum(self._active_counts.values())
+        if total > 0 and not self._ring_on:
+            self.tray.animator.start(spin=True)
+            self._ring_on = True
+        elif total == 0 and self._ring_on:
+            self._ring_on = False
+            self.tray.animator.finish(True)
+
+    # --- детерминированное кольцо Toast-загрузки (когда она одна) -------- #
+    def toast_ring_begin(self, dl_id):
+        """Старт Toast-загрузки: если сейчас нет других активных загрузок —
+        занимаем иконку детерминированным кольцом (заполняется по прогрессу).
+        Возвращает True, если кольцо занято под этот Toast."""
+        if self.tray is None or sum(self._active_counts.values()) > 0:
+            return False                 # уже есть загрузки -> общий спиннер
+        self._toast_ring_id = dl_id
+        self._ring_on = True
+        self.tray.animator.start(spin=False)
+        return True
+
+    def toast_ring_progress(self, dl_id, frac):
+        if dl_id == self._toast_ring_id and self.tray is not None:
+            self.tray.animator.set_fraction(frac)
+
+    def toast_ring_end(self, dl_id, success):
+        if dl_id != self._toast_ring_id:
+            return
+        self._toast_ring_id = None
+        self._ring_on = False
+        self._ring_cooldown = True               # не даём спиннеру перебить галочку
         if self.tray is not None:
-            self.tray.close_menus()      # убрать устаревшую кнопку Stop, если меню открыто
-            self.tray.animator.finish(False)
-            if (msg or "").strip() and msg.strip() != "Stopped":
-                self.tray.show_toast(tr("Download failed"), msg, None, position="corner")
+            self.tray.animator.finish(success)   # галочка/крестик -> назад к иконке
+        QTimer.singleShot(1400, self._ring_cooldown_done)
+
+    def _ring_cooldown_done(self):
+        self._ring_cooldown = False
+        self._apply_ring()                       # остались загрузки — вернуть спиннер
 
     def _copy_file_to_clipboard(self, path):
         """Кладёт скачанный файл в буфер как «файл» (Qt отдаёт CF_HDROP на Windows)
@@ -860,6 +1050,35 @@ class App(QWidget):
             QApplication.clipboard().setMimeData(mime)
         except Exception:
             pass
+
+    def open_logs_folder(self):
+        """Открыть папку с логами (%APPDATA%/Snatchr/logs)."""
+        from core.logbook import LOG_DIR
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            os.startfile(LOG_DIR)
+        except Exception:
+            pass
+
+    def play_file(self, path):
+        """Открыть видео системным плеером по умолчанию (двойной клик Проводника)."""
+        try:
+            if path and os.path.isfile(path):
+                os.startfile(path)          # noqa: запуск ассоциированного приложения
+        except Exception:
+            pass
+
+    def delete_file(self, entry):
+        """Удаляет файл ролика с диска и запись из истории. Возвращает True/False."""
+        from core import history
+        path = (entry or {}).get("path") or ""
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            return False
+        history.remove((entry or {}).get("id", ""))
+        return True
 
     def _open_in_folder(self, path):
         """Клик по тосту об успехе — открыть файл в проводнике (или папку загрузок)."""
@@ -1071,6 +1290,7 @@ class App(QWidget):
         self.settings_page.hide()
         self.about_page.hide()
         self.main_page.show()
+        self.main_page.on_window_shown()      # обновить историю окна (убрать удалённые)
         self.main_page.raise_()
         self.bottom_bar.btn_settings.raise_()
         self.bottom_bar.btn_folder.raise_()

@@ -13,11 +13,12 @@ from PySide6.QtCore import (
     Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QPixmap, QFontMetrics, QPainterPath,
+    QPainter, QColor, QPen, QPixmap, QFontMetrics, QPainterPath, QLinearGradient,
 )
 from PySide6.QtWidgets import QWidget, QScrollArea, QFrame
 
 from core import fonts, themes
+from core.i18n import tr
 from core.icons import themed_pixmap
 from core.trimmer import res_label
 from ui import anim
@@ -165,7 +166,7 @@ class HistoryRow(QWidget):
     THUMB_H = 52
 
     def __init__(self, app, entry, width, parent=None,
-                 downloading=False, allow_trim=True):
+                 downloading=False, allow_trim=True, pending=False, fetching=False):
         super().__init__(parent)
         self.app = app
         self.entry = entry
@@ -173,7 +174,18 @@ class HistoryRow(QWidget):
         self._h = s(72)
         self._active = False              # идёт ли обрезка этого файла
         self._allow_trim = allow_trim
-        self._state = "downloading" if downloading else "normal"
+        # fetching — идёт анализ ссылки (спиннер+«Fetching…» в блоке); pending —
+        # проанализирован, ждёт Download (подсвечен, без кнопок); downloading —
+        # идёт загрузка; normal — готовый ролик.
+        self._state = ("fetching" if fetching else "pending" if pending
+                       else "downloading" if downloading else "normal")
+        self._spin_angle = 0
+        self._transition_t = 0.0          # 1->0: «Fetching…» уезжает, обложка проявляется
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(33)
+        self._spin_timer.timeout.connect(self._spin_tick)
+        if self._state == "fetching":
+            self._spin_timer.start()
         self._frac = 0.0
         self._draw_frac = 0.0            # отрисованная доля (плавно догоняет)
         self._hover_t = 0.0
@@ -185,6 +197,7 @@ class HistoryRow(QWidget):
         self._accent = QColor(pal["accent"])
         self._track = QColor(pal["field_bg"])
         self._ok = QColor(pal["ok"])
+        self._err = QColor(pal["error"])
         self._hover_bg = QColor(pal["sel_chip"]); self._hover_bg.setAlpha(150)
         self._hover = False
         self._pm = self._load_thumb()
@@ -209,12 +222,27 @@ class HistoryRow(QWidget):
         self._layout()
 
     def _make_sub(self):
-        """Подпись под ссылкой: площадка + разрешение, если известно."""
-        host = self.entry.get("host", "")
-        rl = res_label(self.entry.get("height") or 0)
-        if host and rl:
-            return host + "  ·  " + rl
-        return host or rl
+        """Подпись под заголовком: автор (если известен) ИНАЧЕ площадка, затем
+        разрешение/длительность. Автора и площадку вместе не пишем — не влезает."""
+        parts = []
+        primary = self.entry.get("uploader") or self.entry.get("host", "")
+        if primary:
+            parts.append(primary)
+        h = self.entry.get("height") or 0
+        if h:
+            parts.append(res_label(h))
+        else:
+            d = self.entry.get("duration")
+            if d:
+                parts.append(self._fmt_dur(d))
+        return "  ·  ".join(parts)
+
+    @staticmethod
+    def _fmt_dur(secs):
+        secs = int(secs)
+        h, rem = divmod(secs, 3600)
+        m, ss = divmod(rem, 60)
+        return f"{h}:{m:02d}:{ss:02d}" if h else f"{m:02d}:{ss:02d}"
 
     # --- состояние загрузки -------------------------------------------- #
     def is_downloading(self):
@@ -234,8 +262,8 @@ class HistoryRow(QWidget):
         self.update()
 
     def set_preview(self, pm):
-        """Раннее превью (обложка из yt-dlp) во время загрузки."""
-        if pm is not None and not pm.isNull() and self._state == "downloading":
+        """Раннее превью (обложка из yt-dlp) для pending/идущей строки."""
+        if pm is not None and not pm.isNull() and self._state in ("downloading", "pending"):
             self._pm = pm
             self.update()
 
@@ -269,10 +297,87 @@ class HistoryRow(QWidget):
 
     def _apply_state(self):
         dl = self._state == "downloading"
+        no_btn = self._state in ("pending", "fetching", "error")
         for b in (self._btn_more, self._btn_copy, self._btn_trim):
             if b is not None:
-                b.setVisible(not dl)
+                b.setVisible(not dl and not no_btn)    # у pending/fetching кнопок нет
         self._btn_stop.setVisible(dl)     # стоп — только пока идёт загрузка
+
+    def is_pending(self):
+        return self._state == "pending"
+
+    def is_fetching(self):
+        return self._state == "fetching"
+
+    def is_error(self):
+        return self._state == "error"
+
+    def to_error(self):
+        """Анализ не удался: строка становится красным крестиком (кнопок нет)."""
+        self._spin_timer.stop()
+        self._transition_t = 0.0
+        self._state = "error"
+        self._apply_state()
+        self.update()
+
+    def _spin_tick(self):
+        self._spin_angle = (self._spin_angle + 12) % 360
+        self.update()
+
+    def to_pending(self, entry):
+        """Анализ завершён: «Fetching…» уезжает вниз и гаснет, обложка+инфо
+        проявляются (transition 1->0)."""
+        self.entry = entry
+        self._state = "pending"
+        self._sub = self._make_sub()
+        self._pm = self._load_thumb()
+        self._apply_state()
+        self._transition_t = 1.0
+        if not self._spin_timer.isActive():
+            self._spin_timer.start()      # спиннер крутится, пока уезжает
+        anim.animate(self, 1.0, 0.0, 320, self._trans_tick,
+                     easing=QEasingCurve.OutCubic, on_finished=self._trans_done,
+                     attr="_trans_anim")
+
+    def _trans_tick(self, v):
+        self._transition_t = v
+        self.update()
+
+    def _trans_done(self):
+        self._transition_t = 0.0
+        self._spin_timer.stop()
+        self.update()
+
+    def _draw_fetching_content(self, p, block, s, dy=0.0):
+        """Спиннер + «Fetching…» по центру блока (со сдвигом dy по вертикали)."""
+        txt = tr("Fetching…")
+        f = fonts.font(s(12), "Medium")
+        p.setFont(f)
+        tw2 = QFontMetrics(f).horizontalAdvance(txt)
+        sp = s(18)
+        total = sp + s(8) + tw2
+        cy = block.center().y() + dy
+        sx = block.center().x() - total / 2.0
+        p.save()
+        p.translate(sx + sp / 2.0, cy)
+        p.rotate(self._spin_angle)
+        pen = QPen(self._accent, max(2.0, s(2.2)))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(-sp / 2.0, -sp / 2.0, sp, sp), 90 * 16, 280 * 16)
+        p.restore()
+        p.setPen(self._text_col)
+        p.drawText(QRectF(sx + sp + s(8), block.top() + dy, tw2 + s(4), block.height()),
+                   Qt.AlignVCenter | Qt.AlignLeft, txt)
+
+    def start_downloading(self):
+        """Переход pending -> downloading (нажали Download в окне)."""
+        self._state = "downloading"
+        self._frac = 0.0
+        self._draw_frac = 0.0
+        self._apply_state()
+        self.update()
 
     def _on_trim_btn(self):
         # ножницы открывают обрезку; крестик (активный файл) — закрывает её
@@ -343,6 +448,40 @@ class HistoryRow(QWidget):
         downloading = self._state == "downloading"
         block = QRectF(s(4), s(4), w - s(8), self._h - s(8))
 
+        if self._state == "fetching":
+            # подсвеченный блок + по центру вращающийся спиннер и «Fetching…»
+            bg = QColor(self._accent)
+            bg.setAlpha(28)
+            p.setPen(QPen(self._accent, max(1.5, s(1.6))))
+            p.setBrush(bg)
+            p.drawRoundedRect(block, s(10), s(10))
+            self._draw_fetching_content(p, block, s)
+            p.end()
+            return
+
+        if self._state == "error":
+            # анализ не удался — красный блок и крестик по центру
+            bg = QColor(self._err)
+            bg.setAlpha(28)
+            p.setPen(QPen(self._err, max(1.5, s(1.6))))
+            p.setBrush(bg)
+            p.drawRoundedRect(block, s(10), s(10))
+            d = s(9)
+            cx, cy = block.center().x(), block.center().y()
+            pen = QPen(self._err, max(2.0, s(2.4)))
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(int(cx - d), int(cy - d), int(cx + d), int(cy + d))
+            p.drawLine(int(cx + d), int(cy - d), int(cx - d), int(cy + d))
+            p.end()
+            return
+
+        # Переход fetching->pending: обычное содержимое проявляется (opacity),
+        # поверх — «Fetching…» уезжает вниз и гаснет.
+        trans = self._transition_t
+        if trans > 0.0:
+            p.setOpacity(1.0 - trans)
+
         if downloading:
             # весь блок — полоса прогресса (трек + плавная заливка акцентом)
             p.save()
@@ -355,6 +494,13 @@ class HistoryRow(QWidget):
             p.fillRect(QRectF(block.left(), block.top(),
                               self._draw_frac * block.width(), block.height()), fill)
             p.restore()
+        elif self._state == "pending":
+            # «ещё не в истории»: лёгкая акцентная заливка + акцентная рамка
+            bg = QColor(self._accent)
+            bg.setAlpha(28)
+            p.setPen(QPen(self._accent, max(1.5, s(1.6))))
+            p.setBrush(bg)
+            p.drawRoundedRect(block, s(10), s(10))
         elif self._hover_t > 0.01:
             bg = QColor(self._hover_bg)
             bg.setAlpha(int(self._hover_bg.alpha() * self._hover_t))
@@ -380,14 +526,20 @@ class HistoryRow(QWidget):
 
         # текст: ссылка (усечена посередине) + площадка
         text_x = tx + tw + s(14)
-        right = (w - s(46)) if downloading else self._text_right   # место под %
+        if downloading:
+            stop_left = w - s(12) - s(34)           # левый край кнопки стоп (см. _layout)
+            right = stop_left - s(10)                # текст обрывается перед кнопкой стоп
+        else:
+            right = self._text_right
         avail = max(s(40), right - text_x)
-        url = self.entry.get("url", "")
+        # Заголовок — название видео (если известно), иначе ссылка.
+        title = self.entry.get("title") or self.entry.get("url", "")
+        elide = Qt.ElideRight if self.entry.get("title") else Qt.ElideMiddle
 
         f_url = fonts.font(s(12), "Medium")
         p.setFont(f_url)
         fm = QFontMetrics(f_url)
-        elided = fm.elidedText(url, Qt.ElideMiddle, int(avail))
+        elided = fm.elidedText(title, elide, int(avail))
         p.setPen(self._text_col)
         p.drawText(QRectF(text_x, s(14), avail, s(22)),
                    Qt.AlignVCenter | Qt.AlignLeft, elided)
@@ -398,13 +550,6 @@ class HistoryRow(QWidget):
         p.drawText(QRectF(text_x, s(38), avail, s(18)),
                    Qt.AlignVCenter | Qt.AlignLeft, self._sub)
 
-        # счётчик процентов (во время загрузки)
-        if downloading:
-            p.setFont(fonts.font(s(13), "Semibold"))
-            p.setPen(QColor("#ffffff"))
-            p.drawText(QRectF(0, 0, w - s(16), self._h),
-                       Qt.AlignVCenter | Qt.AlignRight, f"{int(round(self._frac * 100))}%")
-
         # зелёная пульсация после завершения
         if self._pulse_t >= 0.0:
             intensity = abs(math.sin(self._pulse_t * math.pi * 2))
@@ -413,6 +558,12 @@ class HistoryRow(QWidget):
             p.setPen(QPen(gc, max(2.0, s(2.4))))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(block, s(10), s(10))
+
+        # уезжающий вниз и гаснущий «Fetching…» поверх проявляющегося содержимого
+        if trans > 0.0:
+            p.setOpacity(trans)
+            self._draw_fetching_content(p, block, s, dy=(1.0 - trans) * s(24))
+            p.setOpacity(1.0)
         p.end()
 
 
@@ -426,11 +577,12 @@ class HistoryList(QWidget):
     copyClicked = Signal(object)
     moreClicked = Signal(object, QPoint)
 
-    def __init__(self, app, parent=None, allow_trim=True):
+    def __init__(self, app, parent=None, allow_trim=True, draw_bg=True):
         super().__init__(parent)
         self.app = app
         self._active_path = None
         self._allow_trim = allow_trim
+        self._draw_bg = draw_bg           # окно рисует историю без подложки (фон окна свой)
         s = app._s
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._bg = QColor(pal["card_bg"])
@@ -490,9 +642,10 @@ class HistoryList(QWidget):
             else:
                 r.move(0, target_y)
 
-    def _make_row(self, entry, downloading=False):
+    def _make_row(self, entry, downloading=False, pending=False, fetching=False):
         r = HistoryRow(self.app, entry, self._row_width(), self._content,
-                       downloading=downloading, allow_trim=self._allow_trim)
+                       downloading=downloading, allow_trim=self._allow_trim,
+                       pending=pending, fetching=fetching)
         r.trimClicked.connect(self.trimClicked)
         r.closeTrimClicked.connect(self.closeTrimClicked)
         r.stopClicked.connect(self.stopClicked)
@@ -512,7 +665,8 @@ class HistoryList(QWidget):
     def rebuild(self, entries):
         # Строки активных загрузок не хранятся в json — сохраняем их объекты
         # (их worker->row связи должны жить) и держим сверху.
-        keep = [r for r in self._rows if r.is_downloading()]
+        keep = [r for r in self._rows if r.is_downloading() or r.is_pending()
+                or r.is_fetching() or r.is_error()]
         for r in self._rows:
             if r not in keep:
                 r.setParent(None)
@@ -533,6 +687,19 @@ class HistoryList(QWidget):
     def insert_downloading(self, entry):
         """Добавляет строку идущей загрузки (блок = полоса прогресса)."""
         row = self._make_row(entry, downloading=True)
+        self._animate_insert(row)
+        return row
+
+    def insert_pending(self, entry):
+        """Добавляет строку проанализированной, но ещё не скачиваемой ссылки
+        (подсвечена иначе; ждёт нажатия Download в окне)."""
+        row = self._make_row(entry, pending=True)
+        self._animate_insert(row)
+        return row
+
+    def insert_fetching(self, entry):
+        """Добавляет строку идущего анализа ссылки (спиннер + «Fetching…»)."""
+        row = self._make_row(entry, fetching=True)
         self._animate_insert(row)
         return row
 
@@ -563,7 +730,9 @@ class HistoryList(QWidget):
     def drop_missing(self):
         """Убирает строки, чей файл удалён с диска (пока окно открыто). Строки
         идущих загрузок не трогаем. Возвращает id удалённых записей."""
-        gone = [r for r in self._rows if not r.is_downloading()
+        gone = [r for r in self._rows
+                if not r.is_downloading() and not r.is_pending()
+                and not r.is_fetching() and not r.is_error()
                 and not (r.entry.get("path") and os.path.isfile(r.entry["path"]))]
         for r in gone:
             self.remove_row(r)
@@ -572,8 +741,9 @@ class HistoryList(QWidget):
     def remove_row(self, row):
         """Плавно убирает строку (напр., отменённая загрузка) и подтягивает
         остальные вверх."""
-        if row in self._rows:
-            self._rows.remove(row)
+        if row not in self._rows:
+            return                          # уже убрана — второй раз не трогаем
+        self._rows.remove(row)
         self._reflow(animate=True)          # остальные едут вверх
         row.raise_()
 
@@ -583,11 +753,16 @@ class HistoryList(QWidget):
         anim.fade(row, 1.0, 0.0, 200, on_finished=gone)
 
     def paintEvent(self, event):
+        if not self._draw_bg:
+            return                       # окно: без подложки, поверх фона окна
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
         p.setPen(QPen(self._border, 1))
-        p.setBrush(self._bg)
+        grad = QLinearGradient(0, 0, 0, h)      # свой вертикальный градиент истории
+        grad.setColorAt(0.0, self._bg.lighter(104))
+        grad.setColorAt(1.0, self._bg.darker(106))
+        p.setBrush(grad)
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), s(18), s(18))
         p.end()

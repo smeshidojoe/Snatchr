@@ -127,6 +127,18 @@ class EnsurePotWorker(QThread):
             self.done.emit(False)
 
 
+class UpdateCheckWorker(QThread):
+    """Тихая фоновая проверка наличия новой версии на GitHub."""
+    done = Signal(object)         # dict результата check_update
+
+    def run(self):
+        from core import updater
+        try:
+            self.done.emit(updater.check_update())
+        except Exception:
+            self.done.emit({"status": "error"})
+
+
 class AppUpdateWorker(QThread):
     """Скачивание обновления приложения (zip релиза) с прогрессом."""
     progress = Signal(float)
@@ -224,10 +236,10 @@ class ThumbWorker(QThread):
 
 
 class SpotlightThumbWorker(QThread):
-    """Для строки-прогресса Spotlight: спрашивает у yt-dlp URL обложки видео и
-    скачивает её байты — чтобы превью появилось сразу, не дожидаясь конца
-    загрузки (как fetching в окне). Ошибки глушим — превью просто не будет."""
-    done = Signal(bytes)
+    """Для строки-прогресса Spotlight (Paste/Toast, без анализа): одним вызовом
+    yt-dlp достаёт обложку + название + автора, чтобы строка сразу показывала
+    нормальные данные (а не URL/площадку) и превью. Ошибки глушим."""
+    done = Signal(bytes, str, str)          # thumb bytes, title, uploader
 
     def __init__(self, url, parent=None):
         super().__init__(parent)
@@ -236,17 +248,22 @@ class SpotlightThumbWorker(QThread):
     def run(self):
         try:
             r = tools.run([tools.YTDLP_EXE, "--no-warnings", "--no-playlist",
-                           "--print", "thumbnail", self._url], timeout=40)
+                           "--print", "%(thumbnail)s\n%(title)s\n%(uploader)s",
+                           self._url], timeout=40)
             out = (r.stdout or "").strip().splitlines() if r else []
-            turl = out[0].strip() if out else ""
-            if not turl or turl.upper() == "NA":
-                self.done.emit(b"")
-                return
-            req = urllib.request.Request(turl, headers={"User-Agent": "Snatchr"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                self.done.emit(resp.read())
+
+            def _val(i):
+                v = out[i].strip() if len(out) > i else ""
+                return "" if v.upper() in ("", "NA") else v
+            turl, title, uploader = _val(0), _val(1), _val(2)
+            data = b""
+            if turl:
+                req = urllib.request.Request(turl, headers={"User-Agent": "Snatchr"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = resp.read()
+            self.done.emit(data, title, uploader)
         except Exception:
-            self.done.emit(b"")
+            self.done.emit(b"", "", "")
 
 
 class MultiProbeWorker(QThread):

@@ -265,9 +265,15 @@ class SettingsPage(WindowDragMixin, QWidget):
         # Буфер обмена (+ режим тоста справа).
         self._build_clipboard_row(pad, y, card_w)
         y += s(30) + s(6)
+        # Копировать ли скачанный по Toast файл в буфер (рядом со слежением).
+        self._build_toast_copy_checkbox(pad, y, card_w)
+        y += s(30) + s(6)
         # Конвертация YouTube-видео.
         self._build_convert_checkbox(pad, y, card_w)
-        y += s(30) + s(22)                    # отступ между блоками
+        y += s(30) + s(6)
+        # Одновременных загрузок (1..3).
+        self._build_parallel_row(pad, y, card_w)
+        y += s(34) + s(22)                    # отступ между блоками
 
         # Spotlight (Ctrl+Shift+D): вкл/выкл + режим скрытия + смена сочетания
         self._section_title(tr("Spotlight"), pad, y)
@@ -301,7 +307,16 @@ class SettingsPage(WindowDragMixin, QWidget):
         self._section_title(tr("Advanced"), pad, y)
         y += s(18)
         self._build_embed_checkbox(pad, y, card_w)
-        y += s(30) + s(30)                    # + увеличенный нижний отступ
+        y += s(30) + s(6)
+        # В самом низу — уведомления об обновлениях + автозапуск + сброс.
+        self._build_update_checkbox(pad, y, card_w)
+        y += s(30) + s(6)
+        self._build_autostart_checkbox(pad, y, card_w)
+        y += s(30) + s(12)
+        self._build_open_logs_button(pad, y, card_w)
+        y += s(32) + s(10)
+        self._build_reset_button(pad, y, card_w)
+        y += s(32) + s(30)                    # + увеличенный нижний отступ
 
         content.resize(self.width_, y)
         area.setWidget(content)
@@ -420,6 +435,72 @@ class SettingsPage(WindowDragMixin, QWidget):
         cb.setGeometry(x, y, card_w, s(30))
         cb.toggled.connect(lambda v: self._set_flag("embed_thumbnail", v))
         self._checks["embed_thumbnail"] = cb
+
+    def _build_update_checkbox(self, x, y, card_w):
+        s = self.app._s
+        cb = CheckBox(self._host, tr("Notify about updates"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb.setChecked(bool(self.settings.get("update_notify", True)))
+        cb.setGeometry(x, y, card_w, s(30))
+        cb.toggled.connect(self.app.set_update_notify)
+        self._checks["update_notify"] = cb
+
+    def _build_toast_copy_checkbox(self, x, y, card_w):
+        s = self.app._s
+        cb = CheckBox(self._host, tr("Copy downloaded file to clipboard"),
+                      fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb.setChecked(bool(self.settings.get("toast_copy_file", True)))
+        cb.setGeometry(x, y, card_w, s(30))
+        cb.toggled.connect(self.app.set_toast_copy_file)
+        self._checks["toast_copy_file"] = cb
+
+    def _build_parallel_row(self, x, y, card_w):
+        cur = str(self.settings.get("parallel_downloads", 2))
+        self._build_select_row(tr("Parallel Downloads"), x, y, ["1", "2", "3"],
+                               cur, lambda v: self.app.set_parallel_downloads(int(v)))
+
+    def _build_autostart_checkbox(self, x, y, card_w):
+        s = self.app._s
+        cb = CheckBox(self._host, tr("Launch at startup"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb.setChecked(bool(self.settings.get("autostart", False)))
+        cb.setGeometry(x, y, card_w, s(30))
+        cb.toggled.connect(self.app.set_autostart)
+        self._checks["autostart"] = cb
+
+    def _build_open_logs_button(self, x, y, card_w):
+        s = self.app._s
+        font = fonts.font(s(11), "Semibold")
+        t = tr("Open logs folder")
+        bw = max(s(200), QFontMetrics(font).horizontalAdvance(t) + s(26))
+        btn = LinkButton(self._host, t, font, self.CHOOSE, self.LINK_HOVER,
+                         self.app.open_logs_folder, hover_bg=self.CHOOSE_BG_H,
+                         radius=s(6), base_bg=self.CHOOSE_BG)
+        btn.setGeometry(x, y, bw, s(30))
+
+    def _build_reset_button(self, x, y, card_w):
+        s = self.app._s
+        font = fonts.font(s(11), "Semibold")
+        t = tr("Reset Settings")
+        bw = max(s(210), QFontMetrics(font).horizontalAdvance(t) + s(26))
+        btn = LinkButton(self._host, t, font, self._pal["error"], self.LINK_HOVER,
+                         self._on_reset_click, hover_bg=self.CHOOSE_BG_H, radius=s(6),
+                         base_bg=self.CHOOSE_BG)
+        btn.setGeometry(x, y, bw, s(30))
+
+    def _on_reset_click(self):
+        from PySide6.QtWidgets import QMessageBox
+        self.app.suppress_autohide(True)
+        try:
+            r = QMessageBox.question(
+                self, tr("Reset all settings?"),
+                tr("This deletes the config and restarts Snatchr."),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        finally:
+            self.app.suppress_autohide(False)
+        if r == QMessageBox.Yes:
+            self.app.reset_and_restart()
 
     def _build_select_row(self, label, x, y, values, current, command, icons=None):
         s = self.app._s

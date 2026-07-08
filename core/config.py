@@ -29,8 +29,13 @@ def defaults():
         "cookies_browser": "auto",        # браузер для cookies ("auto" | chrome | …)
         "cookies_file":    "",            # путь к своему cookies.txt (приоритетнее браузера)
         "spotlight_enabled": True,        # включён ли Spotlight (глобальный хоткей)
-        "spotlight_combo":   "ctrl+shift+d",  # сочетание вызова Spotlight
+        "spotlight_combo":   "ctrl+e",    # сочетание вызова Spotlight
         "spotlight_dismiss": "focus",     # "focus" (скрывать при потере фокуса) | "manual"
+        "update_notify":     True,        # уведомлять тостом о новых версиях
+        "update_dismissed_version": "",   # версия, тост которой уже закрыли
+        "toast_copy_file":   True,        # копировать скачанный файл в буфер (Toast)
+        "autostart":         False,       # запускать Snatchr при старте Windows
+        "parallel_downloads": 2,          # одновременных загрузок (1..3)
     }
 
 
