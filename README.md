@@ -31,7 +31,7 @@ No taskbar window, no clutter — Snatchr sits quietly in the system tray. **Lef
 
 ## ✨ Spotlight
 
-The heart of Snatchr. Press **`Ctrl + Shift + D`** anywhere to summon a Spotlight-style launcher:
+The heart of Snatchr. Press **`Ctrl + E`** anywhere to summon a Spotlight-style launcher:
 
 - **Paste → done.** Drop a link and it downloads in the background at best quality — no dialogs.
 - **Several downloads at once**, each as its own row with a live progress bar and thumbnail.
