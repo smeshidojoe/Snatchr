@@ -36,6 +36,10 @@ def defaults():
         "toast_copy_file":   True,        # копировать скачанный файл в буфер (Toast)
         "autostart":         False,       # запускать Snatchr при старте Windows
         "parallel_downloads": 2,          # одновременных загрузок (1..3)
+        "autopaste":         False,       # вставлять ссылку из буфера при открытии окна
+        # какие сайты автовставлять (пусто в конфиге => все; None здесь = все по умолчанию)
+        "autopaste_sites":   ["youtube", "instagram", "tiktok", "reddit",
+                              "twitter", "vk", "soundcloud"],
     }
 
 

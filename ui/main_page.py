@@ -114,6 +114,7 @@ class MainPage(WindowDragMixin, QWidget):
             {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT, "mp3": False},
             {"label": tr("Best Compatibility (1080p)"),
              "fmt": downloader.AVC_VIDEO_FMT, "mp3": False},
+            {"label": tr("Thumbnail"), "thumbnail": True, "mp3": False},
         ]
 
     def _populate_multi_selector(self, mode=None):
@@ -536,11 +537,17 @@ class MainPage(WindowDragMixin, QWidget):
                 tw.start()
                 self._pl_thumb_workers.append(tw)
 
-        # Плейлист скачивается в Best Quality (как мульти).
+        # Плейлист: Best Quality (+ Thumbnail в режиме Video).
+        opts = [self._default_option(self.seg_type.value())]
+        if self.seg_type.value() == "video":
+            opts.append({"label": tr("Thumbnail"), "thumbnail": True, "mp3": False})
         self.sel_format.clear()
-        self.sel_format.add_item(tr("Best Quality"))
-        self.sel_format.set_current(tr("Best Quality"))
-        self._selected = self._default_option(self.seg_type.value())
+        self._opt_by_label = {}
+        for o in opts:
+            self.sel_format.add_item(o["label"])
+            self._opt_by_label[o["label"]] = o
+        self.sel_format.set_current(opts[0]["label"])
+        self._selected = opts[0]
         self._set_state("playlist_ready")
         self._layout()                   # разместить закреплённую шапку сразу
 
@@ -573,7 +580,7 @@ class MainPage(WindowDragMixin, QWidget):
             self.pl_header.set_state(sel, len(rows))
 
     def _start_playlist_download(self):
-        opt = self._default_option(self.seg_type.value())
+        opt = self._selected or self._default_option(self.seg_type.value())
         sel = [(i, r) for i, r in enumerate(self._pl_rows) if r.is_checked()]
         if not sel:
             return
@@ -678,6 +685,16 @@ class MainPage(WindowDragMixin, QWidget):
     def _deselect_url(self):
         self.url_edit.deselect()
         self.url_edit.setCursorPosition(len(self.url_edit.text()))
+
+    def autofill_url(self, text):
+        """Автовставка ссылки в одиночное поле при открытии окна (только если
+        поле пустое, не мультирежим и мы не заняты). Дальше — как обычная вставка:
+        пользователь жмёт Download/Analyze сам."""
+        if self._is_multi() or self.is_busy():
+            return
+        if self.url_edit.text().strip():
+            return
+        self.url_edit.setText(text)
 
     def on_external_download(self, entry):
         """Ролик, скачанный в другом месте (Spotlight/Paste/Toast), — вживую

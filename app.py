@@ -111,6 +111,10 @@ class App(QWidget):
         self._clip_last = ""
         self._clip_connected = False
         self.apply_clipboard_watch()
+        # Отметка времени последнего изменения буфера (для автовставки — вставляем
+        # только «свежую» ссылку). Подключение постоянное, не зависит от watch.
+        self._clip_change_ts = 0.0
+        QApplication.clipboard().dataChanged.connect(self._stamp_clip)
 
         # Spotlight (Ctrl+Shift+D) — создаётся лениво при первом вызове хоткея.
         self.spotlight = None
@@ -829,17 +833,11 @@ class App(QWidget):
         self.save_settings()
 
     def sync_autostart(self):
-        """При старте реестр — источник истины: приводим настройку в соответствие
-        реальному состоянию автозапуска (юзер мог убрать запись вручную/другим
-        софтом). Если запись есть, но путь к exe устарел (после обновления) —
-        переписываем на актуальный."""
+        """Настройка — источник истины: на старте приводим реестр в соответствие
+        галочке. Выкл → запись удаляется (чинит «застрявший» автозапуск при
+        выключенной галочке); вкл → перезаписываем на актуальный путь к exe."""
         from core import autostart
-        reg = autostart.is_enabled()
-        if reg != self.settings.get("autostart", False):
-            self.settings["autostart"] = reg
-            self.save_settings()
-        if reg:
-            autostart.set_enabled(True)   # обновить путь к exe на случай переезда
+        autostart.set_enabled(self.settings.get("autostart", False))
 
     def set_parallel_downloads(self, n):
         self.settings["parallel_downloads"] = max(1, min(3, int(n)))
@@ -856,6 +854,31 @@ class App(QWidget):
         updater.relaunch_app()
         # Немедленно завершаемся, чтобы освободить мьютекс single-instance.
         os._exit(0)
+
+    def _stamp_clip(self):
+        import time
+        self._clip_change_ts = time.monotonic()
+
+    def _maybe_autopaste(self):
+        """При открытии окна вставляет ссылку из буфера в одиночное поле, если:
+        включена настройка, буфер обновлён недавно, ссылка одиночная и её сайт
+        выбран в списке автовставки."""
+        if not self.settings.get("autopaste", False):
+            return
+        import time
+        if time.monotonic() - self._clip_change_ts > 30:   # только свежий буфер
+            return
+        from core import downloader
+        try:
+            text = (QApplication.clipboard().text() or "").strip()
+        except Exception:
+            return
+        if not text or "\n" in text:
+            return
+        site = downloader.link_site(text)
+        enabled = self.settings.get("autopaste_sites", downloader.AUTOPASTE_SITES)
+        if site and site in enabled:
+            self.main_page.autofill_url(text)
 
     def apply_clipboard_watch(self):
         """Подключает/отключает слежение за буфером по настройке."""
@@ -1213,6 +1236,7 @@ class App(QWidget):
             self.move(fx, fy + off)
             self.show()
             self.repaint()        # отрисовать главное состояние, пока прозрачно
+            self._maybe_autopaste()   # вставить свежую ссылку из буфера, если включено
             start_pos = QPoint(fx, fy + off)
             start_op = 0.0
         else:

@@ -298,9 +298,12 @@ class HistoryRow(QWidget):
     def _apply_state(self):
         dl = self._state == "downloading"
         no_btn = self._state in ("pending", "fetching", "error")
-        for b in (self._btn_more, self._btn_copy, self._btn_trim):
+        for b in (self._btn_more, self._btn_copy):
             if b is not None:
                 b.setVisible(not dl and not no_btn)    # у pending/fetching кнопок нет
+        if self._btn_trim is not None:                 # обложку не режем
+            self._btn_trim.setVisible(not dl and not no_btn
+                                      and not self.entry.get("is_image"))
         self._btn_stop.setVisible(dl)     # стоп — только пока идёт загрузка
 
     def is_pending(self):
@@ -523,6 +526,10 @@ class HistoryRow(QWidget):
         else:
             p.fillRect(rect, QColor("#26262a"))
         p.restore()
+        if self.entry.get("is_image"):     # скачанная картинка — янтарная рамка обложки
+            p.setPen(QPen(QColor("#ffb020"), max(1.5, s(2.0))))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(rect, s(6), s(6))
 
         # текст: ссылка (усечена посередине) + площадка
         text_x = tx + tw + s(14)

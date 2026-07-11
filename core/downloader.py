@@ -210,6 +210,7 @@ def video_formats(info, youtube=True):
             "fmt": _fmt_for(f),
             "mp3": False,
         })
+    options.append({"label": tr("Thumbnail"), "thumbnail": True, "mp3": False})
     return options
 
 
@@ -285,6 +286,8 @@ def _unique_base(out_dir, base, ext):
 def _final_ext(option):
     """Расширение итогового файла (для проверки уникальности имени)."""
     o = option or {}
+    if o.get("thumbnail"):
+        return "jpg"
     if o.get("mp3"):
         return "mp3"
     if o.get("audio"):                 # аудио-исходник (m4a/opus/webm…)
@@ -774,6 +777,98 @@ def _stream(args, hooks, log, progress=True):
     return rc == 0, dest
 
 
+_YT_ID_RE = re.compile(
+    r"(?:v=|/vi/|/live/|/shorts/|/embed/|youtu\.be/)([\w-]{11})")
+
+
+def _youtube_id(url):
+    m = _YT_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+# Ключи сайтов для автовставки ссылки при открытии окна (см. settings_page).
+AUTOPASTE_SITES = ["youtube", "instagram", "tiktok", "reddit",
+                   "twitter", "vk", "soundcloud"]
+_SITE_HOSTS = [
+    ("youtube", ("youtube.com", "youtu.be")),
+    ("instagram", ("instagram.com",)),
+    ("tiktok", ("tiktok.com",)),
+    ("reddit", ("reddit.com", "redd.it")),
+    ("twitter", ("twitter.com", "x.com")),
+    ("vk", ("vk.com", "vk.ru", "vkvideo.ru")),
+    ("soundcloud", ("soundcloud.com",)),
+]
+
+
+def link_site(url):
+    """Ключ сайта по ссылке ('youtube'/'tiktok'/…), '' если не распознан."""
+    u = (url or "").lower()
+    for key, hosts in _SITE_HOSTS:
+        if any(h in u for h in hosts):
+            return key
+    return ""
+
+
+def _dl_url_to_file(url, path):
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "Snatchr"})
+        with urllib.request.urlopen(req, timeout=20) as resp, open(path, "wb") as f:
+            f.write(resp.read())
+        return os.path.getsize(path) > 0
+    except Exception:
+        return False
+
+
+def _run_thumbnail_job(url, settings, hooks, title):
+    """Скачивание ТОЛЬКО обложки в jpg. Для YouTube основной путь — прямая
+    ссылка img.youtube.com/vi/<id>/{maxres,hq}default.jpg (в ~8 раз быстрее
+    yt-dlp и в макс. качестве; имя файла берём из уже известного title).
+    Fallback и не-YouTube — yt-dlp (--skip-download --write-thumbnail)."""
+    log = logbook.Log(url)
+    log.event("Downloading thumbnail")
+    job_dir = _new_job_dir()
+    dest = ""
+    if is_youtube(url) and not hooks.is_stopped():
+        vid = _youtube_id(url)
+        if vid:
+            out = os.path.join(job_dir, (_sanitize_name(title) or vid) + ".jpg")
+            for q in ("maxresdefault", "hqdefault"):
+                u = f"https://img.youtube.com/vi/{vid}/{q}.jpg"
+                # >2 КБ отсекает серую заглушку 120×90 при отсутствии maxres.
+                if _dl_url_to_file(u, out) and os.path.getsize(out) > 2048:
+                    dest = out
+                    break
+    if not dest and not hooks.is_stopped():
+        log.event("Thumbnail via yt-dlp")
+        out_tmpl = os.path.join(
+            job_dir, _name_template(job_dir, {"thumbnail": True}, title))
+        args = [tools.YTDLP_EXE, "--no-playlist", "--ignore-errors", "-o", out_tmpl,
+                "--skip-download", "--write-thumbnail", "--convert-thumbnails", "jpg"]
+        args += tools.pot_ytdlp_args(url)
+        args += cookie_args(settings, url)
+        loc = tools.ffmpeg_location()
+        if loc:
+            args += ["--ffmpeg-location", loc]
+        args.append(url)
+        _stream(args, hooks, log, progress=False)
+        _del_cookie_copy(args)
+        dest = _scan_job_output(job_dir, "jpg")
+    if hooks.is_stopped():
+        _rm_dir(job_dir)
+        return False, "", log
+    final = ""
+    if dest and os.path.exists(dest):
+        try:
+            final = _move_to_dest(dest, _out_dir(settings))
+        except Exception as exc:
+            log.info("Move failed: " + str(exc))
+    _rm_dir(job_dir)
+    if final:
+        log.event("Done")
+    return bool(final), final, log
+
+
 def run_job(option, url, settings, hooks, title=None, info=None):
     """
     Полный цикл одного задания: yt-dlp -> (fallback streamlink для Twitch) ->
@@ -783,6 +878,8 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     info — готовая info с анализа: пробуем быстрый путь (--load-info-json) без
     повторного извлечения; при любой неудаче откатываемся к обычному.
     """
+    if (option or {}).get("thumbnail"):
+        return _run_thumbnail_job(url, settings, hooks, title)
     log = logbook.Log(url)
     log.event("Starting download (yt-dlp)")
     download_dir = _out_dir(settings)

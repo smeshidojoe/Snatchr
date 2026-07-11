@@ -32,7 +32,8 @@ _RU = {
     "Launch at startup": "Запускать при старте системы",
     "Parallel Downloads": "Одновременных загрузок",
     "Reset Settings": "Сбросить настройки",
-    "Open logs folder": "Открыть папку логов",
+    "Open Logs Folder": "Открыть папку логов",
+    "Paste link on open": "Вставлять ссылку при открытии",
     "Reset all settings?": "Сбросить все настройки?",
     "This deletes the config and restarts Snatchr.":
         "Это удалит конфиг и перезапустит Snatchr.",
@@ -89,6 +90,7 @@ _RU = {
     "Invalid time range": "Неверный интервал времени",
     "Best Quality": "Лучшее качество",
     "Best Compatibility (1080p)": "Лучшая совместимость (1080p)",
+    "Thumbnail": "Обложка",
     "Paste video link here...": "Вставьте ссылку на видео...",
     "Paste video links (one per line)…": "Вставьте ссылки на видео (по одной в строке)…",
     "Select All": "Выбрать все",
@@ -167,6 +169,12 @@ _RU = {
     "appears offering to download it in the background.":
         "Когда вы копируете ссылку с поддерживаемого сайта,\n"
         "появляется тост с предложением скачать её в фоне.",
+    "When you open the window, a freshly copied link is\n"
+    "pasted into the field automatically — for the sites\n"
+    "you tick below.":
+        "При открытии окна недавно скопированная ссылка\n"
+        "автоматически вставляется в поле — для сайтов,\n"
+        "отмеченных ниже.",
     "A quick launcher (global shortcut) to paste a link, download\n"
     "it, and trim clips. Auto-hide closes it when it loses focus;\n"
     "Pinned keeps it open until you press the shortcut again.":

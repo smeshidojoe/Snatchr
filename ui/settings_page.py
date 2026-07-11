@@ -146,6 +146,9 @@ class SettingsPage(WindowDragMixin, QWidget):
                    "available, with a CPU fallback.")
     CLIPBOARD_TIP = ("When you copy a link from a supported site, a toast\n"
                      "appears offering to download it in the background.")
+    AUTOPASTE_TIP = ("When you open the window, a freshly copied link is\n"
+                     "pasted into the field automatically — for the sites\n"
+                     "you tick below.")
     SPOTLIGHT_TIP = ("A quick launcher (global shortcut) to paste a link, download\n"
                      "it, and trim clips. Auto-hide closes it when it loses focus;\n"
                      "Pinned keeps it open until you press the shortcut again.")
@@ -268,8 +271,13 @@ class SettingsPage(WindowDragMixin, QWidget):
         # Копировать ли скачанный по Toast файл в буфер (рядом со слежением).
         self._build_toast_copy_checkbox(pad, y, card_w)
         y += s(30) + s(6)
+        # Автовставка ссылки из буфера при открытии окна (+ выбор сайтов).
+        y += self._build_autopaste_block(pad, y, card_w) + s(14)
         # Конвертация YouTube-видео.
         self._build_convert_checkbox(pad, y, card_w)
+        y += s(30) + s(6)
+        # Встраивание обложки — сразу после конвертации.
+        self._build_embed_checkbox(pad, y, card_w)
         y += s(30) + s(6)
         # Одновременных загрузок (1..3).
         self._build_parallel_row(pad, y, card_w)
@@ -303,19 +311,15 @@ class SettingsPage(WindowDragMixin, QWidget):
                                self._on_language_change)
         y += s(34) + s(22)                    # отступ между блоками
 
-        # Advanced (внизу): встраивание обложки
+        # Advanced (внизу): уведомления об обновлениях + автозапуск + сброс.
         self._section_title(tr("Advanced"), pad, y)
         y += s(18)
-        self._build_embed_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
-        # В самом низу — уведомления об обновлениях + автозапуск + сброс.
         self._build_update_checkbox(pad, y, card_w)
         y += s(30) + s(6)
         self._build_autostart_checkbox(pad, y, card_w)
         y += s(30) + s(12)
-        self._build_open_logs_button(pad, y, card_w)
-        y += s(32) + s(10)
-        self._build_reset_button(pad, y, card_w)
+        # Open Logs Folder + Reset Settings — в один ряд, равные и на равных отступах.
+        self._build_bottom_buttons(pad, y, card_w)
         y += s(32) + s(30)                    # + увеличенный нижний отступ
 
         content.resize(self.width_, y)
@@ -469,38 +473,109 @@ class SettingsPage(WindowDragMixin, QWidget):
         cb.toggled.connect(self.app.set_autostart)
         self._checks["autostart"] = cb
 
-    def _build_open_logs_button(self, x, y, card_w):
+    def _build_bottom_buttons(self, x, y, card_w):
+        """Open Logs Folder + Reset Settings — две кнопки одинаковой ширины в один
+        ряд, с равными отступами от краёв блока и друг от друга (три равных зазора)."""
         s = self.app._s
         font = fonts.font(s(11), "Semibold")
-        t = tr("Open logs folder")
-        bw = max(s(200), QFontMetrics(font).horizontalAdvance(t) + s(26))
-        btn = LinkButton(self._host, t, font, self.CHOOSE, self.LINK_HOVER,
-                         self.app.open_logs_folder, hover_bg=self.CHOOSE_BG_H,
-                         radius=s(6), base_bg=self.CHOOSE_BG)
-        btn.setGeometry(x, y, bw, s(30))
-
-    def _build_reset_button(self, x, y, card_w):
-        s = self.app._s
-        font = fonts.font(s(11), "Semibold")
-        t = tr("Reset Settings")
-        bw = max(s(210), QFontMetrics(font).horizontalAdvance(t) + s(26))
-        btn = LinkButton(self._host, t, font, self._pal["error"], self.LINK_HOVER,
-                         self._on_reset_click, hover_bg=self.CHOOSE_BG_H, radius=s(6),
-                         base_bg=self.CHOOSE_BG)
-        btn.setGeometry(x, y, bw, s(30))
+        bh = s(32)
+        gap = s(12)
+        bw = (card_w - 3 * gap) // 2
+        logs_x = x + gap
+        reset_x = x + 2 * gap + bw
+        self.btn_logs = LinkButton(
+            self._host, tr("Open Logs Folder"), font, self.CHOOSE, self.LINK_HOVER,
+            self.app.open_logs_folder, hover_bg=self.CHOOSE_BG_H, radius=s(6),
+            base_bg=self.CHOOSE_BG)
+        self.btn_logs.setGeometry(logs_x, y, bw, bh)
+        self._reset_armed = False
+        self.btn_reset = LinkButton(
+            self._host, tr("Reset Settings"), font, self._pal["error"], self.LINK_HOVER,
+            self._on_reset_click, hover_bg=self.CHOOSE_BG_H, radius=s(6),
+            base_bg=self.CHOOSE_BG)
+        self.btn_reset.setGeometry(reset_x, y, bw, bh)
 
     def _on_reset_click(self):
-        from PySide6.QtWidgets import QMessageBox
-        self.app.suppress_autohide(True)
+        # Двухступенчатое подтверждение, как в спотлайте: первый клик взводит
+        # («Confirm»), второй в течение пары секунд — выполняет сброс.
+        from PySide6.QtCore import QTimer
+        if not self._reset_armed:
+            self._reset_armed = True
+            self.btn_reset.setText(tr("Confirm"))
+            QTimer.singleShot(2600, self._disarm_reset)
+            return
+        self._reset_armed = False
+        self.app.reset_and_restart()
+
+    def _disarm_reset(self):
+        if not self._reset_armed:
+            return
+        self._reset_armed = False
         try:
-            r = QMessageBox.question(
-                self, tr("Reset all settings?"),
-                tr("This deletes the config and restarts Snatchr."),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        finally:
-            self.app.suppress_autohide(False)
-        if r == QMessageBox.Yes:
-            self.app.reset_and_restart()
+            self.btn_reset.setText(tr("Reset Settings"))
+        except RuntimeError:
+            pass
+
+    # --- автовставка ссылки при открытии окна --------------------------- #
+    _AUTOPASTE_SITES = [("youtube", "Youtube"), ("instagram", "Insta"),
+                        ("tiktok", "Tiktok"), ("reddit", "Reddit"),
+                        ("twitter", "Twitter"), ("vk", "VK"),
+                        ("soundcloud", "SoundCloud")]
+
+    def _build_autopaste_block(self, x, y, card_w):
+        s = self.app._s
+        from core import downloader
+        # Строка: чекбокс включения + кнопка Select/Deselect All справа.
+        sd_w = s(96)
+        cb = CheckBox(self._host, tr("Paste link on open"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb.setChecked(bool(self.settings.get("autopaste", False)))
+        cb.setGeometry(x, y, card_w - sd_w - s(8), s(30))
+        cb.setToolTip(tr(self.AUTOPASTE_TIP))
+        cb.toggled.connect(lambda v: self._set_flag("autopaste", v))
+        self._checks["autopaste"] = cb
+        sd = LinkButton(self._host, tr("Deselect All"), fonts.font(s(10), "Semibold"),
+                        self.CHOOSE, self.LINK_HOVER, self._toggle_all_sites,
+                        hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+        sd.setGeometry(x + card_w - sd_w, y + s(2), sd_w, s(26))
+        self._sites_toggle_btn = sd
+        # Сетка сайтов (2 колонки).
+        enabled = set(self.settings.get("autopaste_sites", downloader.AUTOPASTE_SITES))
+        self._site_checks = {}
+        cols, rh = 2, s(26)
+        col_w = card_w // cols
+        gy = y + s(34)
+        for i, (key, label) in enumerate(self._AUTOPASTE_SITES):
+            r, c = divmod(i, cols)
+            scb = CheckBox(self._host, label, fonts.font(s(11), "Regular"),
+                           self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5))
+            scb.setChecked(key in enabled)
+            scb.setGeometry(x + c * col_w, gy + r * rh, col_w - s(6), s(24))
+            scb.toggled.connect(lambda v, k=key: self._on_site_toggle(k, v))
+            self._site_checks[key] = scb
+        self._sync_sites_toggle_label()
+        rows = (len(self._AUTOPASTE_SITES) + cols - 1) // cols
+        return s(34) + rows * rh
+
+    def _on_site_toggle(self, key, value):
+        from core import downloader
+        sites = set(self.settings.get("autopaste_sites", list(downloader.AUTOPASTE_SITES)))
+        sites.add(key) if value else sites.discard(key)
+        # Сохраняем в каноническом порядке.
+        self.settings["autopaste_sites"] = [k for k in downloader.AUTOPASTE_SITES
+                                            if k in sites]
+        self.app.save_settings()
+        self._sync_sites_toggle_label()
+
+    def _toggle_all_sites(self):
+        target = not all(cb.isChecked() for cb in self._site_checks.values())
+        for cb in self._site_checks.values():
+            cb.setCheckedAnimated(target)     # toggled -> _on_site_toggle сохранит
+        self._sync_sites_toggle_label()
+
+    def _sync_sites_toggle_label(self):
+        all_on = all(cb.isChecked() for cb in self._site_checks.values())
+        self._sites_toggle_btn.setText(tr("Deselect All") if all_on else tr("Select All"))
 
     def _build_select_row(self, label, x, y, values, current, command, icons=None):
         s = self.app._s

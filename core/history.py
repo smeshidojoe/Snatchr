@@ -137,6 +137,8 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
         "thumb": thumb or "",
         "height": media.get("height") or 0,
         "duration": media.get("duration") or 0,
+        "is_image": os.path.splitext(path)[1].lower() in (
+            ".jpg", ".jpeg", ".png", ".webp", ".gif"),
         "ts": int(time.time()),
     }
     items = load()
