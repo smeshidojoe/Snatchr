@@ -1228,8 +1228,11 @@ class MainPage(WindowDragMixin, QWidget):
         self.app.refresh_histories()
 
     def _delete_entry(self, entry):
-        self.app.delete_file(entry)
-        self.app.refresh_histories()
+        if self.app.delete_file(entry):
+            self.app.refresh_histories()
+        else:
+            self.history.flash_error(entry.get("id", ""),
+                                     tr("Couldn't delete — file in use"))
 
     def _start_multi_download(self):
         if not self._multi_jobs:

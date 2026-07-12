@@ -416,15 +416,8 @@ class TrimPanel(QWidget):
         self._dirty = False              # двигали ли ползунки обрезки
 
         # --- плеер (реальный звук+видео через QVideoSink -> QLabel) ------
-        self._player = QMediaPlayer(self)
-        self._audio = QAudioOutput(self)
-        self._player.setAudioOutput(self._audio)
-        self._sink = QVideoSink(self)
-        self._player.setVideoSink(self._sink)
-        self._sink.videoFrameChanged.connect(self._on_frame)
-        self._player.durationChanged.connect(self._on_duration)
-        self._player.positionChanged.connect(self._on_position)
-        self._player.playbackStateChanged.connect(self._on_state)
+        self._player = self._audio = self._sink = None
+        self._build_player()
 
         # --- виджеты ------------------------------------------------------
         self._preview = QLabel(self)
@@ -493,6 +486,32 @@ class TrimPanel(QWidget):
         self._player.setPosition(0)
         self._player.pause()
         self._layout()
+
+    def _build_player(self):
+        """(Пере)создаёт QMediaPlayer + звук + видео-синк и подключает сигналы."""
+        self._player = QMediaPlayer(self)
+        self._audio = QAudioOutput(self)
+        self._player.setAudioOutput(self._audio)
+        self._sink = QVideoSink(self)
+        self._player.setVideoSink(self._sink)
+        self._sink.videoFrameChanged.connect(self._on_frame)
+        self._player.durationChanged.connect(self._on_duration)
+        self._player.positionChanged.connect(self._on_position)
+        self._player.playbackStateChanged.connect(self._on_state)
+
+    def hard_release(self):
+        """Гарантированно отпускает файловый хендл: Qt FFmpeg-backend на Windows
+        держит демуксер открытым до УНИЧТОЖЕНИЯ QMediaPlayer, поэтому одного
+        setSource(QUrl()) мало — пересоздаём плеер целиком. Превью (QLabel) при
+        этом сохраняет последний кадр."""
+        self.stop()
+        for obj in (self._player, self._sink, self._audio):
+            try:
+                obj.setParent(None)
+                obj.deleteLater()
+            except Exception:
+                pass
+        self._build_player()
 
     def stop(self):
         # Закрыли обрезку — ВЫГРУЖАЕМ файл (снимаем блокировку, чтобы его можно было

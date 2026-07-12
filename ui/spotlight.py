@@ -902,8 +902,22 @@ class Spotlight(QWidget):
         self.app.refresh_histories()         # отразить в окне и Spotlight
 
     def _delete_entry(self, entry):
-        self.app.delete_file(entry)          # файл с диска + запись из истории
-        self.app.refresh_histories()
+        if self.app.delete_file(entry):      # файл с диска + запись из истории
+            self.app.refresh_histories()
+        else:
+            # Не удалось (файл занят/заблокирован) — краснеем строку с пояснением.
+            self.history.flash_error(entry.get("id", ""),
+                                     tr("Couldn't delete — file in use"))
+
+    def release_trim_file(self, path):
+        """Перед удалением файла: если он открыт в панели обрезки, жёстко
+        освобождаем (иначе Qt держит файл и его не удалить)."""
+        try:
+            cur = self.trim.current_path()
+            if cur and os.path.normpath(cur) == os.path.normpath(path):
+                self.trim.hard_release()
+        except Exception:
+            pass
 
     # --- фон ----------------------------------------------------------- #
     def paintEvent(self, event):

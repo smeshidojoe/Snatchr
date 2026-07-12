@@ -190,6 +190,8 @@ class HistoryRow(QWidget):
         self._draw_frac = 0.0            # отрисованная доля (плавно догоняет)
         self._hover_t = 0.0
         self._pulse_t = -1.0              # -1 = нет пульсации
+        self._err_t = 0.0                # интенсивность «покраснения» ошибки (0 = нет)
+        self._err_text = ""              # краткое пояснение поверх блока
         self.resize(width, self._h)
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._text_col = QColor(pal["title"])
@@ -282,6 +284,28 @@ class HistoryRow(QWidget):
         self.update()
         if pulse:
             self.start_pulse()
+
+    def flash_error(self, text):
+        """Действие не удалось (напр., не смогли удалить файл): блок слегка
+        краснеет + краткий текст поверх, держится пару секунд и плавно гаснет.
+        Контент строки (обложка/название) при этом не прячем."""
+        self._err_text = text or ""
+        self._err_t = 1.0
+        self.update()
+        QTimer.singleShot(2200, self._fade_error)
+
+    def _fade_error(self):
+        anim.animate(self, 1.0, 0.0, 450, self._err_tick,
+                     on_finished=self._err_faded, attr="_err_anim")
+
+    def _err_tick(self, v):
+        self._err_t = v
+        self.update()
+
+    def _err_faded(self):
+        self._err_t = 0.0
+        self._err_text = ""
+        self.update()
 
     def start_pulse(self):
         anim.animate(self, 0.0, 1.0, 1200, self._pulse_tick,
@@ -571,6 +595,24 @@ class HistoryRow(QWidget):
             p.setOpacity(trans)
             self._draw_fetching_content(p, block, s, dy=(1.0 - trans) * s(24))
             p.setOpacity(1.0)
+
+        # ошибка действия (не удалось удалить и т.п.): лёгкая красная заливка +
+        # рамка + краткий текст по центру. Контент остаётся под ней.
+        if self._err_t > 0.0:
+            wash = QColor(self._err)
+            wash.setAlphaF(0.30 * self._err_t)
+            wpath = QPainterPath()
+            wpath.addRoundedRect(block, s(10), s(10))
+            p.fillPath(wpath, wash)
+            p.setPen(QPen(self._err, max(1.5, s(1.6))))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(block, s(10), s(10))
+            if self._err_text:
+                p.setOpacity(min(1.0, self._err_t * 1.4))
+                p.setFont(fonts.font(s(11), "Semibold"))
+                p.setPen(self._text_col)
+                p.drawText(block, Qt.AlignCenter, self._err_text)
+                p.setOpacity(1.0)
         p.end()
 
 
@@ -744,6 +786,14 @@ class HistoryList(QWidget):
         for r in gone:
             self.remove_row(r)
         return [r.entry.get("id") for r in gone]
+
+    def flash_error(self, entry_id, text):
+        """Подсветить строку с данным id красным + текстом (действие не удалось)."""
+        for r in self._rows:
+            if r.entry.get("id") == entry_id:
+                r.flash_error(text)
+                return True
+        return False
 
     def remove_row(self, row):
         """Плавно убирает строку (напр., отменённая загрузка) и подтягивает

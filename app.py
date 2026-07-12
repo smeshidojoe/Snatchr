@@ -1092,16 +1092,40 @@ class App(QWidget):
             pass
 
     def delete_file(self, entry):
-        """Удаляет файл ролика с диска и запись из истории. Возвращает True/False."""
+        """Удаляет файл ролика с диска и запись из истории. Возвращает True/False.
+        Если файл открыт в панели обрезки Spotlight — сначала жёстко освобождаем его
+        (Qt держит демуксер открытым), затем удаляем с несколькими попытками, давая
+        бэкенду доснять хендл (иначе тихий PermissionError и «удаление не сработало»)."""
         from core import history
         path = (entry or {}).get("path") or ""
-        try:
-            if path and os.path.isfile(path):
-                os.remove(path)
-        except OSError:
+        if path and self.spotlight is not None:
+            try:
+                self.spotlight.release_trim_file(path)
+            except Exception:
+                pass
+        if not self._remove_file(path):
             return False
         history.remove((entry or {}).get("id", ""))
         return True
+
+    def _remove_file(self, path):
+        if not path:
+            return False
+        if not os.path.exists(path):
+            return True                      # уже удалён — считаем успехом
+        import time
+        for _ in range(5):
+            try:
+                os.remove(path)
+                return True
+            except OSError:
+                QApplication.processEvents()  # дать Qt/FFmpeg-бэкенду отпустить файл
+                time.sleep(0.07)
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
 
     def _open_in_folder(self, path):
         """Клик по тосту об успехе — открыть файл в проводнике (или папку загрузок)."""

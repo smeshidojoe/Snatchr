@@ -63,6 +63,7 @@ _RU = {
     "Remove": "Удалить",
     "Remove From List": "Убрать из списка",
     "Delete": "Удалить файл",
+    "Couldn't delete — file in use": "Не удалось удалить — файл занят",
     "Confirm": "Подтвердить",
     "Spotlight": "Spotlight",
     "Enable Spotlight": "Включить Spotlight",
