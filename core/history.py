@@ -172,17 +172,35 @@ def remove(entry_id):
     return kept
 
 
+def file_gone(path):
+    """Файл ДЕЙСТВИТЕЛЬНО удалён? True только если файла нет, НО его папка
+    доступна. Если недоступна сама папка (диск/сеть/OneDrive не смонтированы,
+    нестандартный CWD сразу после самообновления) — файл просто временно
+    недоступен: возвращаем False, чтобы не стереть историю по разовому сбою."""
+    if not path:
+        return True
+    try:
+        if os.path.isfile(path):
+            return False
+        parent = os.path.dirname(path) or "."
+        if not os.path.isdir(parent):
+            return False           # папки нет/недоступна — запись НЕ трогаем
+        return True                # папка есть, а файла нет — реально удалён
+    except OSError:
+        return False
+
+
 def prune_missing():
-    """Убирает записи, чей файл больше не существует на диске (+ их обложки).
-    Возвращает актуальный список (новые сверху)."""
+    """Убирает записи, чей файл реально удалён с диска (+ их обложки). Временную
+    недоступность папки (см. file_gone) НЕ считаем удалением, поэтому разовый сбой
+    доступа больше не затирает историю. Возвращает актуальный список."""
     items = load()
     kept, dropped = [], []
     for it in items:
-        p = it.get("path")
-        if p and os.path.isfile(p):
-            kept.append(it)
-        else:
+        if file_gone(it.get("path")):
             dropped.append(it)
+        else:
+            kept.append(it)
     if dropped:
         for it in dropped:
             _remove_thumb(it.get("thumb"))

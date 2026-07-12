@@ -544,8 +544,11 @@ class HistoryRow(QWidget):
         p.save()
         p.setClipPath(path)
         if self._pm is not None:
-            scaled = self._pm.scaled(int(tw), int(th), Qt.KeepAspectRatioByExpanding,
-                                     Qt.SmoothTransformation)
+            src = self._pm
+            if self._err_t > 0.0:            # ошибка — размываем обложку
+                src = self._blurred(src)
+            scaled = src.scaled(int(tw), int(th), Qt.KeepAspectRatioByExpanding,
+                                Qt.SmoothTransformation)
             p.drawPixmap(int(tx), int(ty), scaled)
         else:
             p.fillRect(rect, QColor("#26262a"))
@@ -596,13 +599,17 @@ class HistoryRow(QWidget):
             self._draw_fetching_content(p, block, s, dy=(1.0 - trans) * s(24))
             p.setOpacity(1.0)
 
-        # ошибка действия (не удалось удалить и т.п.): лёгкая красная заливка +
-        # рамка + краткий текст по центру. Контент остаётся под ней.
+        # ошибка действия (не удалось удалить и т.п.): блок «мутнеет» (матовый
+        # скрим + размытая обложка выше) + красная заливка/рамка, поверх — резкий
+        # краткий текст. Контент строки остаётся, но уходит на второй план.
         if self._err_t > 0.0:
-            wash = QColor(self._err)
-            wash.setAlphaF(0.30 * self._err_t)
             wpath = QPainterPath()
             wpath.addRoundedRect(block, s(10), s(10))
+            frost = QColor(self._track)         # матовое стекло поверх содержимого
+            frost.setAlphaF(0.55 * self._err_t)
+            p.fillPath(wpath, frost)
+            wash = QColor(self._err)
+            wash.setAlphaF(0.26 * self._err_t)
             p.fillPath(wpath, wash)
             p.setPen(QPen(self._err, max(1.5, s(1.6))))
             p.setBrush(Qt.NoBrush)
@@ -614,6 +621,15 @@ class HistoryRow(QWidget):
                 p.drawText(block, Qt.AlignCenter, self._err_text)
                 p.setOpacity(1.0)
         p.end()
+
+    @staticmethod
+    def _blurred(pm):
+        """Дешёвое размытие: уменьшаем в 8 раз и растягиваем обратно (smooth)."""
+        w = max(1, pm.width() // 8)
+        h = max(1, pm.height() // 8)
+        small = pm.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        return small.scaled(pm.width(), pm.height(), Qt.IgnoreAspectRatio,
+                            Qt.SmoothTransformation)
 
 
 # ------------------------------------------------------------------ #
@@ -779,10 +795,11 @@ class HistoryList(QWidget):
     def drop_missing(self):
         """Убирает строки, чей файл удалён с диска (пока окно открыто). Строки
         идущих загрузок не трогаем. Возвращает id удалённых записей."""
+        from core import history
         gone = [r for r in self._rows
                 if not r.is_downloading() and not r.is_pending()
                 and not r.is_fetching() and not r.is_error()
-                and not (r.entry.get("path") and os.path.isfile(r.entry["path"]))]
+                and history.file_gone(r.entry.get("path"))]
         for r in gone:
             self.remove_row(r)
         return [r.entry.get("id") for r in gone]

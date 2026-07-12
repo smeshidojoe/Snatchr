@@ -741,17 +741,64 @@ def build_streamlink_args(url, settings, out_dir=None):
     return args, out
 
 
-def _stream(args, hooks, log, progress=True):
+def _iter_lines(stream):
+    """Итерирует вывод процесса по '\\n' И '\\r'. ffmpeg обновляет строку прогресса
+    через '\\r' (без перевода строки), поэтому обычный итератор по строкам склеил бы
+    весь прогресс в одну строку, приходящую только в самом конце."""
+    buf = []
+    while True:
+        ch = stream.read(1)
+        if not ch:
+            if buf:
+                yield "".join(buf)
+            return
+        if ch in ("\r", "\n"):
+            if buf:
+                yield "".join(buf)
+                buf = []
+        else:
+            buf.append(ch)
+
+
+_FF_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _parse_ffmpeg_time(line):
+    """Секунды из строки прогресса ffmpeg ('… time=00:00:03.52 …') или None."""
+    m = _FF_TIME_RE.search(line)
+    if not m:
+        return None
+    h, mnt, sec = int(m.group(1)), int(m.group(2)), float(m.group(3))
+    return h * 3600 + mnt * 60 + sec
+
+
+def _section_seconds(option):
+    """Длительность выбранной секции (end-start) из option['section']='*a-b' или
+    None. Нужна, чтобы вести полосу прогресса по ffmpeg-резке (у неё нет обычного
+    download-прогресса yt-dlp)."""
+    m = re.match(r"\*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)", (option or {}).get("section") or "")
+    if m:
+        a, b = float(m.group(1)), float(m.group(2))
+        if b > a:
+            return b - a
+    return None
+
+
+def _stream(args, hooks, log, progress=True, ff_total=None):
     """Запускает процесс со стримингом вывода в лог; возвращает (ok, dest).
 
     Прогресс отдельных потоков (видео, затем аудио) объединяется в один job:
-    вместо двух пробегов 0→100% полоса идёт единожды 0→100% по всем файлам."""
+    вместо двух пробегов 0→100% полоса идёт единожды 0→100% по всем файлам.
+
+    ff_total (сек) — при скачивании по таймкодам yt-dlp режет через ffmpeg, у
+    которого нет обычного download-прогресса; тогда ведём полосу по ffmpeg
+    'time=' относительно длительности секции."""
     proc = tools.popen(args)
     hooks.set_proc(proc)
     dest = ""
     n_streams = 1        # сколько файлов сольётся в один (видео+аудио = 2)
     file_idx = -1        # индекс текущего скачиваемого файла (0-based)
-    for line in proc.stdout:
+    for line in _iter_lines(proc.stdout):
         if hooks.is_stopped():
             break
         if progress:
@@ -767,6 +814,13 @@ def _stream(args, hooks, log, progress=True):
                     pr["percent_str"] = f"{frac * 100:.1f}%"
                 hooks.on_progress(pr)
                 continue
+            if ff_total:                     # прогресс ffmpeg-резки по таймкодам
+                t = _parse_ffmpeg_time(line)
+                if t is not None:
+                    frac = max(0.0, min(1.0, t / ff_total))
+                    hooks.on_progress({"frac": frac,
+                                       "percent_str": f"{frac * 100:.1f}%"})
+                    continue
             d = parse_destination(line)
             if d:
                 dest = d
@@ -902,6 +956,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
     use_cookies = True
     ok, dest = False, ""
+    ff_total = _section_seconds(option)   # для полосы прогресса при таймкод-резке
 
     # Быстрый путь: качаем из готовой info (--load-info-json), без повторного
     # извлечения. При любой неудаче — обычное извлечение (полный фолбэк).
@@ -910,7 +965,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         log.event("Fast path: load-info-json (no re-extraction)")
         _args = build_download_args(option, url, settings, title, job_dir,
                                     info_json=info_file)
-        ok, dest = _stream(_args, hooks, log, progress=True)
+        ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
         _del_cookie_copy(_args)          # одноразовую копию кук — сразу убрать
         if not hooks.is_stopped():
             dest = _resolve(dest)
@@ -927,7 +982,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
 
     if not ok and not hooks.is_stopped():
         _args = build_download_args(option, url, settings, title, job_dir)
-        ok, dest = _stream(_args, hooks, log, progress=True)
+        ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
         _del_cookie_copy(_args)
         # С --ignore-errors код возврата ненадёжен; успех = итоговый файл существует.
         if not hooks.is_stopped():
@@ -942,7 +997,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         expected = _expected_path(option, url, settings, title, job_dir)
         ok, dest = _stream(
             build_download_args(option, url, settings, title, job_dir, cookies=False),
-            hooks, log, progress=True)
+            hooks, log, progress=True, ff_total=ff_total)
         if not hooks.is_stopped():
             dest = _resolve(dest)
             ok = bool(dest)
@@ -957,7 +1012,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         expected = _expected_path(option, url, settings, title, job_dir)
         _args = build_download_args(option, url, settings, title, job_dir,
                                     cookies=use_cookies, impersonate=True)
-        ok, dest = _stream(_args, hooks, log, progress=True)
+        ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
         _del_cookie_copy(_args)
         if not hooks.is_stopped():
             dest = _resolve(dest)

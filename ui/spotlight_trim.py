@@ -499,12 +499,11 @@ class TrimPanel(QWidget):
         self._player.positionChanged.connect(self._on_position)
         self._player.playbackStateChanged.connect(self._on_state)
 
-    def hard_release(self):
-        """Гарантированно отпускает файловый хендл: Qt FFmpeg-backend на Windows
-        держит демуксер открытым до УНИЧТОЖЕНИЯ QMediaPlayer, поэтому одного
-        setSource(QUrl()) мало — пересоздаём плеер целиком. Превью (QLabel) при
-        этом сохраняет последний кадр."""
-        self.stop()
+    def _reset_player(self):
+        """Уничтожает плеер/звук/синк и создаёт заново — гарантированно роняет
+        файловый хендл (Qt FFmpeg-backend на Windows держит демуксер открытым до
+        УНИЧТОЖЕНИЯ QMediaPlayer; setSource(QUrl()) не всегда отпускает файл).
+        Превью (QLabel) при этом сохраняет последний кадр."""
         for obj in (self._player, self._sink, self._audio):
             try:
                 obj.setParent(None)
@@ -512,6 +511,9 @@ class TrimPanel(QWidget):
             except Exception:
                 pass
         self._build_player()
+
+    def hard_release(self):
+        self.stop()               # stop уже пересоздаёт плеер и отпускает файл
 
     def stop(self):
         # Закрыли обрезку — ВЫГРУЖАЕМ файл (снимаем блокировку, чтобы его можно было
@@ -534,6 +536,8 @@ class TrimPanel(QWidget):
                 tw.stop()          # kill_tree(ffmpeg) — процесс умирает, поток выйдет сам
             except Exception:
                 pass
+        # Сразу освобождаем файл (не дожидаясь удаления) — пересоздаём плеер.
+        self._reset_player()
 
     def _layout(self):
         s = self.app._s
