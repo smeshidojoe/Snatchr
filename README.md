@@ -1,6 +1,7 @@
+
 <div align="center">
   
-<img width="4096" height="1365" alt="Snatchr Banner" src="https://github.com/user-attachments/assets/5ea0767e-f54c-4648-9721-7c406e40c31b" />
+<img width="4096" height="1365" alt="Snatchr Banner v2" src="https://github.com/user-attachments/assets/b135759d-c19c-4347-94dc-73a7d54f593b" />
 
 # Snatchr
 
