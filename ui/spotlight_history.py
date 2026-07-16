@@ -192,6 +192,8 @@ class HistoryRow(QWidget):
         self._pulse_t = -1.0              # -1 = нет пульсации
         self._err_t = 0.0                # интенсивность «покраснения» ошибки (0 = нет)
         self._err_text = ""              # краткое пояснение поверх блока
+        self._dl = {}                    # прогресс: speed/size/downloaded/eta/pct
+        self._dl_t = 0.0                 # транзишн (0 = обычная, 1 = пилюли скачивания)
         self.resize(width, self._h)
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._text_col = QColor(pal["title"])
@@ -201,6 +203,8 @@ class HistoryRow(QWidget):
         self._ok = QColor(pal["ok"])
         self._err = QColor(pal["error"])
         self._hover_bg = QColor(pal["sel_chip"]); self._hover_bg.setAlpha(150)
+        self._chip = QColor(pal["sel_chip"])         # непрозрачная подложка пилюль
+        self._on_accent = QColor(pal["on_accent"])   # текст поверх залитого прогресса
         self._hover = False
         self._pm = self._load_thumb()
         self._sub = self._make_sub()     # площадка + разрешение (Instagram · 1080p)
@@ -222,21 +226,25 @@ class HistoryRow(QWidget):
                 self.entry, self._btn_more.mapToGlobal(QPoint(0, self._btn_more.height()))))
         self._apply_state()
         self._layout()
+        if self._state == "downloading":     # строка создана сразу как загрузка —
+            self._animate_dl(1.0)            # пилюли всё равно появляются анимацией
 
     def _make_sub(self):
         """Подпись под заголовком: автор (если известен) ИНАЧЕ площадка, затем
-        разрешение/длительность. Автора и площадку вместе не пишем — не влезает."""
+        длина (для проанализированной ссылки) или разрешение (для готового файла)."""
         parts = []
         primary = self.entry.get("uploader") or self.entry.get("host", "")
         if primary:
             parts.append(primary)
         h = self.entry.get("height") or 0
-        if h:
+        dur = self.entry.get("duration")
+        # Готовый ролик — показываем разрешение; до скачивания (pending) — длину.
+        if self._state == "normal" and h:
             parts.append(res_label(h))
-        else:
-            d = self.entry.get("duration")
-            if d:
-                parts.append(self._fmt_dur(d))
+        elif dur:
+            parts.append(self._fmt_dur(dur))
+        elif h:
+            parts.append(res_label(h))
         return "  ·  ".join(parts)
 
     @staticmethod
@@ -250,13 +258,121 @@ class HistoryRow(QWidget):
     def is_downloading(self):
         return self._state == "downloading"
 
-    def set_progress(self, frac):
+    def set_progress(self, frac, info=None):
         self._frac = max(0.0, min(1.0, frac or 0.0))
+        if info:
+            self._dl = info                  # speed/size/downloaded/eta/percent_str
         if not self._prog_timer.isActive():
             self._prog_timer.start()
 
+    def _animate_dl(self, to, on_finished=None):
+        anim.animate(self, self._dl_t, to, 720, self._dl_tick,
+                     easing=QEasingCurve.InOutCubic, on_finished=on_finished,
+                     attr="_dl_anim")
+
+    def _dl_tick(self, v):
+        self._dl_t = v
+        self.update()
+
+    def _res_fps_label(self):
+        if self.entry.get("is_audio"):       # аудио — пилюля разрешения не нужна
+            return ""
+        h = self.entry.get("height") or 0
+        if not h:
+            return ""
+        lbl = res_label(h)
+        fps = self.entry.get("fps") or 0
+        if fps:
+            lbl += " %dfps" % int(round(fps))
+        return lbl
+
+    def _draw_pill(self, p, x, ycenter, text, color, fixed_w=None):
+        s = self.app._s
+        f = fonts.font(s(9), "Semibold")
+        padx = s(4)                          # боковые отступы поменьше — пилюля уже
+        h = s(16)
+        w = fixed_w if fixed_w else QFontMetrics(f).horizontalAdvance(text) + 2 * padx
+        r = QRectF(x, ycenter - h / 2.0, w, h)
+        # Непрозрачная подложка (chip) — пилюля читается и на треке, и на залитом
+        # прогрессе (иначе на светлой теме текст сливается с заливкой).
+        bg = QColor(self._chip); bg.setAlpha(235)
+        p.setPen(Qt.NoPen); p.setBrush(bg)
+        p.drawRoundedRect(r, h / 2.0, h / 2.0)
+        p.setFont(f); p.setPen(QColor(color))
+        p.drawText(r, Qt.AlignCenter, text)
+        return w
+
+    def _pill_w(self, text):
+        s = self.app._s
+        f = fonts.font(s(9), "Semibold")
+        return QFontMetrics(f).horizontalAdvance(text) + 2 * s(4)
+
+    def _fill_x(self):
+        s = self.app._s
+        return s(4) + self._draw_frac * (self.width() - s(8))
+
+    def _draw_text_split(self, p, rect, text, col_norm):
+        """Рисует текст двумя цветами по линии заполнения прогресса: под заливкой —
+        on_accent (контраст к акценту), вне — обычный. Шрифт задаёт вызывающий."""
+        fill_x = self._fill_x() if self._dl_t > 0.001 else rect.left()
+        if fill_x > rect.left():
+            p.save()
+            p.setClipRect(QRectF(rect.left(), rect.top(),
+                                 fill_x - rect.left(), rect.height()))
+            p.setPen(self._on_accent)
+            p.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+            p.restore()
+        if fill_x < rect.right():
+            p.save()
+            p.setClipRect(QRectF(fill_x, rect.top(),
+                                 rect.right() - fill_x + 2, rect.height()))
+            p.setPen(col_norm)
+            p.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+            p.restore()
+
+    def _draw_dl_stats(self, p, s, text_x, right):
+        """Нижний ряд загрузки: ФИКСИРОВАННЫЕ колонки (зарезервированная ширина по
+        максимуму) -> цифры не «прыгают». Что не влезло (узкое окно) — не рисуем."""
+        t = self._dl_t
+        p.setOpacity(t)
+        bot_c = s(47) + (1.0 - t) * s(12)
+        fstat = fonts.font(s(9), "Regular")
+        p.setFont(fstat)
+        if self._dl.get("stage") == "post":      # постобработка после 100%
+            self._draw_text_split(p, QRectF(text_x, bot_c - s(8),
+                                            right - text_x, s(16)),
+                                  tr("Processing…"), self._muted)
+            p.setOpacity(1.0)
+            return
+        fm = QFontMetrics(fstat)
+        dl = self._dl.get("downloaded") or ""
+        tot = self._dl.get("size") or ""
+        pct = self._dl.get("percent_str") or ""
+        eta = self._dl.get("eta") or ""
+        size_str = f"{dl} / {tot}" if (dl and tot) else (tot or dl)
+        cols = [
+            ("pill", self._pill_w("000.00MiB/s"), self._dl.get("speed") or ""),
+            ("txt", fm.horizontalAdvance("999.99MiB / 99.99GiB"), size_str),
+            ("txt", fm.horizontalAdvance("100.0%"), pct),
+            ("txt", fm.horizontalAdvance("ETA 00:00:00"), ("ETA " + eta) if eta else ""),
+        ]
+        x = text_x
+        gap = s(12)
+        avail = right - text_x
+        p.setFont(fstat)
+        for i, (kind, cw, val) in enumerate(cols):
+            if i > 0 and (x - text_x) + cw > avail:
+                break                        # не влезает — прекращаем (набор фиксирован)
+            if kind == "pill":
+                self._draw_pill(p, x, bot_c, val, self._muted, fixed_w=cw)
+            else:
+                self._draw_text_split(p, QRectF(x, bot_c - s(8), cw, s(16)),
+                                      val, self._muted)
+            x += cw + gap
+        p.setOpacity(1.0)
+
     def _prog_tick(self):
-        self._draw_frac += (self._frac - self._draw_frac) * 0.2
+        self._draw_frac += (self._frac - self._draw_frac) * 0.14
         if abs(self._draw_frac - self._frac) < 0.003:
             self._draw_frac = self._frac
             if self._state != "downloading":
@@ -270,8 +386,8 @@ class HistoryRow(QWidget):
             self.update()
 
     def finish(self, entry, pulse=True):
-        """Загрузка завершена: строка становится обычной (обложка + кнопки),
-        опционально с зелёной пульсацией."""
+        """Загрузка завершена: обратная анимация (пилюли уезжают, проявляются
+        обычные данные), затем обычная строка с опциональной зелёной пульсацией."""
         self.entry = entry
         self._state = "normal"
         self._frac = 1.0
@@ -281,9 +397,8 @@ class HistoryRow(QWidget):
         self._sub = self._make_sub()     # теперь известно разрешение
         self._apply_state()
         self._layout()
+        self._animate_dl(0.0, on_finished=(self.start_pulse if pulse else None))
         self.update()
-        if pulse:
-            self.start_pulse()
 
     def flash_error(self, text):
         """Действие не удалось (напр., не смогли удалить файл): блок слегка
@@ -399,11 +514,13 @@ class HistoryRow(QWidget):
                    Qt.AlignVCenter | Qt.AlignLeft, txt)
 
     def start_downloading(self):
-        """Переход pending -> downloading (нажали Download в окне)."""
+        """Переход pending -> downloading (нажали Download в окне): пилюли скачивания
+        появляются анимацией (сверху/снизу + opacity)."""
         self._state = "downloading"
         self._frac = 0.0
         self._draw_frac = 0.0
         self._apply_state()
+        self._animate_dl(1.0)
         self.update()
 
     def _on_trim_btn(self):
@@ -472,7 +589,6 @@ class HistoryRow(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         s = self.app._s
         w = self.width()
-        downloading = self._state == "downloading"
         block = QRectF(s(4), s(4), w - s(8), self._h - s(8))
 
         if self._state == "fetching":
@@ -509,15 +625,17 @@ class HistoryRow(QWidget):
         if trans > 0.0:
             p.setOpacity(1.0 - trans)
 
-        if downloading:
-            # весь блок — полоса прогресса (трек + плавная заливка акцентом)
+        if self._dl_t > 0.001:
+            # весь блок — полоса прогресса (трек + заливка акцентом); при завершении
+            # плавно затухает (alpha *= _dl_t).
             p.save()
             clip = QPainterPath()
             clip.addRoundedRect(block, s(10), s(10))
             p.setClipPath(clip)
-            p.fillRect(block, self._track)
+            track = QColor(self._track); track.setAlphaF(self._dl_t)
+            p.fillRect(block, track)
             fill = QColor(self._accent)
-            fill.setAlphaF(0.9)
+            fill.setAlphaF(0.9 * self._dl_t)
             p.fillRect(QRectF(block.left(), block.top(),
                               self._draw_frac * block.width(), block.height()), fill)
             p.restore()
@@ -558,31 +676,43 @@ class HistoryRow(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rect, s(6), s(6))
 
-        # текст: ссылка (усечена посередине) + площадка
+        # текст. ЗАГОЛОВОК рисуем ОДИН раз (не переанимируется): при старте плавно
+        # съезжает вправо под пилюлю. Пилюля и нижний ряд кроссфейдятся по _dl_t.
         text_x = tx + tw + s(14)
-        if downloading:
-            stop_left = w - s(12) - s(34)           # левый край кнопки стоп (см. _layout)
-            right = stop_left - s(10)                # текст обрывается перед кнопкой стоп
-        else:
-            right = self._text_right
-        avail = max(s(40), right - text_x)
-        # Заголовок — название видео (если известно), иначе ссылка.
+        right_dl = (w - s(12) - s(34)) - s(10)       # до кнопки стоп
+        right_norm = self._text_right
         title = self.entry.get("title") or self.entry.get("url", "")
-        elide = Qt.ElideRight if self.entry.get("title") else Qt.ElideMiddle
+        t = self._dl_t
 
+        res = self._res_fps_label()
+        pill_off = (self._pill_w(res) + s(9)) if res else 0
+
+        title_x = text_x + t * pill_off
+        right_i = right_norm + (right_dl - right_norm) * t
+        avail = max(s(30), right_i - title_x)
         f_url = fonts.font(s(12), "Medium")
         p.setFont(f_url)
-        fm = QFontMetrics(f_url)
-        elided = fm.elidedText(title, elide, int(avail))
-        p.setPen(self._text_col)
-        p.drawText(QRectF(text_x, s(14), avail, s(22)),
-                   Qt.AlignVCenter | Qt.AlignLeft, elided)
+        elide = Qt.ElideRight if self.entry.get("title") else Qt.ElideMiddle
+        elided = QFontMetrics(f_url).elidedText(title, elide, int(avail))
+        self._draw_text_split(p, QRectF(title_x, s(14), avail, s(22)), elided,
+                              self._text_col)
 
-        f_host = fonts.font(s(10), "Regular")
-        p.setFont(f_host)
-        p.setPen(self._muted)
-        p.drawText(QRectF(text_x, s(38), avail, s(18)),
-                   Qt.AlignVCenter | Qt.AlignLeft, self._sub)
+        # res·fps пилюля — появляется (opacity + slide сверху).
+        if t > 0.001 and res:
+            p.setOpacity(t)
+            self._draw_pill(p, text_x, s(25) + (1.0 - t) * (-s(12)), res, self._accent)
+            p.setOpacity(1.0)
+
+        # нижний ряд: обычный (автор·длина) <-> статы загрузки (кроссфейд).
+        if t < 0.999:
+            p.setOpacity(1.0 - t)
+            p.setFont(fonts.font(s(10), "Regular"))
+            p.setPen(self._muted)
+            p.drawText(QRectF(text_x, s(38), max(s(40), right_norm - text_x), s(18)),
+                       Qt.AlignVCenter | Qt.AlignLeft, self._sub)
+            p.setOpacity(1.0)
+        if t > 0.001:
+            self._draw_dl_stats(p, s, text_x, right_dl)
 
         # зелёная пульсация после завершения
         if self._pulse_t >= 0.0:
@@ -803,6 +933,13 @@ class HistoryList(QWidget):
         for r in gone:
             self.remove_row(r)
         return [r.entry.get("id") for r in gone]
+
+    def set_entry_waveform(self, entry_id, path):
+        """Прописать готовую заготовку волны в строку (для мгновенной обрезки)."""
+        for r in self._rows:
+            if r.entry.get("id") == entry_id:
+                r.entry["waveform"] = path
+                return
 
     def flash_error(self, entry_id, text):
         """Подсветить строку с данным id красным + текстом (действие не удалось)."""

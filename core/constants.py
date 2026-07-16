@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.6"
 
 # Репозиторий для проверки обновлений (релизы на GitHub).
 # TODO: указать реальный "owner/repo".

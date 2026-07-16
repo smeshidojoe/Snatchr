@@ -14,6 +14,7 @@ installer_output/
 # ---- Сборка / обновление ----
 build/
 dist/
+docs/
 _update/          # скачанный апдейт рядом с программой
 *.manifest
 *.spec            # авто-сгенерированные spec'и игнорируем,
@@ -26,6 +27,7 @@ tools/
 *.log
 config.json
 cache.json
+forge.md
 
 # ---- Reference / scratch material (не часть приложения) ----
 refference/

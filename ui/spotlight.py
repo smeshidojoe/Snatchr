@@ -478,7 +478,7 @@ class Spotlight(QWidget):
         from core.workers import SpotlightThumbWorker
         tw = SpotlightThumbWorker(url, self)
 
-        def on_done(data, title, uploader, r=row, i=dl_id):
+        def on_done(data, title, uploader, height, fps, r=row, i=dl_id):
             try:
                 if data:
                     pm = QPixmap()
@@ -489,6 +489,10 @@ class Spotlight(QWidget):
                     r.entry["title"] = title
                 if uploader and not r.entry.get("uploader"):
                     r.entry["uploader"] = uploader
+                if height:
+                    r.entry["height"] = height     # для пилюли разрешение·fps
+                if fps:
+                    r.entry["fps"] = fps
                 r._sub = r._make_sub()
                 r.update()
             except RuntimeError:
@@ -500,7 +504,8 @@ class Spotlight(QWidget):
                         d["title"] = title
                     if uploader:
                         d["uploader"] = uploader
-                self.app.mirror_meta("spotlight", i, data, title, uploader)
+                self.app.mirror_meta("spotlight", i, data, title, uploader,
+                                     height, fps)
         tw.done.connect(on_done)
         tw.start()
         return tw
@@ -509,15 +514,17 @@ class Spotlight(QWidget):
         d = self._dls.get(dl_id)
         if d is None:
             return
-        if p.get("stage") == "convert":
+        if p.get("stage") == "post":
+            frac = 1.0
+        elif p.get("stage") == "convert":
             frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
         else:
             base = p.get("frac") or 0.0
             frac = base * 0.5 if d["convert"] else base
         d["frac"] = frac
         if d["row"] is not None:
-            d["row"].set_progress(frac)
-        self.app.mirror_progress("spotlight", dl_id, frac)
+            d["row"].set_progress(frac, p)
+        self.app.mirror_progress("spotlight", dl_id, frac, p)
         self.app.toast_ring_progress(dl_id, frac)     # no-op, если не Toast-кольцо
         self._update_tray_ring()
 
@@ -621,10 +628,10 @@ class Spotlight(QWidget):
         self._mirrors[dl_id] = row
         self._fetch_preview_url(entry.get("_thumb_url"), entry.get("url", ""), row)
 
-    def update_mirror(self, dl_id, frac):
+    def update_mirror(self, dl_id, frac, info=None):
         r = self._mirrors.get(dl_id)
         if r is not None:
-            r.set_progress(frac)
+            r.set_progress(frac, info)
 
     def finish_mirror(self, dl_id, entry):
         r = self._mirrors.pop(dl_id, None)
@@ -640,7 +647,7 @@ class Spotlight(QWidget):
         if r is not None:
             self.history.remove_row(r)
 
-    def set_mirror_meta(self, dl_id, thumb_bytes, title, uploader):
+    def set_mirror_meta(self, dl_id, thumb_bytes, title, uploader, height=0, fps=0):
         r = self._mirrors.get(dl_id)
         if r is None:
             return
@@ -654,6 +661,10 @@ class Spotlight(QWidget):
                 r.entry["title"] = title
             if uploader and not r.entry.get("uploader"):
                 r.entry["uploader"] = uploader
+            if height:
+                r.entry["height"] = height
+            if fps:
+                r.entry["fps"] = fps
             r._sub = r._make_sub()
             r.update()
         except RuntimeError:
@@ -683,6 +694,7 @@ class Spotlight(QWidget):
             self.search.flash(QColor("#e05a5a"))
             return
         self._trim_url = entry.get("url", "")     # для истории обрезанного фрагмента
+        wf = entry.get("waveform") or ""          # готовая заготовка волны (аудио)
         if self._trim_open:
             same = (os.path.normpath(path)
                     == os.path.normpath(self.trim.current_path() or ""))
@@ -691,25 +703,25 @@ class Spotlight(QWidget):
             if self.trim.is_dirty():
                 # ползунки двигали — просим подтвердить смену файла
                 self.trim.confirm_switch(tr("Discard current trim?"),
-                                         lambda p=path: self._load_trim(p))
+                                         lambda p=path, w=wf: self._load_trim(p, w))
             else:
-                self._load_trim(path)     # изменений не было — переключаемся сразу
+                self._load_trim(path, wf)  # изменений не было — переключаемся сразу
             return
         # первое открытие — с анимацией раскрытия. Файл грузим сразу (filmstrip и
         # первый кадр начинают готовиться без задержки).
         self._trim_open = True
         self._trim_h = 0
         target = self.trim.target_height()
-        self._load_trim(path)
+        self._load_trim(path, wf)
         self.trim.show()
         self._fit_for_extra(target + self.GAP)
-        anim.animate(self, 0.0, 1.0, 300,
+        anim.animate(self, 0.0, 1.0, 560,
                      lambda v: self._set_trim_h(int(target * v)),
-                     easing=QEasingCurve.OutCubic, attr="_trim_anim")
+                     easing=QEasingCurve.InOutCubic, attr="_trim_anim")
 
-    def _load_trim(self, path):
+    def _load_trim(self, path, waveform=None):
         """Загрузить файл в панель обрезки и отметить его строку активной."""
-        self.trim.open_for(path)
+        self.trim.open_for(path, waveform)
         self.history.set_active_path(path)
 
     def _set_trim_h(self, h):
@@ -735,9 +747,9 @@ class Spotlight(QWidget):
             self.trim.stop()
             self.trim.hide()
             self._relayout()
-        anim.animate(self, 1.0, 0.0, 240,
+        anim.animate(self, 1.0, 0.0, 500,
                      lambda v: self._set_trim_h(int(start * v)),
-                     easing=QEasingCurve.InCubic, on_finished=done, attr="_trim_anim")
+                     easing=QEasingCurve.InOutCubic, on_finished=done, attr="_trim_anim")
 
     def _fit_for_extra(self, extra):
         screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()

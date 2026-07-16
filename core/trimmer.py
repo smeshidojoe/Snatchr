@@ -119,6 +119,79 @@ def thumbnail(path, out_path, width=320):
     return frame_at(path, ts, out_path, width=width)
 
 
+def waveform(path, out_path, width=1200, height=240, color="8ab4f8",
+             start=None, dur=None):
+    """Картинка волны аудио (ffmpeg showwavespic). start/dur (сек) — рендерить
+    только участок (для чёткого зума). Возвращает out_path или None."""
+    if not path or not os.path.isfile(path):
+        return None
+    args = [tools.FFMPEG_EXE, "-y"]
+    if start is not None:
+        args += ["-ss", "%.3f" % max(0.0, start)]
+    if dur is not None:
+        args += ["-t", "%.3f" % max(0.05, dur)]
+    args += ["-i", path, "-filter_complex",
+             "showwavespic=s=%dx%d:colors=#%s" % (int(width), int(height), color),
+             "-frames:v", "1", out_path]
+    r = _run(args, timeout=90)
+    if r is not None and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+        return out_path
+    return None
+
+
+def audio_peaks(path, bins=8000):
+    """Пики амплитуды аудио (max|s| на бин, 0..1) — аналог peak-файлов Premiere:
+    считаем ОДИН раз, потом рисуем волну на любом зуме без ffmpeg. Декодируем в
+    моно s16le 8кГц (для волны хватает). Список float длиной ~bins или []."""
+    import array
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        p = subprocess.run(
+            [tools.FFMPEG_EXE, "-v", "quiet", "-i", path,
+             "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+            capture_output=True, timeout=180,
+            creationflags=tools.CREATE_NO_WINDOW, env=tools._utf8_env())
+        raw = p.stdout or b""
+    except Exception:
+        return []
+    if len(raw) < 2:
+        return []
+    s = array.array("h")
+    s.frombytes(raw[: len(raw) // 2 * 2])
+    n = len(s)
+    if n == 0:
+        return []
+    step = max(1, n // bins)
+    out = []
+    for i in range(0, n, step):
+        sl = s[i:i + step]
+        pk = max(max(sl), -min(sl)) if sl else 0     # max/min по срезу — C-скорость
+        out.append(pk / 32768.0)
+    return out
+
+
+def save_peaks(peaks, out_path):
+    import array
+    try:
+        with open(out_path, "wb") as f:
+            array.array("f", peaks).tofile(f)
+        return out_path if os.path.isfile(out_path) else None
+    except Exception:
+        return None
+
+
+def load_peaks(path):
+    import array
+    try:
+        a = array.array("f")
+        with open(path, "rb") as f:
+            a.frombytes(f.read())
+        return list(a)
+    except Exception:
+        return []
+
+
 def filmstrip(path, out_path, count=12, frame_w=120, frame_h=0, dur=None):
     """Горизонтальная полоска из count кадров (tile 1xcount) для ленты обрезки.
     Возвращает out_path или None."""

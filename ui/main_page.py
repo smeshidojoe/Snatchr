@@ -624,6 +624,7 @@ class MainPage(WindowDragMixin, QWidget):
                  "host": history.host_label(url), "title": info.get("title") or "",
                  "uploader": info.get("uploader") or info.get("channel") or "",
                  "duration": info.get("duration") or 0,
+                 "height": info.get("height") or 0, "fps": info.get("fps") or 0,
                  "path": None, "thumb": "", "ts": 0, "_thumb_url": info.get("thumbnail")}
         if self._fetching_row is not None:
             entry["id"] = self._fetching_row.entry.get("id", entry["id"])
@@ -933,6 +934,7 @@ class MainPage(WindowDragMixin, QWidget):
             self.seg_type.value())
         if self._is_multi():
             self._rebuild_multi_jobs()
+        self._update_timecodes_enabled()   # для Thumbnail таймкоды недоступны
 
     # ------------------------------------------------------------------ #
     #  Состояния
@@ -967,7 +969,8 @@ class MainPage(WindowDragMixin, QWidget):
         """Таймкоды доступны для одиночного видео (state=ready) вне режима
         Multiple Links; иначе — выключены (и сброшены). Лимит минимальной
         длины видео снят."""
-        en = (not self._is_multi() and self._state == "ready")
+        en = (not self._is_multi() and self._state == "ready"
+              and not (self._selected or {}).get("thumbnail"))   # обложка — без обрезки
         # Метки цвет не меняют (всегда основной) — инактив только на полях ввода.
         for f in (self.tc_start, self.tc_end):
             f.setEnabled(en)
@@ -1054,6 +1057,8 @@ class MainPage(WindowDragMixin, QWidget):
         row = self._pending_row
         self._pending_row = None
         self._pending_entry = None
+        # Аудио — пилюля разрешения не нужна (по переключателю Video/Audio).
+        entry["is_audio"] = (self.seg_type.value() == "audio")
         row.start_downloading()
         dl_id = entry["id"]
         convert = bool(downloader.should_convert(option, url, self.settings))
@@ -1079,15 +1084,17 @@ class MainPage(WindowDragMixin, QWidget):
         d = self._dls.get(dl_id)
         if d is None:
             return
-        if p.get("stage") == "convert":
+        if p.get("stage") == "post":
+            frac = 1.0
+        elif p.get("stage") == "convert":
             frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
         else:
             base = p.get("frac") or 0.0
             frac = base * 0.5 if d["convert"] else base
         d["frac"] = frac
         if d["row"] is not None:
-            d["row"].set_progress(frac)
-        self.app.mirror_progress("window", dl_id, frac)
+            d["row"].set_progress(frac, p)
+        self.app.mirror_progress("window", dl_id, frac, p)
 
     def _on_row_done(self, dl_id, dest):
         d = self._dls.pop(dl_id, None)
@@ -1155,10 +1162,10 @@ class MainPage(WindowDragMixin, QWidget):
         self._mirrors[dl_id] = row
         self._fetch_row_thumb(entry.get("_thumb_url"), entry.get("url", ""), row)
 
-    def update_mirror(self, dl_id, frac):
+    def update_mirror(self, dl_id, frac, info=None):
         r = self._mirrors.get(dl_id)
         if r is not None:
-            r.set_progress(frac)
+            r.set_progress(frac, info)
 
     def finish_mirror(self, dl_id, entry):
         r = self._mirrors.pop(dl_id, None)
@@ -1174,7 +1181,7 @@ class MainPage(WindowDragMixin, QWidget):
         if r is not None:
             self.history.remove_row(r)
 
-    def set_mirror_meta(self, dl_id, thumb_bytes, title, uploader):
+    def set_mirror_meta(self, dl_id, thumb_bytes, title, uploader, height=0, fps=0):
         r = self._mirrors.get(dl_id)
         if r is None:
             return
@@ -1188,6 +1195,10 @@ class MainPage(WindowDragMixin, QWidget):
                 r.entry["title"] = title
             if uploader and not r.entry.get("uploader"):
                 r.entry["uploader"] = uploader
+            if height:
+                r.entry["height"] = height
+            if fps:
+                r.entry["fps"] = fps
             r._sub = r._make_sub()
             r.update()
         except RuntimeError:
@@ -1259,6 +1270,7 @@ class MainPage(WindowDragMixin, QWidget):
             entry = {"id": uuid.uuid4().hex[:12], "url": url,
                      "host": history.host_label(url), "title": e.get("title") or "",
                      "uploader": e.get("uploader") or "", "duration": e.get("duration") or 0,
+                     "is_audio": bool(opt.get("audio") or opt.get("mp3")),
                      "path": None, "thumb": "", "ts": 0, "_thumb_url": e.get("thumbnail")}
             row = self.history.insert_downloading(entry)
             dl_id = entry["id"]

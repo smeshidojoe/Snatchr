@@ -245,7 +245,8 @@ class App(QWidget):
         # Удаляем старые страницы и панель. Кнопки нижней панели привязаны к окну,
         # поэтому их убираем отдельно (иначе остаются «фантомные» кнопки).
         self.bottom_bar.teardown()
-        for w in (self.settings_page, self.about_page, self.main_page, self.bottom_bar):
+        for w in (self.settings_page, self.about_page, self.main_page,
+                  self.bottom_bar):
             w.setParent(None)
             w.deleteLater()
 
@@ -358,6 +359,10 @@ class App(QWidget):
 
         def done():
             self.settings_page.hide()
+            try:                             # вернуть прокрутку настроек в начало
+                self.settings_page._scroll_area.verticalScrollBar().setValue(0)
+            except Exception:
+                pass
             self._nav_done()
 
         anim.fade(self.settings_page, 1.0, 0.0, 200, on_finished=done)
@@ -387,7 +392,7 @@ class App(QWidget):
         self._nav_busy = True
         self.current_page = "settings"
         self.bottom_bar.set_page_mode("settings")
-        self._animate_height(self.WIN_H_SETTINGS)    # одновременно с фейдом
+        self._animate_height(self.WIN_H_SETTINGS)
         self.settings_page.setGeometry(self.content_x, self.content_y,
                                        self.content_w, self.content_h)
 
@@ -771,9 +776,30 @@ class App(QWidget):
         from core import history
         entry = history.add(dest, url, title, thumb_bytes=thumb_bytes,
                             thumb_url=thumb_url, uploader=uploader)
-        if entry is not None and notify_window:
-            self.main_page.on_external_download(entry)
+        if entry is not None:
+            if entry.get("is_audio"):
+                self._start_waveform(entry["id"], dest)   # заготовка волны в фоне
+            if notify_window:
+                self.main_page.on_external_download(entry)
         return entry
+
+    def _start_waveform(self, entry_id, path):
+        from core.workers import WaveformWorker
+        wk = WaveformWorker(path, entry_id, self)
+        self._wave_workers = getattr(self, "_wave_workers", [])
+        self._wave_workers.append(wk)
+        wk.done.connect(self._on_waveform_done)
+        wk.start()
+
+    def _on_waveform_done(self, entry_id, wpath):
+        # Прописать готовую волну в живые строки (панель обрезки откроется мгновенно).
+        for v in self._views():
+            try:
+                v.history.set_entry_waveform(entry_id, wpath)
+            except Exception:
+                pass
+        self._wave_workers = [w for w in getattr(self, "_wave_workers", [])
+                              if w.isRunning()]
 
     # ------------------------------------------------------------------ #
     #  Фоновая загрузка из трея («Вставить»): Best Quality, окно не нужно.
@@ -945,9 +971,9 @@ class App(QWidget):
         for v in self._other_views(source):
             v.add_mirror(dl_id, dict(entry))
 
-    def mirror_progress(self, source, dl_id, frac):
+    def mirror_progress(self, source, dl_id, frac, info=None):
         for v in self._other_views(source):
-            v.update_mirror(dl_id, frac)
+            v.update_mirror(dl_id, frac, info)
 
     def mirror_finish(self, source, dl_id, entry):
         for v in self._other_views(source):
@@ -957,10 +983,10 @@ class App(QWidget):
         for v in self._other_views(source):
             v.remove_mirror(dl_id)
 
-    def mirror_meta(self, source, dl_id, thumb_bytes, title, uploader):
+    def mirror_meta(self, source, dl_id, thumb_bytes, title, uploader, height=0, fps=0):
         """Постер/название/автор, добытые для строки-загрузки, — в строку-зеркало."""
         for v in self._other_views(source):
-            v.set_mirror_meta(dl_id, thumb_bytes, title, uploader)
+            v.set_mirror_meta(dl_id, thumb_bytes, title, uploader, height, fps)
 
     def request_cancel(self, dl_id):
         """Stop нажали на строке-зеркале — просим владельца загрузки отменить её."""

@@ -345,7 +345,8 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
         "--progress-template",
         f"download:{PROGRESS_TAG}%(progress._percent_str)s|"
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
-        f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s",
+        f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s|"
+        f"%(progress._downloaded_bytes_str)s",
     ]
     if not info_json:                   # с готовой info извлечения нет — PO не нужен
         args += tools.pot_ytdlp_args(url)   # PO-токен провайдер (только YouTube)
@@ -437,12 +438,14 @@ def parse_progress(line):
     size = _clean_size(parts[3]) if len(parts) > 3 else ""
     if not size and len(parts) > 4:
         size = _clean_size(parts[4])     # оценка, если точный размер неизвестен
+    downloaded = _clean_size(parts[5]) if len(parts) > 5 else ""
     frac = None
     try:
         frac = max(0.0, min(1.0, float(pct.replace("%", "").strip()) / 100.0))
     except ValueError:
         pass
-    return {"percent_str": pct, "speed": speed, "eta": eta, "frac": frac, "size": size}
+    return {"percent_str": pct, "speed": speed, "eta": eta, "frac": frac,
+            "size": size, "downloaded": downloaded}
 
 
 def _stream_count(line):
@@ -784,6 +787,11 @@ def _section_seconds(option):
     return None
 
 
+_POST_RE = re.compile(
+    r"\[(ExtractAudio|Merger|Metadata|EmbedThumbnail|EmbedSubtitle|"
+    r"VideoConvertor|Fixup\w*)\]")
+
+
 def _stream(args, hooks, log, progress=True, ff_total=None):
     """Запускает процесс со стримингом вывода в лог; возвращает (ok, dest).
 
@@ -821,6 +829,9 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
                     hooks.on_progress({"frac": frac,
                                        "percent_str": f"{frac * 100:.1f}%"})
                     continue
+            if _POST_RE.search(line):        # постобработка после 100% (mp3/merge/…)
+                hooks.on_progress({"stage": "post"})
+                continue
             d = parse_destination(line)
             if d:
                 dest = d

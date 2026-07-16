@@ -12,9 +12,9 @@ import os
 import time
 
 from PySide6.QtCore import (
-    Qt, QRectF, QUrl, QThread, Signal, QPointF, QTimer, QEasingCurve
+    Qt, QRectF, QUrl, QThread, Signal, QPointF, QTimer, QEasingCurve, QEvent
 )
-from PySide6.QtGui import QPainter, QColor, QPen, QPixmap
+from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget, QLabel
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
@@ -27,6 +27,101 @@ from ui.widgets import LinkButton
 def _fmt_time(sec):
     sec = max(0, int(sec or 0))
     return f"{sec // 60}:{sec % 60:02d}"
+
+
+_AUDIO_EXT = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".opus", ".m4a", ".wma"}
+
+
+def _is_audio_file(path):
+    return os.path.splitext(path or "")[1].lower() in _AUDIO_EXT
+
+
+class _PeaksWorker(QThread):
+    """Фоновый расчёт пиков (для записей без готового peak-файла) — чтобы открытие
+    обрезки не морозило UI. Кэширует результат."""
+    done = Signal(list, str)         # peaks, path (для проверки актуальности)
+
+    def __init__(self, path, cache, parent=None):
+        super().__init__(parent)
+        self._path, self._cache = path, cache
+
+    def run(self):
+        try:
+            pk = trimmer.audio_peaks(self._path)
+            if pk and self._cache:
+                trimmer.save_peaks(pk, self._cache)
+        except Exception:
+            pk = []
+        self.done.emit(pk, self._path)
+
+
+class _PreviewPlayhead(QWidget):
+    """Прозрачный оверлей поверх превью: вертикальный плейхед, синхронный с лентой;
+    перетаскивается (seek). Активен для аудио (waveform-превью)."""
+
+    def __init__(self, trim):
+        super().__init__(trim)
+        self._trim = trim
+        self._drag = False
+
+    def _active(self):
+        return self._trim._is_audio and self._trim._bar._dur > 0
+
+    def _view(self):
+        """Видимый диапазон превью (сек). При отсутствии зума — вся дорожка."""
+        t = self._trim
+        vs, ve = t._view_start, t._view_end
+        if ve <= vs:
+            return 0.0, t._bar._dur
+        return vs, ve
+
+    def _seek(self, x):
+        t = self._trim
+        if t._bar._dur <= 0:
+            return
+        vs, ve = self._view()
+        frac = max(0.0, min(1.0, x / max(1, self.width())))
+        sec = vs + frac * (ve - vs)
+        t._bar.set_play_pos(sec)
+        self.update()
+        t._on_scrub(sec)
+
+    def mousePressEvent(self, e):
+        if self._active():
+            self._drag = True
+            self._seek(e.position().x())
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            self._seek(e.position().x())
+
+    def mouseReleaseEvent(self, e):
+        self._drag = False
+
+    def paintEvent(self, event):
+        if not self._active():
+            return
+        t = self._trim
+        vs, ve = self._view()
+        if ve <= vs:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        s = t.app._s
+        # Волна из пиков для видимого диапазона — чётко на любом зуме (без ffmpeg).
+        if t._peaks and t._bar._dur > 0:
+            ln = len(t._peaks)
+            i0 = int(vs / t._bar._dur * ln)
+            i1 = int(ve / t._bar._dur * ln)
+            t._paint_peaks(p, QRectF(0, 0, self.width(), self.height()), i0, i1)
+        # Плейхед (тёмный контур + белая линия — видно на любой волне).
+        x = int((t._bar._play - vs) / (ve - vs) * self.width())
+        if 0 <= x <= self.width():
+            p.setPen(QPen(QColor(0, 0, 0, 150), max(3.0, s(3))))
+            p.drawLine(x, 0, x, self.height())
+            p.setPen(QPen(QColor("#ffffff"), max(1.5, s(2))))
+            p.drawLine(x, 0, x, self.height())
+        p.end()
 
 
 # ------------------------------------------------------------------ #
@@ -147,13 +242,18 @@ class FilmstripBar(QWidget):
             return
         sec = self._sec_for(e.position().x())
         min_gap = max(0.2, self._dur * 0.01)
+        # Ручка не трогает независимый плейхед, ПОКА не наедет на него: тогда
+        # толкает его дальше (плейхед всегда внутри [start, end]).
         if self._drag == "l":
             self._start = max(0.0, min(sec, self._end - min_gap))
-            self._play = self._start
+            if self._play < self._start:
+                self._play = self._start
+                self.scrub.emit(self._play)      # толкнули — перемотать плеер
         else:
             self._end = min(self._dur, max(sec, self._start + min_gap))
-            self._play = self._end
-        self.scrub.emit(self._play)
+            if self._play > self._end:
+                self._play = self._end
+                self.scrub.emit(self._play)
         self.update()
 
     def mouseReleaseEvent(self, e):
@@ -414,6 +514,12 @@ class TrimPanel(QWidget):
         self._busy = False
         self._abandoned = False          # обрезку бросили (закрыли панель) -> игнор
         self._dirty = False              # двигали ли ползунки обрезки
+        self._is_audio = False           # аудиофайл — превью/лента = waveform
+        self._custom_strip = None        # готовая лента (waveform) вместо кадров
+        self._view_start = 0.0           # видимый диапазон превью (сек) — зум/пан
+        self._view_end = 0.0
+        self._peaks = []                 # пики амплитуды (рисуем волну без ffmpeg)
+        self._peaks_worker = None
 
         # --- плеер (реальный звук+видео через QVideoSink -> QLabel) ------
         self._player = self._audio = self._sink = None
@@ -423,6 +529,12 @@ class TrimPanel(QWidget):
         self._preview = QLabel(self)
         self._preview.setAlignment(Qt.AlignCenter)
         self._preview.setStyleSheet("background: #000000; border-radius: %dpx;" % s(10))
+        self._ph = _PreviewPlayhead(self)    # плейхед поверх превью (аудио-waveform)
+        self._ph.hide()
+        # Alt+колесо над превью-волной = зум. Фильтр на уровне приложения ловит
+        # событие ДО любого перехвата скроллом/окном (Qt авто-снимет при удалении).
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
 
         self._btn_play = _CtrlButton(app, "play", self)
         self._btn_play.clicked.connect(self._toggle_play)
@@ -430,6 +542,24 @@ class TrimPanel(QWidget):
         self._btn_copy.clicked.connect(lambda: self._export(copy=True))
         self._btn_save = _CtrlButton(app, "save", self, accent=True)
         self._btn_save.clicked.connect(lambda: self._export(copy=False))
+
+        # In/Out — двигают край диапазона к плейхеду.
+        from PySide6.QtWidgets import QPushButton
+        chip = QColor(pal["sel_chip"])
+
+        def _mini(text, cb):
+            b = QPushButton(text, self)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setFont(fonts.font(s(11), "Semibold"))
+            b.setStyleSheet(
+                "QPushButton { background: %s; border: none; border-radius: %dpx; "
+                "color: %s; } QPushButton:hover { background: %s; }"
+                % (chip.name(), s(7), pal["text"], chip.lighter(130).name()))
+            b.clicked.connect(cb)
+            return b
+        self._btn_in = _mini("In", self.set_in)
+        self._btn_out = _mini("Out", self.set_out)
 
         self._bar = FilmstripBar(app, self)
         self._bar.scrub.connect(self._on_scrub)
@@ -447,6 +577,116 @@ class TrimPanel(QWidget):
         self._time_lbl.setStyleSheet(f"color: {pal['muted']}; background: transparent;")
 
         self._confirm = _ConfirmOverlay(app, self)
+
+    def set_in(self):
+        b = self._bar
+        gap = max(0.2, b._dur * 0.01)
+        b._start = max(0.0, min(b._play, b._end - gap))
+        b._play = b._start
+        b.update()
+        b.rangeChanged.emit(b._start, b._end)
+
+    def set_out(self):
+        b = self._bar
+        gap = max(0.2, b._dur * 0.01)
+        b._end = min(b._dur, max(b._play, b._start + gap))
+        b.update()
+        b.rangeChanged.emit(b._start, b._end)
+
+    # --- зум/пан waveform в превью (как таймлайн Premiere) -------------- #
+    def _update_wave_view(self):
+        """Превью для аудио рисует _ph из пиков — просто перерисовываем."""
+        if self._is_audio:
+            self._ph.update()
+
+    def _paint_peaks(self, p, rect, i0, i1):
+        """Рисует ГЛАДКУЮ огибающую волны из пиков self._peaks для среза [i0, i1].
+        Даунсэмпл: пиксель шире пика -> max по срезу (огибающая); пиксель уже пика
+        -> линейная интерполяция (сглаживание при зуме)."""
+        peaks = self._peaks
+        n = i1 - i0
+        if n <= 0 or not peaks:
+            return
+        cy = rect.center().y()
+        half = rect.height() / 2.0 * 0.92
+        w = max(1, int(rect.width()))
+        left = rect.left()
+        ln = len(peaks)
+        top, bot = [], []
+        for px in range(w + 1):
+            f0 = i0 + px / w * n
+            f1 = i0 + (px + 1) / w * n
+            a0, a1 = int(f0), int(f1)
+            if a1 > a0:                       # пиксель покрывает несколько пиков
+                seg = peaks[max(0, a0):min(ln, a1 + 1)]
+                v = max(seg) if seg else 0.0
+            else:                             # зум — интерполяция между соседями
+                i = min(ln - 1, max(0, a0))
+                fr = f0 - a0
+                v = peaks[i] * (1 - fr) + peaks[min(ln - 1, i + 1)] * fr
+            x = left + px
+            top.append(QPointF(x, cy - v * half))
+            bot.append(QPointF(x, cy + v * half))
+        poly = QPolygonF(top + list(reversed(bot)))
+        col = QColor("#8ab4f8"); col.setAlpha(235)
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawPolygon(poly)
+
+    def _on_peaks_ready(self, peaks, path):
+        if not self._is_audio or path != self._path or not peaks:
+            return
+        self._peaks = peaks
+        self._custom_strip = self._peaks_pixmap(1400, 200)
+        if self._bar._dur > 0:
+            self._bar.set_strip(self._custom_strip)   # лента-обзор
+        self._ph.update()
+
+    def _peaks_pixmap(self, w, h):
+        pm = QPixmap(int(w), int(h))
+        pm.fill(QColor("#000000"))
+        if self._peaks:
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            self._paint_peaks(p, QRectF(0, 0, w, h), 0, len(self._peaks))
+            p.end()
+        return pm
+
+    def _zoom_wave(self, delta, frac_x):
+        dur = self._bar._dur
+        if dur <= 0:
+            return
+        span = (self._view_end - self._view_start) or dur
+        center = self._view_start + frac_x * span
+        factor = 0.8 if delta > 0 else 1.25          # вперёд = приблизить
+        min_span = min(dur, max(1.0, dur * 0.01))
+        new_span = max(min_span, min(dur, span * factor))
+        self._view_start = max(0.0, center - frac_x * new_span)
+        self._view_end = min(dur, self._view_start + new_span)
+        self._view_start = max(0.0, self._view_end - new_span)
+        self._update_wave_view()
+        self._ph.update()
+
+    def _follow_playhead(self):
+        """Если плейхед вышел за видимую область превью — смещаем её за ним."""
+        if not self._is_audio:
+            return
+        dur = self._bar._dur
+        if dur <= 0 or self._view_end <= self._view_start:
+            return
+        span = self._view_end - self._view_start
+        if span >= dur - 1e-3:
+            return                                   # полный вид — не скроллим
+        pos = self._bar._play
+        if pos < self._view_start:
+            self._view_start = max(0.0, pos)
+            self._view_end = self._view_start + span
+        elif pos > self._view_end:
+            self._view_end = min(dur, pos)
+            self._view_start = self._view_end - span
+        else:
+            return
+        self._update_wave_view()
 
     # --- защита при смене файла обрезки -------------------------------- #
     def current_path(self):
@@ -466,7 +706,7 @@ class TrimPanel(QWidget):
         s = self.app._s
         return s(280) + s(56) + s(44) + s(30)
 
-    def open_for(self, path):
+    def open_for(self, path, waveform=None):
         # Тот же файл, что открывали в прошлый раз: НЕ чистим превью и filmstrip —
         # прошлый кадр/полоса остаются на месте, а новый кадр 0 идентичен, поэтому
         # реоткрытие без черноты и моргания «как будто перезапустилась обрезка».
@@ -477,15 +717,38 @@ class TrimPanel(QWidget):
         self._busy = False
         self._abandoned = False
         self._dirty = False              # новый файл — изменений ещё нет
+        self._is_audio = _is_audio_file(path)
+        self._custom_strip = None
         self._btn_play.set_glyph("play")
         if not same:
             self._preview.clear()
+            self._bar._strip = None
             self._bar.set_video(0.0, None)
+        if self._is_audio:               # аудио — волна из пиков (peak-файл)
+            self._view_start = self._view_end = 0.0   # сброс зума
+            self._preview.clear()            # превью рисует _ph из пиков
+            self._peaks = (trimmer.load_peaks(waveform)
+                           if (waveform and os.path.isfile(waveform)) else [])
+            if not self._peaks:              # нет готового — пробуем кэш, иначе фон
+                import tempfile
+                cache = os.path.join(
+                    tempfile.gettempdir(),
+                    "snatchr_pk_%d.peaks" % (abs(hash(path)) % 10 ** 9))
+                if os.path.isfile(cache):
+                    self._peaks = trimmer.load_peaks(cache)
+                if not self._peaks:          # считаем в фоне — UI не морозим
+                    self._peaks_worker = _PeaksWorker(path, cache, self)
+                    self._peaks_worker.done.connect(self._on_peaks_ready)
+                    self._peaks_worker.start()
+            self._custom_strip = (self._peaks_pixmap(1400, 200)
+                                  if self._peaks else None)
+            self._ph.update()
         if path and os.path.isfile(path):
             self._player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
         self._player.setPosition(0)
         self._player.pause()
         self._layout()
+
 
     def _build_player(self):
         """(Пере)создаёт QMediaPlayer + звук + видео-синк и подключает сигналы."""
@@ -545,8 +808,13 @@ class TrimPanel(QWidget):
         pad = s(4)
         prev_h = s(280)
         self._preview.setGeometry(pad, pad, w - 2 * pad, prev_h)
-        # ряд управления над лентой: play слева, copy/save справа (с отступами
-        # от краёв — кнопки не липнут к границам).
+        self._ph.setGeometry(pad, pad, w - 2 * pad, prev_h)
+        self._ph.setVisible(self._is_audio)
+        self._ph.raise_()
+        # аудио — waveform в превью с учётом зума/пана.
+        if self._is_audio:
+            self._update_wave_view()
+        # ряд управления над лентой: play слева, In/Out по центру, copy/save справа.
         ctrl_y = pad + prev_h + s(6)
         left_pad = pad + s(10)
         right_pad = pad + s(12)
@@ -554,11 +822,29 @@ class TrimPanel(QWidget):
         self._time_lbl.setGeometry(left_pad + s(42), ctrl_y, s(120), s(34))
         self._btn_save.move(w - right_pad - s(34), ctrl_y)
         self._btn_copy.move(w - right_pad - s(34) * 2 - s(8), ctrl_y)
+        ob = s(46)
+        out_x = w - right_pad - s(34) * 2 - s(8) - s(12) - ob
+        self._btn_out.setGeometry(out_x, ctrl_y + s(2), ob, s(30))
+        self._btn_in.setGeometry(out_x - s(6) - ob, ctrl_y + s(2), ob, s(30))
         bar_y = ctrl_y + s(34) + s(8)
         self._bar.setGeometry(pad, bar_y, w - 2 * pad, s(56))
         if self._confirm is not None and self._confirm.isVisible():
             self._confirm.setGeometry(0, 0, w, self.height())
             self._confirm._layout()
+
+    def eventFilter(self, obj, ev):
+        # Alt + колесо над превью-волной — зум к позиции курсора (как в Premiere).
+        if (ev.type() == QEvent.Wheel and self._is_audio and self.isVisible()
+                and (ev.modifiers() & Qt.AltModifier)
+                and self._preview.isVisible()):
+            lp = self._preview.mapFromGlobal(ev.globalPosition().toPoint())
+            if self._preview.rect().contains(lp):
+                # На Windows Alt делает колесо горизонтальным (delta в x, y=0).
+                delta = ev.angleDelta().y() or ev.angleDelta().x()
+                fx = lp.x() / max(1, self._preview.width())
+                self._zoom_wave(delta, fx)
+                return True
+        return super().eventFilter(obj, ev)
 
     def resizeEvent(self, event):
         self._layout()
@@ -570,8 +856,13 @@ class TrimPanel(QWidget):
             return
         self._bar.set_video(self._dur, None)
         self._update_time()
-        # Лента кадров — в фоне (ffmpeg), не блокируем UI.
-        self._build_filmstrip()
+        if self._is_audio:                       # аудио — волна из пиков (без ffmpeg)
+            self._view_start, self._view_end = 0.0, self._dur
+            if self._custom_strip is not None:
+                self._bar.set_strip(self._custom_strip)   # лента-обзор
+            self._ph.update()
+        else:
+            self._build_filmstrip()              # лента кадров в фоне (ffmpeg)
         self._player.setPosition(0)
 
     def _build_filmstrip(self):
@@ -622,6 +913,8 @@ class TrimPanel(QWidget):
     def _on_position(self, ms):
         sec = ms / 1000.0
         self._bar.set_play_pos(sec)
+        self._follow_playhead()              # превью едет за плейхедом (если зумнуто)
+        self._ph.update()                    # синхронный плейхед на превью (waveform)
         self._update_time()
         start, end = self._bar.range()
         if self._player.playbackState() == QMediaPlayer.PlayingState and sec >= end:

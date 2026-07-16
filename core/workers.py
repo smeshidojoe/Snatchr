@@ -3,6 +3,7 @@
 скачивание. Всё с обработкой ошибок — UI никогда не зависает.
 """
 
+import os
 import urllib.request
 
 from PySide6.QtCore import QThread, Signal
@@ -235,11 +236,39 @@ class ThumbWorker(QThread):
             self.done.emit(b"")
 
 
+class WaveformWorker(QThread):
+    """Фоновая генерация waveform для скачанного аудио (тяжёлый ffmpeg на длинных
+    файлах). Кладём png в %APPDATA%/Snatchr/waveforms и прописываем в историю —
+    чтобы панель обрезки открывалась мгновенно."""
+    done = Signal(str, str)          # entry_id, waveform_path ("" при ошибке)
+
+    def __init__(self, path, entry_id, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._id = entry_id
+
+    def run(self):
+        from core import trimmer, history
+        out = history.waveform_path(self._id)
+        try:
+            os.makedirs(history.WAVEFORMS_DIR, exist_ok=True)
+            peaks = trimmer.audio_peaks(self._path)
+            r = trimmer.save_peaks(peaks, out) if peaks else None
+        except Exception:
+            r = None
+        if r:
+            try:
+                history.set_waveform(self._id, r)
+            except Exception:
+                pass
+        self.done.emit(self._id, r or "")
+
+
 class SpotlightThumbWorker(QThread):
     """Для строки-прогресса Spotlight (Paste/Toast, без анализа): одним вызовом
     yt-dlp достаёт обложку + название + автора, чтобы строка сразу показывала
     нормальные данные (а не URL/площадку) и превью. Ошибки глушим."""
-    done = Signal(bytes, str, str)          # thumb bytes, title, uploader
+    done = Signal(bytes, str, str, int, int)   # thumb, title, uploader, height, fps
 
     def __init__(self, url, parent=None):
         super().__init__(parent)
@@ -247,23 +276,45 @@ class SpotlightThumbWorker(QThread):
 
     def run(self):
         try:
-            r = tools.run([tools.YTDLP_EXE, "--no-warnings", "--no-playlist",
-                           "--print", "%(thumbnail)s\n%(title)s\n%(uploader)s",
-                           self._url], timeout=40)
-            out = (r.stdout or "").strip().splitlines() if r else []
+            # --print пишет в stdout в системной кодировке (frozen yt-dlp игнорирует
+            # PYTHONUTF8) -> кириллица приходит как «крякозябры». --print-to-file
+            # пишет файл в UTF-8, читаем его utf-8 — заголовок корректный.
+            import tempfile
+            fd, pf = tempfile.mkstemp(suffix=".txt", prefix="snatchr_meta_")
+            os.close(fd)
+            try:
+                tools.run([tools.YTDLP_EXE, "--no-warnings", "--no-playlist",
+                           "--print-to-file",
+                           "%(thumbnail)s\n%(title)s\n%(uploader)s\n"
+                           "%(height)s\n%(fps)s", pf,
+                           "--skip-download", self._url], timeout=40)
+                with open(pf, encoding="utf-8", errors="replace") as f:
+                    out = f.read().strip().splitlines()
+            finally:
+                try:
+                    os.remove(pf)
+                except OSError:
+                    pass
 
             def _val(i):
                 v = out[i].strip() if len(out) > i else ""
                 return "" if v.upper() in ("", "NA") else v
+
+            def _int(i):
+                try:
+                    return int(float(_val(i)))
+                except ValueError:
+                    return 0
             turl, title, uploader = _val(0), _val(1), _val(2)
+            height, fps = _int(3), _int(4)
             data = b""
             if turl:
                 req = urllib.request.Request(turl, headers={"User-Agent": "Snatchr"})
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     data = resp.read()
-            self.done.emit(data, title, uploader)
+            self.done.emit(data, title, uploader, height, fps)
         except Exception:
-            self.done.emit(b"", "", "")
+            self.done.emit(b"", "", "", 0, 0)
 
 
 class MultiProbeWorker(QThread):

@@ -21,8 +21,28 @@ from core import trimmer
 
 HISTORY_PATH = os.path.join(APP_DIR, "history.json")
 THUMBS_DIR = os.path.join(APP_DIR, "thumbnails")
+WAVEFORMS_DIR = os.path.join(APP_DIR, "waveforms")   # заготовки волн (аудио)
 
 MAX_ITEMS = 200        # старые записи подрезаем, чтобы список не рос бесконечно
+
+_AUDIO_EXT = (".mp3", ".wav", ".flac", ".aac", ".ogg", ".opus", ".m4a", ".wma")
+
+
+def waveform_path(entry_id):
+    return os.path.join(WAVEFORMS_DIR, entry_id + ".peaks")
+
+
+def set_waveform(entry_id, path):
+    """Записывает путь готовой заготовки волны в запись истории."""
+    items = load()
+    changed = False
+    for it in items:
+        if it.get("id") == entry_id:
+            it["waveform"] = path or ""
+            changed = True
+            break
+    if changed:
+        _save(items)
 
 # Человекочитаемое имя площадки по хосту ссылки (подпись под URL в списке).
 _HOST_NAMES = {
@@ -139,16 +159,27 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
         "duration": media.get("duration") or 0,
         "is_image": os.path.splitext(path)[1].lower() in (
             ".jpg", ".jpeg", ".png", ".webp", ".gif"),
+        "is_audio": os.path.splitext(path)[1].lower() in _AUDIO_EXT,
+        "waveform": "",              # заготовка волны (генерится в фоне для аудио)
         "ts": int(time.time()),
     }
     items = load()
     items.insert(0, entry)
-    # Подрезаем хвост, удаляя обложки выпавших записей.
+    # Подрезаем хвост, удаляя обложки/волны выпавших записей.
     for old in items[MAX_ITEMS:]:
         _remove_thumb(old.get("thumb"))
+        _remove_waveform(old.get("waveform"))
     items = items[:MAX_ITEMS]
     _save(items)
     return entry
+
+
+def _remove_waveform(wpath):
+    try:
+        if wpath and os.path.isfile(wpath):
+            os.remove(wpath)
+    except OSError:
+        pass
 
 
 def _remove_thumb(thumb):
@@ -166,6 +197,7 @@ def remove(entry_id):
     for it in items:
         if it.get("id") == entry_id:
             _remove_thumb(it.get("thumb"))
+            _remove_waveform(it.get("waveform"))
         else:
             kept.append(it)
     _save(kept)
@@ -204,5 +236,6 @@ def prune_missing():
     if dropped:
         for it in dropped:
             _remove_thumb(it.get("thumb"))
+            _remove_waveform(it.get("waveform"))
         _save(kept)
     return kept
