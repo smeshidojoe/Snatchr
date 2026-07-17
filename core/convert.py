@@ -164,13 +164,22 @@ def target_bitrate(a, target):
 
 
 def _rate_args(encoder, br):
-    """Аргументы ограничения битрейта под конкретный энкодер (VBR c потолком)."""
-    maxrate = int(br * 1.45)
-    bufsize = maxrate * 2
-    common = ["-b:v", str(br), "-maxrate", str(maxrate), "-bufsize", str(bufsize)]
+    """Качество + ПОТОЛОК битрейта (br) под конкретный энкодер.
+
+    Не жёсткий `-b:v br`: он заставляет энкодер выбирать весь битрейт даже на
+    простой картинке — файл не меньше, а кодируется заметно медленнее. Ведём по
+    качеству (cq/crf), а br служит лишь ограничителем сверху — так простые сцены
+    занимают меньше, а раздувания (24 Мбит VP9 -> 67 Мбит H.264) не происходит."""
+    bufsize = br * 2
     if "nvenc" in encoder:
-        return ["-rc", "vbr"] + common
-    return common          # qsv/amf/libx264/libx265 понимают -b:v/-maxrate/-bufsize
+        return ["-rc", "vbr", "-cq", "21", "-b:v", "0",
+                "-maxrate", str(br), "-bufsize", str(bufsize)]
+    if "qsv" in encoder:
+        return ["-global_quality", "21",
+                "-maxrate", str(br), "-bufsize", str(bufsize)]
+    if "amf" in encoder:        # «-quality quality» уже задан в build_args
+        return ["-b:v", str(br), "-maxrate", str(br), "-bufsize", str(bufsize)]
+    return ["-crf", "20", "-maxrate", str(br), "-bufsize", str(bufsize)]  # libx26x
 
 
 def _gop_args(encoder, a):
@@ -183,9 +192,7 @@ def _gop_args(encoder, a):
     fps = (a or {}).get("fps") or 30.0
     g = max(12, int(round(fps * 2)))
     args = ["-g", str(g), "-keyint_min", str(max(1, g // 2))]
-    if "nvenc" in encoder:
-        args += ["-forced-idr", "1"]     # чтобы -g реально давал IDR-кадры
-    elif "libx264" in encoder or "libx265" in encoder:
+    if "libx264" in encoder or "libx265" in encoder:
         args += ["-sc_threshold", "0"]   # равномерный шаг keyframe
     return args
 
@@ -266,18 +273,84 @@ def _run_cancellable(args, hooks, duration=None, on_progress=None):
     return proc.wait()
 
 
-def convert(path, on_status=None, hooks=None, force=False):
+def remux_to_mp4(path, hooks=None, on_progress=None, log=None):
+    """MKV -> MP4 без перекодирования (-c copy): меняем только контейнер.
+
+    Нужен, когда конвертация не понадобилась: контейнер выбирается ДО загрузки
+    (под ожидаемый VP9 берём MKV), а кодек известен только ПОСЛЕ. Если приехал
+    H.264, перекодировать его в H.264 незачем — достаточно переложить потоки в
+    MP4 без потери качества. Прогресс шлём наружу: на 4K-файле это копирование
+    гигабайтов, и без него полоса замирала бы на середине. Возвращает путь."""
+    if not path or not os.path.isfile(path):
+        return path
+    base, ext = os.path.splitext(path)
+    if ext.lower() == ".mp4":
+        return path
+    out = base + ".__remux__.mp4"
+    dur = probe_duration(path) if on_progress else None
+    try:
+        rc = _run_cancellable(
+            [tools.FFMPEG_EXE, "-hide_banner", "-y", "-i", path,
+             "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
+             "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out],
+            hooks, dur, on_progress)
+    except Exception:
+        rc = 1                       # сбой запуска — файл не теряем
+    if rc is None:                   # отменили — вернуть исходник как есть
+        _rm(out)
+        return path
+    ok = (rc == 0 and os.path.isfile(out) and os.path.getsize(out) > 0)
+    if not ok:
+        if log is not None:
+            log.info("remux to mp4 failed -> keeping %s" % ext)
+        _rm(out)
+        return path                  # не вышло — отдаём как есть, файл цел
+    final = base + ".mp4"
+    try:
+        os.replace(out, final)
+    except OSError:
+        # Переименовать не вышло — откатываемся к исходнику, а не оставляем на
+        # диске две копии одного видео (на 4K это лишние гигабайты).
+        _rm(out)
+        return path
+    _rm(path)                        # исходный контейнер больше не нужен
+    return final
+
+
+def convert(path, on_status=None, hooks=None, force=False, log=None):
     """
     Конвертирует файл при необходимости; возвращает путь к итоговому файлу
     (оригинал перезаписывается). Прерываемо (hooks): при отмене ffmpeg
     убивается, частичный файл удаляется. force=True — конвертируем всегда.
+
+    Если перекодирование не нужно (напр., вместо ожидаемого VP9 приехал H.264),
+    файл всё равно приводится к MP4 — быстрым ремуксом, без потери качества.
     """
     if not path or not os.path.isfile(path):
         return path
     a = analyze(path)
     target = decide_target(a, force=force)
+    cur = {"enc": ""}          # какой энкодер работает прямо сейчас ("" = ремукс)
+
+    def _emit(frac, speed):
+        if hooks is not None and getattr(hooks, "on_progress", None):
+            pct = int(round(frac * 100))
+            hooks.on_progress({
+                "stage": "convert", "frac": frac,
+                "percent_str": f"{tr('Converting…')} {pct}%",
+                "speed": speed or "", "eta": "", "size": "",
+                # Упал GPU-энкодер — кодируем процессором, ВТРОЕ медленнее и с
+                # нуля. Сообщаем наверх, чтобы подписать это в строке загрузки.
+                # Ремукс (enc="") процессор не грузит — там пометки нет.
+                "cpu": bool(cur["enc"]) and not _is_gpu(cur["enc"]),
+            })
+
     if target is None:
-        return path
+        # Перекодировать нечего, но полоса уже отвела половину под конвертацию:
+        # ведём её ремуксом, иначе на большом файле она замрёт на 50%.
+        if on_status:
+            on_status(tr("Converting…"))
+        return remux_to_mp4(path, hooks=hooks, on_progress=_emit, log=log)
 
     encoders = available_encoders()
     base, _ = os.path.splitext(path)
@@ -287,18 +360,10 @@ def convert(path, on_status=None, hooks=None, force=False):
     if on_status:
         on_status(tr("Converting…"))
 
-    def _emit(frac, speed):
-        if hooks is not None and getattr(hooks, "on_progress", None):
-            pct = int(round(frac * 100))
-            hooks.on_progress({
-                "stage": "convert", "frac": frac,
-                "percent_str": f"{tr('Converting…')} {pct}%",
-                "speed": speed or "", "eta": "", "size": "",
-            })
-
     # Пробуем энкодеры по очереди: рабочий GPU -> следующий GPU -> CPU.
     rc = None
     for enc in _encoder_order(target, encoders):
+        cur["enc"] = enc
         rc = _run_cancellable(build_args(path, out, target, enc, a),
                               hooks, duration, _emit)
         if rc is None:                  # отменено пользователем
@@ -306,7 +371,12 @@ def convert(path, on_status=None, hooks=None, force=False):
             return path
         if rc == 0:
             break
-        _rm(out)                        # энкодер не сработал — следующий кандидат
+        # Энкодер не сработал — следующий кандидат, и КОДИРУЕМ С НУЛЯ (частичный
+        # файл непригоден). Пишем в лог: иначе тихий уход на CPU не отследить.
+        if log is not None:
+            log.info("convert: encoder %s failed (rc=%s) -> next candidate"
+                     % (enc, rc))
+        _rm(out)
         if _is_gpu(enc) and _ENCODERS is not None:
             _ENCODERS.discard(enc)      # больше не пытаемся им в этой сессии
 

@@ -698,7 +698,10 @@ def overall_progress(p, convert):
         return (0.5 if convert else 1.0), None
     if stage == "convert":
         frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
-        return frac, "%s %d%%" % (tr("Converting…"), round(frac * 100))
+        # GPU-энкодер отвалился -> кодируем процессором (втрое медленнее и с
+        # нуля). Подписываем явно, иначе выглядит как необъяснимый тормоз.
+        label = tr("Converting…") + (" (CPU)" if p.get("cpu") else "")
+        return frac, "%s %d%%" % (label, round(frac * 100))
     base = p.get("frac") or 0.0
     if convert:
         return base * 0.5, "%.1f%%" % (base * 50.0)
@@ -1161,8 +1164,10 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             hooks.on_status(tr("Converting…"))
             log.event("Converting to editor-friendly mp4")
             from core import convert
-            # Галочка включена -> конвертируем всегда, независимо от кодека.
-            dest = convert.convert(dest, hooks=hooks, force=True)
+            # force=False: решение по РЕАЛЬНОМУ кодеку файла. VP9 -> перекодируем;
+            # если вместо него приехал H.264 (VP9 у ролика не оказалось) — просто
+            # ремуксим MKV в MP4, без бессмысленного H.264 -> H.264.
+            dest = convert.convert(dest, hooks=hooks, log=log)
         except Exception as exc:
             conv_failed = True
             log.event("Conversion failed")
