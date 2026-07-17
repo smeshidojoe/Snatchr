@@ -363,7 +363,10 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
         f"download:{PROGRESS_TAG}%(progress._percent_str)s|"
         f"%(progress._speed_str)s|%(progress._eta_str)s|"
         f"%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s|"
-        f"%(progress._downloaded_bytes_str)s",
+        f"%(progress._downloaded_bytes_str)s|"
+        # Сырые байты — по ним взвешиваем потоки (видео+аудио) в общей полосе.
+        f"%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
+        f"%(progress.total_bytes_estimate)s",
     ]
     if not info_json:                   # с готовой info извлечения нет — PO не нужен
         args += tools.pot_ytdlp_args(url)   # PO-токен провайдер (только YouTube)
@@ -457,8 +460,18 @@ def _clean_size(s):
     return s if s and s.upper() not in ("N/A", "NA", "NONE") else ""
 
 
+def _num(parts, i):
+    """Сырое число из поля progress-template ('NA'/пусто -> None)."""
+    if len(parts) <= i:
+        return None
+    try:
+        return float(parts[i].strip())
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_progress(line):
-    """Строка прогресса -> {percent_str, speed, eta, frac, size} либо None."""
+    """Строка прогресса -> {percent_str, speed, eta, frac, size, …} либо None."""
     if PROGRESS_TAG not in line:
         return None
     payload = line.split(PROGRESS_TAG, 1)[1].strip()
@@ -475,8 +488,36 @@ def parse_progress(line):
         frac = max(0.0, min(1.0, float(pct.replace("%", "").strip()) / 100.0))
     except ValueError:
         pass
+    dl_bytes = _num(parts, 6)
+    tot_bytes = _num(parts, 7) or _num(parts, 8)    # точный размер или оценка
     return {"percent_str": pct, "speed": speed, "eta": eta, "frac": frac,
-            "size": size, "downloaded": downloaded}
+            "size": size, "downloaded": downloaded,
+            "dl_bytes": dl_bytes, "tot_bytes": tot_bytes}
+
+
+# Доля, которую резервируем под ещё не начатые потоки, пока их размер неизвестен.
+# У YouTube это аудио-дорожка к видео: обычно 2-5% от объёма видео.
+_TAIL_RESERVE = 0.04
+
+
+def _merged_frac(pr, done_bytes, cur_total, file_idx, n_streams):
+    """Общий прогресс job'а, взвешенный по БАЙТАМ всех потоков (видео+аудио).
+
+    Делить полосу поровну между потоками нельзя: видео весит гигабайты, аудио —
+    десятки мегабайт, и полоса замирала на видео, а потом прыгала на аудио.
+    Пока последний поток не начался, его размер неизвестен — резервируем под
+    хвост _TAIL_RESERVE, иначе полоса дошла бы до 100% и откатилась."""
+    dl = pr.get("dl_bytes")
+    if dl is None or cur_total <= 0:
+        # Байт нет (редкий формат/оценка недоступна) — равномерно по потокам.
+        idx = min(max(file_idx, 0), n_streams - 1)
+        return max(0.0, min(1.0, (idx + (pr.get("frac") or 0.0)) / n_streams))
+    total = done_bytes + cur_total
+    if file_idx < n_streams - 1:        # впереди ещё потоки — оставляем им место
+        total *= (1.0 + _TAIL_RESERVE)
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (done_bytes + dl) / total))
 
 
 def _stream_count(line):
@@ -875,6 +916,8 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
     dest = ""
     n_streams = 1        # сколько файлов сольётся в один (видео+аудио = 2)
     file_idx = -1        # индекс текущего скачиваемого файла (0-based)
+    done_bytes = 0.0     # суммарный размер уже скачанных потоков
+    cur_total = 0.0      # размер текущего потока
     for line in _iter_lines(proc.stdout):
         if hooks.is_stopped():
             break
@@ -884,9 +927,11 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
                 n_streams = ns
             pr = parse_progress(line)
             if pr:
+                if pr.get("tot_bytes"):
+                    cur_total = pr["tot_bytes"]
                 if n_streams > 1 and pr.get("frac") is not None:
-                    idx = min(max(file_idx, 0), n_streams - 1)
-                    frac = max(0.0, min(1.0, (idx + pr["frac"]) / n_streams))
+                    frac = _merged_frac(pr, done_bytes, cur_total,
+                                        file_idx, n_streams)
                     pr["frac"] = frac
                     pr["percent_str"] = f"{frac * 100:.1f}%"
                 hooks.on_progress(pr)
@@ -905,7 +950,10 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
             if d:
                 dest = d
                 if "[download] Destination: " in line:
+                    if file_idx >= 0:
+                        done_bytes += cur_total   # прошлый поток докачан целиком
                     file_idx += 1       # начался новый файл потока
+                    cur_total = 0.0
         log.raw(line.rstrip())
     rc = proc.wait()
     return rc == 0, dest
