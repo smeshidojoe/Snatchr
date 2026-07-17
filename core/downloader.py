@@ -885,6 +885,19 @@ def _iter_lines(stream):
 
 
 _FF_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FF_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
+_FF_SIZE_RE = re.compile(r"(?:^|\s)L?size=\s*(\d+)(KiB|MiB|kB|kb|B)")
+
+
+def _ff_size_mib(line):
+    """Размер выходного файла из строки ffmpeg ('size=3328KiB') в 'N.NMiB'/''."""
+    m = _FF_SIZE_RE.search(line)
+    if not m:
+        return ""
+    val, unit = float(m.group(1)), m.group(2)
+    mib = {"KiB": val / 1024, "MiB": val, "kB": val / 1024,
+           "kb": val / 1024, "B": val / (1024 * 1024)}.get(unit, 0.0)
+    return "%.1fMiB" % mib if mib >= 0.05 else ""
 
 
 def _parse_ffmpeg_time(line):
@@ -894,6 +907,14 @@ def _parse_ffmpeg_time(line):
         return None
     h, mnt, sec = int(m.group(1)), int(m.group(2)), float(m.group(3))
     return h * 3600 + mnt * 60 + sec
+
+
+def _fmt_eta(secs):
+    """Секунды -> 'M:SS' или 'H:MM:SS' (для ETA ffmpeg-резки по таймкодам)."""
+    secs = max(0, int(secs))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 def _section_bounds(option):
@@ -968,8 +989,20 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
                 t = _parse_ffmpeg_time(line)
                 if t is not None:
                     frac = max(0.0, min(1.0, t / ff_total))
-                    hooks.on_progress({"frac": frac,
-                                       "percent_str": f"{frac * 100:.1f}%"})
+                    # У ffmpeg-пути нет download-скорости/размера, но есть
+                    # speed=Nx (реалтайм-множитель) — из него скорость-пилюля и
+                    # ETA по оставшейся длительности секции.
+                    info = {"frac": frac, "percent_str": f"{frac * 100:.1f}%"}
+                    sm = _FF_SPEED_RE.search(line)
+                    if sm:
+                        spd = float(sm.group(1))
+                        info["speed"] = f"{spd:.2f}x"
+                        if spd > 0:
+                            info["eta"] = _fmt_eta((ff_total - t) / spd)
+                    sz = _ff_size_mib(line)
+                    if sz:
+                        info["size"] = sz    # размер вырезанного фрагмента (растёт)
+                    hooks.on_progress(info)
                     continue
             if _POST_RE.search(line):        # постобработка после 100% (mp3/merge/…)
                 hooks.on_progress({"stage": "post"})
