@@ -146,6 +146,7 @@ _RU = {
     "Downloading Libraries…": "Скачивание компонентов…",
     "Failed to download libraries.": "Не удалось скачать компоненты.",
     "Converting…": "Конвертация…",
+    "Trimming…": "Обрезка…",
     "Processing…": "Обработка…",
     "Trying streamlink…": "Пробуем streamlink…",
     "Stopped": "Остановлено",

@@ -667,12 +667,13 @@ class App(QWidget):
 
     def start_update_watch(self):
         """Тихая проверка новых версий: первая через ~8 c после старта, далее
-        периодически (раз в 6 ч). Только для собранного exe."""
+        периодически (раз в 2 ч). Только для собранного exe. Нагрузка ничтожна —
+        один HTTP-запрос к GitHub в фоновом потоке."""
         from core import updater
         if not updater.is_frozen():
             return
         self._update_timer = QTimer(self)
-        self._update_timer.setInterval(6 * 60 * 60 * 1000)   # 6 часов
+        self._update_timer.setInterval(2 * 60 * 60 * 1000)   # 2 часа
         self._update_timer.timeout.connect(self._check_update_bg)
         self._update_timer.start()
         QTimer.singleShot(8000, self._check_update_bg)

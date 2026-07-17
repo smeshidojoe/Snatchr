@@ -197,9 +197,17 @@ def _gop_args(encoder, a):
     return args
 
 
-def build_args(in_path, out_path, target, encoder, a):
-    args = [tools.FFMPEG_EXE, "-hide_banner", "-y", "-i", in_path,
-            "-map", "0:v:0", "-map", "0:a?", "-c:a", "aac", "-b:a", "192k"]
+def build_args(in_path, out_path, target, encoder, a, section=None):
+    args = [tools.FFMPEG_EXE, "-hide_banner", "-y"]
+    # section=(start,end): точная резка. -ss ДО -i (быстрый seek к ближайшему
+    # keyframe), а точность даёт ПЕРЕкодирование — ffmpeg декодирует от keyframe
+    # и отбрасывает лишние кадры до start, поэтому начало кадр-в-кадр точное.
+    if section:
+        args += ["-ss", "%.3f" % max(0.0, section[0])]
+    args += ["-i", in_path]
+    if section:
+        args += ["-t", "%.3f" % max(0.05, section[1] - section[0])]
+    args += ["-map", "0:v:0", "-map", "0:a?", "-c:a", "aac", "-b:a", "192k"]
     args += ["-c:v", encoder]
     args += _gop_args(encoder, a)      # частые keyframe -> отзывчивая перемотка
     br = target_bitrate(a, target)      # None -> запасной путь по качеству (CQ/CRF)
@@ -273,14 +281,32 @@ def _run_cancellable(args, hooks, duration=None, on_progress=None):
     return proc.wait()
 
 
+# Аудиокодеки, которые MP4 держит штатно (их копируем; прочие -> AAC).
+_MP4_AUDIO_OK = ("aac", "mp3", "ac3", "eac3", "alac")
+
+
+def _audio_codec(path):
+    """Кодек первой аудиодорожки ('aac'/'opus'/'vorbis'/…) или '' (нет звука)."""
+    try:
+        r = tools.run([tools.FFPROBE_EXE, "-v", "quiet", "-select_streams", "a:0",
+                       "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+                      timeout=30)
+        return (r.stdout or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def remux_to_mp4(path, hooks=None, on_progress=None, log=None):
-    """MKV -> MP4 без перекодирования (-c copy): меняем только контейнер.
+    """MKV -> MP4 без перекодирования ВИДЕО: меняем контейнер.
 
     Нужен, когда конвертация не понадобилась: контейнер выбирается ДО загрузки
     (под ожидаемый VP9 берём MKV), а кодек известен только ПОСЛЕ. Если приехал
-    H.264, перекодировать его в H.264 незачем — достаточно переложить потоки в
-    MP4 без потери качества. Прогресс шлём наружу: на 4K-файле это копирование
-    гигабайтов, и без него полоса замирала бы на середине. Возвращает путь."""
+    H.264, перекодировать его незачем — перекладываем в MP4.
+
+    Видео всегда `-c copy` (без потерь). Аудио — copy, ТОЛЬКО если контейнер MP4
+    его держит (aac/mp3/…); opus/vorbis (их отдаёт yt-dlp при резке по таймкодам)
+    MP4 не поддерживает — их перекодируем в AAC, иначе получался «битый» mp4 и
+    «Ошибка обработки (ffmpeg)». Прогресс шлём наружу. Возвращает путь."""
     if not path or not os.path.isfile(path):
         return path
     base, ext = os.path.splitext(path)
@@ -288,11 +314,16 @@ def remux_to_mp4(path, hooks=None, on_progress=None, log=None):
         return path
     out = base + ".__remux__.mp4"
     dur = probe_duration(path) if on_progress else None
+    acodec = _audio_codec(path)
+    audio_args = (["-c:a", "copy"] if acodec in _MP4_AUDIO_OK
+                  else ["-c:a", "aac", "-b:a", "192k"])
+    if acodec and acodec not in _MP4_AUDIO_OK and log is not None:
+        log.info("remux: audio %s not MP4-native -> AAC" % acodec)
     try:
         rc = _run_cancellable(
             [tools.FFMPEG_EXE, "-hide_banner", "-y", "-i", path,
-             "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
-             "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out],
+             "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy"] + audio_args
+            + ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out],
             hooks, dur, on_progress)
     except Exception:
         rc = 1                       # сбой запуска — файл не теряем
@@ -317,7 +348,7 @@ def remux_to_mp4(path, hooks=None, on_progress=None, log=None):
     return final
 
 
-def convert(path, on_status=None, hooks=None, force=False, log=None):
+def convert(path, on_status=None, hooks=None, force=False, log=None, section=None):
     """
     Конвертирует файл при необходимости; возвращает путь к итоговому файлу
     (оригинал перезаписывается). Прерываемо (hooks): при отмене ffmpeg
@@ -325,19 +356,25 @@ def convert(path, on_status=None, hooks=None, force=False, log=None):
 
     Если перекодирование не нужно (напр., вместо ожидаемого VP9 приехал H.264),
     файл всё равно приводится к MP4 — быстрым ремуксом, без потери качества.
+
+    section=(start,end): вырезать этот диапазон (сек) ТОЧНО. Точная резка
+    требует перекодирования, поэтому здесь оно принудительно (для любого кодека)
+    и совмещено с конвертацией в один проход — не два перекодирования подряд.
     """
     if not path or not os.path.isfile(path):
         return path
     a = analyze(path)
-    target = decide_target(a, force=force)
+    # section -> перекод обязателен (точная резка); H.264 тоже перекодируем.
+    target = decide_target(a, force=force or bool(section))
     cur = {"enc": ""}          # какой энкодер работает прямо сейчас ("" = ремукс)
+    label = tr("Trimming…") if section else tr("Converting…")
 
     def _emit(frac, speed):
         if hooks is not None and getattr(hooks, "on_progress", None):
             pct = int(round(frac * 100))
             hooks.on_progress({
                 "stage": "convert", "frac": frac,
-                "percent_str": f"{tr('Converting…')} {pct}%",
+                "percent_str": f"{label} {pct}%",
                 "speed": speed or "", "eta": "", "size": "",
                 # Упал GPU-энкодер — кодируем процессором, ВТРОЕ медленнее и с
                 # нуля. Сообщаем наверх, чтобы подписать это в строке загрузки.
@@ -355,16 +392,17 @@ def convert(path, on_status=None, hooks=None, force=False, log=None):
     encoders = available_encoders()
     base, _ = os.path.splitext(path)
     out = base + ".__conv__.mp4"
-    duration = probe_duration(path)
+    # Прогресс ведём по длительности РЕЗУЛЬТАТА: секции (если режем) или всего файла.
+    duration = (section[1] - section[0]) if section else probe_duration(path)
 
     if on_status:
-        on_status(tr("Converting…"))
+        on_status(label)
 
     # Пробуем энкодеры по очереди: рабочий GPU -> следующий GPU -> CPU.
     rc = None
     for enc in _encoder_order(target, encoders):
         cur["enc"] = enc
-        rc = _run_cancellable(build_args(path, out, target, enc, a),
+        rc = _run_cancellable(build_args(path, out, target, enc, a, section=section),
                               hooks, duration, _emit)
         if rc is None:                  # отменено пользователем
             _rm(out)

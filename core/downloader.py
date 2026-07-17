@@ -806,6 +806,14 @@ def _rm_dir(path):
         pass
 
 
+def _rm(path):
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 # Промежуточные файлы отдельных потоков yt-dlp: «<base>.f248.webm».
 _FRAG_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
 
@@ -888,16 +896,33 @@ def _parse_ffmpeg_time(line):
     return h * 3600 + mnt * 60 + sec
 
 
-def _section_seconds(option):
-    """Длительность выбранной секции (end-start) из option['section']='*a-b' или
-    None. Нужна, чтобы вести полосу прогресса по ffmpeg-резке (у неё нет обычного
-    download-прогресса yt-dlp)."""
+def _section_bounds(option):
+    """(start, end) секции из option['section']='*a-b' (сек) или None."""
     m = re.match(r"\*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)", (option or {}).get("section") or "")
     if m:
         a, b = float(m.group(1)), float(m.group(2))
         if b > a:
-            return b - a
+            return a, b
     return None
+
+
+def _section_seconds(option):
+    """Длительность выбранной секции (end-start) или None."""
+    b = _section_bounds(option)
+    return (b[1] - b[0]) if b else None
+
+
+# Сетевой сбой ffmpeg-стриминга секции: провайдер рвёт прямое соединение ffmpeg
+# к googlevideo (DPI-блокировка по TLS). yt-dlp своим клиентом её проходит,
+# поэтому фолбэк — скачать формат целиком нативно и вырезать секцию локально.
+_SECTION_NET_ERR = ("error opening input", "failed to read handshake",
+                    "-10054", "10054", "connection reset",
+                    "ffmpeg exited with code")
+
+
+def _is_section_stream_error(text):
+    t = (text or "").lower()
+    return any(k in t for k in _SECTION_NET_ERR)
 
 
 _POST_RE = re.compile(
@@ -1149,6 +1174,42 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             dest = _resolve(dest)
             ok = bool(dest)
 
+    # Секция упала на сетевом сбое ffmpeg-стриминга (провайдер рвёт прямое
+    # соединение ffmpeg к googlevideo). Фолбэк: качаем формат ЦЕЛИКОМ нативным
+    # клиентом yt-dlp (он блокировку проходит) и точно вырезаем секцию локально.
+    sect = _section_bounds(option)
+    section_fallback = False
+    if (not ok and sect and not hooks.is_stopped()
+            and _is_section_stream_error(log.text())):
+        log.event("Section stream blocked — full download + local precise cut")
+        _rm_dir(job_dir)
+        job_dir = _new_job_dir()
+        opt_full = {k: v for k, v in option.items() if k != "section"}
+        expected = _expected_path(opt_full, url, settings, title, job_dir)
+        _args = build_download_args(opt_full, url, settings, title, job_dir,
+                                    cookies=use_cookies, impersonate=True)
+        ok, dest = _stream(_args, hooks, log, progress=True)
+        _del_cookie_copy(_args)
+        if not hooks.is_stopped():
+            if expected and os.path.exists(expected):
+                dest = expected
+            elif not (dest and os.path.exists(dest)):
+                dest = _scan_job_output(job_dir, _merge_ext(opt_full, url, settings))
+            ok = bool(dest)
+        if ok and dest and not hooks.is_stopped():
+            # Точная резка = перекодирование, совмещённое с конвертацией в один
+            # проход (не два). Помечаем, чтобы обычный convert-блок не повторял.
+            section_fallback = True
+            try:
+                hooks.on_status(tr("Trimming…"))
+                log.event("Precise cut + convert (%.1f-%.1f)" % sect)
+                from core import convert
+                dest = convert.convert(dest, hooks=hooks, log=log, section=sect)
+            except Exception as exc:
+                log.event("Section cut failed")
+                log.info("Section cut failed: " + str(exc))
+                ok = False
+
     if not ok and not hooks.is_stopped():
         log.event("yt-dlp failed")
         if is_twitch(url) and tools.have_streamlink():
@@ -1159,7 +1220,8 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             dest = out if (ok and os.path.exists(out)) else ""
 
     conv_failed = False
-    if ok and dest and not hooks.is_stopped() and should_convert(option, url, settings):
+    if (ok and dest and not hooks.is_stopped() and not section_fallback
+            and should_convert(option, url, settings)):
         try:
             hooks.on_status(tr("Converting…"))
             log.event("Converting to editor-friendly mp4")
