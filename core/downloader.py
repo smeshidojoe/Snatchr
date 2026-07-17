@@ -20,6 +20,7 @@ import unicodedata
 
 from core import tools
 from core import logbook
+from core import formats
 from core.i18n import tr
 from core.config import APP_DIR
 
@@ -105,6 +106,8 @@ def probe(url, no_playlist=True, timeout=60, cookies=None):
 def _res_label(height):
     if height >= 4320:
         return "8K"
+    if height >= 2880:
+        return "5K"
     if height >= 2160:
         return "4K"
     if height >= 1440:
@@ -147,29 +150,39 @@ def _fmt_for(f):
     return f"{f['format_id']}+ba/b"      # video-only — добиваем bestaudio
 
 
-def video_formats(info, youtube=True):
+def video_formats(info, youtube=True, settings=None):
     """Best Quality + список разрешений по убыванию (см. спецификацию).
 
     YouTube: Best Quality = максимальное разрешение в VP9, плюс отдельная строка
     «Best Compatibility (1080p)» (максимальное доступное разрешение с кодеком AVC).
     Прочие сайты: Best Quality = максимальное разрешение (любой кодек); строки
     разрешений показываем, только если они реально доступны. AV1 не показываем.
+
+    settings — если передан, к готовому списку применяются видимость и порядок
+    со страницы Format Priority.
     """
     if youtube:
         options = [
-            {"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT, "mp3": False},
+            {"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT, "mp3": False,
+             "key": "best"},
             {"label": tr("Best Compatibility (1080p)"),
-             "fmt": AVC_VIDEO_FMT, "mp3": False},
+             "fmt": AVC_VIDEO_FMT, "mp3": False, "key": "compat"},
         ]
     else:
-        options = [{"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT, "mp3": False}]
+        options = [{"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT,
+                    "mp3": False, "key": "best"}]
 
     vids = []
     for f in info.get("formats", []):
         if f.get("vcodec") in (None, "none"):
             continue
         # AV1 полностью исключаем из селектора.
-        if _codec_label(f.get("vcodec")) == "AV1":
+        codec_lbl = _codec_label(f.get("vcodec"))
+        if codec_lbl == "AV1":
+            continue
+        # VP9 нужен только там, где H.264 нет (1440p/4K). На 1080p и ниже H.264
+        # доступен всегда и не требует конвертации — VP9 там только мусорит выбор.
+        if codec_lbl == "VP9" and (f.get("height") or 0) <= 1080:
             continue
         # На YouTube берём только video-only (звук добьём bestaudio); на прочих
         # сайтах допускаем прогрессивные форматы (уже со звуком).
@@ -209,8 +222,12 @@ def video_formats(info, youtube=True):
             "label": SEP.join(parts),
             "fmt": _fmt_for(f),
             "mp3": False,
+            "key": formats.res_key(h, codec),
         })
-    options.append({"label": tr("Thumbnail"), "thumbnail": True, "mp3": False})
+    options.append({"label": tr("Thumbnail"), "thumbnail": True, "mp3": False,
+                    "key": "thumbnail"})
+    if settings is not None:
+        options = formats.apply(options, settings)
     return options
 
 
@@ -384,10 +401,13 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
     return args
 
 
+TRIM_TMP_TTL = 24 * 3600        # сколько живёт фрагмент, скопированный в буфер
+
+
 def cleanup_temp():
     """Стартовая уборка мусора (single-instance гарантирует, что чужих активных
-    файлов нет): недокачанные папки заданий APP_DIR/tmp/* и осиротевшие
-    snatchr_*.info.json в системном %TEMP% (остаются после краша/kill). Чистим
+    файлов нет): недокачанные папки заданий APP_DIR/tmp/*, осиротевшие
+    snatchr_*.info.json и старые snatchr_trim_* в системном %TEMP%. Чистим
     ТОЛЬКО своё — по префиксу/расположению."""
     try:
         if os.path.isdir(TMP_ROOT):
@@ -398,9 +418,20 @@ def cleanup_temp():
     try:
         import tempfile
         import glob
-        for p in glob.glob(os.path.join(tempfile.gettempdir(), "snatchr_*.info.json")):
+        tmp = tempfile.gettempdir()
+        for p in glob.glob(os.path.join(tmp, "snatchr_*.info.json")):
             try:
                 os.remove(p)
+            except OSError:
+                pass
+        # Фрагменты «скопировать в буфер»: в буфере лежит лишь ССЫЛКА на файл,
+        # поэтому сразу удалять нельзя (сломается вставка). Убираем только старые
+        # — свежие мог скопировать пользователь и ещё не вставить.
+        now = time.time()
+        for p in glob.glob(os.path.join(tmp, "snatchr_trim_*")):
+            try:
+                if now - os.path.getmtime(p) > TRIM_TMP_TTL:
+                    os.remove(p)
             except OSError:
                 pass
     except Exception:
@@ -614,13 +645,51 @@ def slim_info(info):
     return out
 
 
+def overall_progress(p, convert):
+    """Общий прогресс строки -> (frac, percent_str | None).
+
+    С включённой конвертацией полоса единая: скачивание занимает 0..50%,
+    конвертация — 50..100%. Процент в тексте пересчитываем под ту же шкалу,
+    иначе он спорит с полосой (скачивание показывало свои 46.6% на 23% полосы,
+    а конвертация начинала счёт заново с 0%). None -> текст не подменяем."""
+    stage = p.get("stage")
+    if stage == "post":
+        return (0.5 if convert else 1.0), None
+    if stage == "convert":
+        frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
+        return frac, "%s %d%%" % (tr("Converting…"), round(frac * 100))
+    base = p.get("frac") or 0.0
+    if convert:
+        return base * 0.5, "%.1f%%" % (base * 50.0)
+    return base, None
+
+
+def _picks_vp9(option):
+    """Приведёт ли выбранный формат к VP9 (по ключу строки селектора).
+
+    Конвертация трогает только VP9 (см. convert.decide_target), поэтому для
+    H.264-строк её планировать нельзя: иначе файл зря склеивался бы в MKV, а
+    полоса прогресса резервировала бы половину под конвертацию, которой нет."""
+    key = (option or {}).get("key") or ""
+    if key == "compat":
+        return False                     # Best Compatibility — заведомо AVC
+    if key == "best":
+        return True                      # лучший не-AV1 на YouTube — обычно VP9
+    if "_" in key:
+        return key.split("_", 1)[1] == "VP9"
+    return True                          # ключ неизвестен — прежнее поведение
+
+
 def should_convert(option, url, settings):
-    """Нужна ли конвертация: галочка вкл, видео (не mp3/не аудио), источник — YouTube."""
+    """Нужна ли конвертация: галочка вкл, видео (не mp3/аудио/обложка),
+    источник — YouTube, и выбранный формат действительно VP9."""
     o = option or {}
     return (bool(settings.get("convert_yt"))
             and is_youtube(url)
             and not o.get("mp3")
-            and not o.get("audio"))
+            and not o.get("audio")
+            and not o.get("thumbnail")
+            and _picks_vp9(o))
 
 
 def probe_flat(url, timeout=90):

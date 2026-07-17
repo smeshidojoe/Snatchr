@@ -8,19 +8,20 @@ _BASE = os.environ.get("APPDATA") or os.path.join(
 APP_DIR     = os.path.join(_BASE, "Snatchr")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
-# Старое расположение (для разовой миграции существующего конфига).
-OLD_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".snatchr", "config.json")
+# Первый ли это запуск — снимаем СРАЗУ при импорте, до того как что-либо создаст
+# APP_DIR (иначе проверка «папки нет» уже не сработает).
+IS_FIRST_RUN = not os.path.isdir(APP_DIR)
 
 
 def defaults():
     return {
         "download_path":   os.path.join(os.path.expanduser("~"), "Downloads"),
         "embed_thumbnail": False,
-        "convert_yt":      False,         # по умолчанию выключена
+        "convert_yt":      True,          # конвертация VP9 -> H.264 (по умолчанию вкл)
         "tray_icon":       "",            # имя файла в icons/ ("" => иконка по умолчанию)
         "theme":           "Glass",       # стартовая тема для нового пользователя
         "language":        "English",     # язык интерфейса
-        "usage_mode":      "toggle",      # "toggle" (Pinned) | "focus" (Auto-hide)
+        "usage_mode":      "focus",       # "toggle" (Pinned) | "focus" (Auto-hide)
         "allow_dragging":  False,         # разрешить перетаскивание окна
         "ytdlp_updated":   0,             # когда в последний раз обновляли yt-dlp (epoch)
         "ytdlp_channel":   "stable",      # канал yt-dlp: "stable" | "nightly"
@@ -37,6 +38,9 @@ def defaults():
         "autostart":         False,       # запускать Snatchr при старте Windows
         "parallel_downloads": 2,          # одновременных загрузок (1..3)
         "autopaste":         False,       # вставлять ссылку из буфера при открытии окна
+        "trim_volume":       0.8,         # громкость превью в панели обрезки (0..1)
+        "format_order":      [],          # порядок строк селектора (пусто => по умолчанию)
+        "format_hidden":     [],          # скрытые строки селектора (ключи core.formats)
         # какие сайты автовставлять (пусто в конфиге => все; None здесь = все по умолчанию)
         "autopaste_sites":   ["youtube", "instagram", "tiktok", "reddit",
                               "twitter", "vk", "soundcloud"],
@@ -44,18 +48,10 @@ def defaults():
 
 
 def load():
-    """Читает настройки с диска, дополняя отсутствующие ключи дефолтами.
-    При первом запуске переносит конфиг из старого расположения."""
+    """Читает настройки с диска, дополняя отсутствующие ключи дефолтами."""
     data = defaults()
-
-    source = CONFIG_PATH
-    migrated = False
-    if not os.path.exists(CONFIG_PATH) and os.path.exists(OLD_CONFIG_PATH):
-        source = OLD_CONFIG_PATH
-        migrated = True
-
     try:
-        with open(source, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             saved = json.load(f)
         if isinstance(saved, dict):
             data.update(saved)
@@ -65,9 +61,6 @@ def load():
     # Миграция переименованной темы.
     if data.get("theme") == "Rose Negative":
         data["theme"] = "White Rose"
-
-    if migrated:
-        save(data)   # сразу сохраняем в новое расположение
 
     return data
 

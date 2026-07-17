@@ -23,6 +23,7 @@ from ui.bottom_bar import BottomBar
 from ui.main_page import MainPage
 from ui.settings_page import SettingsPage
 from ui.about_page import AboutPage
+from ui.format_page import FormatPage
 
 
 class App(QWidget):
@@ -200,6 +201,13 @@ class App(QWidget):
                                     self.content_w, self.about_content_h)
         self.about_page.hide()
 
+        # Format Priority — размер окна тот же, что у Settings.
+        self.format_page = FormatPage(self, self, self.settings,
+                                      self.content_w, self.content_h)
+        self.format_page.setGeometry(self.content_x, self.content_y,
+                                     self.content_w, self.content_h)
+        self.format_page.hide()
+
         self.main_content_h = self.WIN_H_FULL - self.BAR_H - self.BORDER_W
         self.main_page = MainPage(self, self, self.settings,
                                   self.content_w, self.main_content_h)
@@ -212,6 +220,7 @@ class App(QWidget):
 
         self.settings_page.ensurePolished()
         self.about_page.ensurePolished()
+        self.format_page.ensurePolished()
         self.main_page.ensurePolished()
 
     def apply_appearance(self):
@@ -245,8 +254,8 @@ class App(QWidget):
         # Удаляем старые страницы и панель. Кнопки нижней панели привязаны к окну,
         # поэтому их убираем отдельно (иначе остаются «фантомные» кнопки).
         self.bottom_bar.teardown()
-        for w in (self.settings_page, self.about_page, self.main_page,
-                  self.bottom_bar):
+        for w in (self.settings_page, self.about_page, self.format_page,
+                  self.main_page, self.bottom_bar):
             w.setParent(None)
             w.deleteLater()
 
@@ -321,6 +330,8 @@ class App(QWidget):
             self.close_settings()
         elif self.current_page == "about":
             self.close_about()
+        elif self.current_page == "formats":
+            self.close_formats()          # Format Priority -> обратно в Settings
 
     def open_settings(self):
         if self.current_page != "main" or self._nav_busy:
@@ -359,14 +370,19 @@ class App(QWidget):
 
         def done():
             self.settings_page.hide()
-            try:                             # вернуть прокрутку настроек в начало
-                self.settings_page._scroll_area.verticalScrollBar().setValue(0)
-            except Exception:
-                pass
+            self.reset_settings_scroll()     # ушли из настроек — прокрутку в начало
             self._nav_done()
 
         anim.fade(self.settings_page, 1.0, 0.0, 200, on_finished=done)
         anim.fade(self.main_page, 0.0, 1.0, 200)
+
+    def reset_settings_scroll(self):
+        """Прокрутку настроек — в начало. Зовём при выходе из Settings и при
+        скрытии окна; переход в Format Priority и обратно позицию СОХРАНЯЕТ."""
+        try:
+            self.settings_page._scroll_area.verticalScrollBar().setValue(0)
+        except Exception:
+            pass
 
     def open_about(self):
         if self.current_page != "settings" or self._nav_busy:
@@ -403,6 +419,45 @@ class App(QWidget):
             anim.fade(self.settings_page, 0.0, 1.0, 200, on_finished=self._nav_done)
 
         anim.fade(self.about_page, 1.0, 0.0, 180, on_finished=after_out)
+
+    def open_formats(self):
+        """Settings -> Format Priority (fade, высота окна не меняется)."""
+        if self.current_page != "settings" or self._nav_busy:
+            return
+        self._nav_busy = True
+        self.current_page = "formats"
+        self.bottom_bar.set_page_mode("formats")   # как settings: назад + папка + Exit
+        self.format_page.setGeometry(self.content_x, self.content_y,
+                                     self.content_w, self.content_h)
+        self.format_page.reload()                  # порядок мог измениться
+        self._animate_height(self.WIN_H_SETTINGS)
+
+        def after_out():
+            self.settings_page.hide()
+            self.format_page.show()
+            self.format_page.raise_()
+            anim.fade(self.format_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+
+        anim.fade(self.settings_page, 1.0, 0.0, 180, on_finished=after_out)
+
+    def close_formats(self):
+        """Format Priority -> обратно в Settings (fade)."""
+        if self.current_page != "formats" or self._nav_busy:
+            return
+        self._nav_busy = True
+        self.current_page = "settings"
+        self.bottom_bar.set_page_mode("settings")
+        self._animate_height(self.WIN_H_SETTINGS)
+        self.settings_page.setGeometry(self.content_x, self.content_y,
+                                       self.content_w, self.content_h)
+
+        def after_out():
+            self.format_page.hide()
+            self.settings_page.show()
+            self.settings_page.raise_()
+            anim.fade(self.settings_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+
+        anim.fade(self.format_page, 1.0, 0.0, 180, on_finished=after_out)
 
     def _nav_done(self):
         self._nav_busy = False
@@ -586,6 +641,30 @@ class App(QWidget):
     # ------------------------------------------------------------------ #
     #  Фоновая проверка обновлений + тост-анонс
     # ------------------------------------------------------------------ #
+    def run_first_launch(self):
+        """Первый запуск: открываем Spotlight и показываем подсказку со стрелкой
+        на трей (окно программы живёт там). Дальше не появляется — при следующем
+        старте папка %APPDATA%/Snatchr уже есть."""
+        if not config.IS_FIRST_RUN:
+            return
+        self.save_settings()          # создаём конфиг -> запуск больше не «первый»
+        QTimer.singleShot(400, self._open_first_launch_spotlight)
+
+    def _open_first_launch_spotlight(self):
+        """Сначала Spotlight (главный сценарий), подсказка — через 2 с после него:
+        пусть пользователь сперва увидит само окно."""
+        self._ensure_spotlight().toggle()
+        QTimer.singleShot(2000, self._show_first_launch_hint)
+
+    def _show_first_launch_hint(self):
+        from ui.onboarding import TrayHint, tray_anchor
+        got = tray_anchor(self)
+        if got is None:
+            return                            # трей не нашли — молча пропускаем
+        anchor, edge = got
+        self._first_hint = TrayHint(self, anchor, edge)
+        self._first_hint.show_hint()
+
     def start_update_watch(self):
         """Тихая проверка новых версий: первая через ~8 c после старта, далее
         периодически (раз в 6 ч). Только для собранного exe."""
@@ -1360,9 +1439,12 @@ class App(QWidget):
             self.bottom_bar.set_page_mode("main")
         self.settings_page.setGraphicsEffect(None)
         self.about_page.setGraphicsEffect(None)
+        self.format_page.setGraphicsEffect(None)
         self.main_page.setGraphicsEffect(None)
         self.settings_page.hide()
         self.about_page.hide()
+        self.format_page.hide()
+        self.reset_settings_scroll()          # окно скрыли/сбросили — прокрутку в начало
         self.main_page.show()
         self.main_page.on_window_shown()      # обновить историю окна (убрать удалённые)
         self.main_page.raise_()

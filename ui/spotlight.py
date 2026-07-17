@@ -424,7 +424,8 @@ class Spotlight(QWidget):
         # Сразу помещаем «файл» в историю как строку-прогресс (без кнопок).
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
                  "host": history.host_label(url), "title": "", "path": None,
-                 "thumb": "", "ts": 0}
+                 "thumb": "", "ts": 0,
+                 "is_audio": bool(option.get("mp3") or option.get("audio"))}
         row = self.history.insert_downloading(entry)
         dl_id = entry["id"]
         self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
@@ -454,7 +455,7 @@ class Spotlight(QWidget):
         convert = downloader.should_convert(option, url, self.app.settings)
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
                  "host": history.host_label(url), "title": "", "path": None,
-                 "thumb": "", "ts": 0}
+                 "thumb": "", "ts": 0, "is_audio": False}
         row = self.history.insert_downloading(entry)
         dl_id = entry["id"]
         self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
@@ -514,13 +515,14 @@ class Spotlight(QWidget):
         d = self._dls.get(dl_id)
         if d is None:
             return
-        if p.get("stage") == "post":
-            frac = 1.0
-        elif p.get("stage") == "convert":
-            frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
-        else:
-            base = p.get("frac") or 0.0
-            frac = base * 0.5 if d["convert"] else base
+        # С конвертацией постобработку не показываем отдельным этапом: полоса
+        # уже на 50% после скачивания, дальше её продолжит сама конвертация.
+        if p.get("stage") == "post" and d["convert"]:
+            return
+        frac, pct = downloader.overall_progress(p, d["convert"])
+        if pct is not None:
+            p = dict(p)
+            p["percent_str"] = pct       # процент в тексте — по той же шкале
         d["frac"] = frac
         if d["row"] is not None:
             d["row"].set_progress(frac, p)
@@ -712,12 +714,15 @@ class Spotlight(QWidget):
         self._trim_open = True
         self._trim_h = 0
         target = self.trim.target_height()
+        self.trim.begin_anim()       # нативное видео прячем на время раскрытия
         self._load_trim(path, wf)
-        self.trim.show()
+        self._relayout()             # геометрия ДО show — иначе панель успевала
+        self.trim.show()             # мелькнуть в старом месте/размере
         self._fit_for_extra(target + self.GAP)
         anim.animate(self, 0.0, 1.0, 560,
                      lambda v: self._set_trim_h(int(target * v)),
-                     easing=QEasingCurve.InOutCubic, attr="_trim_anim")
+                     easing=QEasingCurve.InOutCubic,
+                     on_finished=self.trim.end_anim, attr="_trim_anim")
 
     def _load_trim(self, path, waveform=None):
         """Загрузить файл в панель обрезки и отметить его строку активной."""
@@ -732,6 +737,7 @@ class Spotlight(QWidget):
         if not self._trim_open:
             return
         self.history.set_active_path(None)   # крестик -> снова ножницы
+        self.trim.begin_anim()   # видео убираем СРАЗУ: нативное окно не схлопнуть
         if not animate:
             self._trim_open = False
             self._trim_h = 0
@@ -826,7 +832,8 @@ class Spotlight(QWidget):
                      "host": history.host_label(e["url"]),
                      "title": e.get("title") or "", "uploader": e.get("uploader") or "",
                      "duration": e.get("duration") or 0, "path": None, "thumb": "",
-                     "ts": 0, "_thumb_url": e.get("thumbnail")}
+                     "ts": 0, "_thumb_url": e.get("thumbnail"),
+                     "is_audio": bool(option.get("mp3") or option.get("audio"))}
             items.append((entry, option))
         self._close_playlist()
         self._enqueue_downloads(items)

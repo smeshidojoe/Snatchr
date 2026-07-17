@@ -257,48 +257,51 @@ class SettingsPage(WindowDragMixin, QWidget):
         self._host = content
 
         y = s(2)
+        # Куки-блок теперь первый (перед General) и назван по смыслу.
+        self._section_title(tr("Authentification (For Restricted Videos)"), pad, y)
+        y += s(20) + self._build_cookies_card(pad, y + s(20), card_w) + s(22)
+
+        # General: только галочки/настройки загрузки (yt-dlp и Tools уехали в Repair).
         self._section_title(tr("General"), pad, y)
         y += s(18)
-        # yt-dlp: слева название, по центру переключатель канала, справа обновление.
-        self._build_ytdlp_row(pad, y, card_w)
-        y += s(34) + s(12)
-        # Tools: слева название, справа обновление ffmpeg + очистка кэша.
-        self._build_tools_row(pad, y, card_w)
-        y += s(34) + s(18)                    # чуть больше воздуха до clipboard
+        # Конвертация YouTube-видео + встраивание обложки — сразу за ней.
+        self._build_convert_checkbox(pad, y, card_w)
+        y += s(30) + s(6)
+        self._build_embed_checkbox(pad, y, card_w)
+        y += s(30) + s(6)
         # Буфер обмена (+ режим тоста справа).
         self._build_clipboard_row(pad, y, card_w)
         y += s(30) + s(6)
         # Копировать ли скачанный по Toast файл в буфер (рядом со слежением).
         self._build_toast_copy_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
+        y += s(30) + s(14)                    # воздух перед автовставкой
         # Автовставка ссылки из буфера при открытии окна (+ выбор сайтов).
         y += self._build_autopaste_block(pad, y, card_w) + s(14)
-        # Конвертация YouTube-видео.
-        self._build_convert_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
-        # Встраивание обложки — сразу после конвертации.
-        self._build_embed_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
         # Одновременных загрузок (1..3).
         self._build_parallel_row(pad, y, card_w)
-        y += s(34) + s(22)                    # отступ между блоками
+        y += s(34) + s(16)
+        self._divider(pad, y, card_w)         # разделитель после Parallel Downloads
+        y += s(16)
 
-        # Spotlight (Ctrl+Shift+D): вкл/выкл + режим скрытия + смена сочетания
+        # Spotlight (вкл/выкл + режим скрытия + смена сочетания) — после Parallel.
         self._section_title(tr("Spotlight"), pad, y)
         y += s(18)
         self._build_spotlight_row(pad, y, card_w)
         y += s(30) + s(10)
         self._build_hotkey_row(pad, y, card_w)
-        y += s(34) + s(22)
+        y += s(34) + s(16)                    # отступы вокруг разделителей — равные
+        self._divider(pad, y, card_w)         # разделитель после блока Spotlight
+        y += s(16)
 
-        # Cookies
-        self._section_title(tr("Cookies"), pad, y)
-        y += s(20) + self._build_cookies_card(pad, y + s(20), card_w) + s(22)
+        # Приоритет форматов: заголовок + подпись + кнопка Edit (отдельная страница).
+        y += self._build_format_priority_row(pad, y, card_w) + s(16)
+        self._divider(pad, y, card_w)         # разделитель после Format Priority
+        y += s(16)
 
-        # Usage (+ перенесённые из About: иконка трея, тема, язык)
-        self._section_title(tr("Usage"), pad, y)
+        # Interface (иконка трея, тема, язык + режим окна)
+        self._section_title(tr("Interface"), pad, y)
         y += s(24)
-        y += self._build_usage_card(pad, y, card_w) + s(14)   # воздух под pinned/auto-hide
+        y += self._build_usage_card(pad, y, card_w) + s(10)
         self._build_select_row(tr("Menu Bar Icon"), pad, y, self._icon_values(),
                                self._current_icon_display(), self._on_icon_change,
                                icons=self._icon_icons())
@@ -311,14 +314,24 @@ class SettingsPage(WindowDragMixin, QWidget):
                                self._on_language_change)
         y += s(34) + s(22)                    # отступ между блоками
 
-        # Advanced (внизу): уведомления об обновлениях + автозапуск + сброс.
-        self._section_title(tr("Advanced"), pad, y)
+        # System: уведомления об обновлениях + автозапуск.
+        self._section_title(tr("System"), pad, y)
         y += s(18)
         self._build_update_checkbox(pad, y, card_w)
         y += s(30) + s(6)
         self._build_autostart_checkbox(pad, y, card_w)
-        y += s(30) + s(12)
-        # Open Logs Folder + Reset Settings — в один ряд, равные и на равных отступах.
+        y += s(30) + s(22)
+
+        # Repair: обновление/починка внешних бинарников (yt-dlp, ffmpeg, кэш).
+        self._section_title(tr("Repair"), pad, y)
+        y += s(18)
+        # yt-dlp: слева название, по центру переключатель канала, справа обновление.
+        self._build_ytdlp_row(pad, y, card_w)
+        y += s(34) + s(12)
+        # Tools: слева название, справа обновление ffmpeg + очистка кэша.
+        self._build_tools_row(pad, y, card_w)
+        y += s(34) + s(18)
+        # Open Logs Folder + Reset Settings — в самом низу, под Repair.
         self._build_bottom_buttons(pad, y, card_w)
         y += s(32) + s(30)                    # + увеличенный нижний отступ
 
@@ -681,6 +694,32 @@ class SettingsPage(WindowDragMixin, QWidget):
         self.settings["cookies_browser"] = self._cookie_val.get(label, "auto")
         self.app.save_settings()
 
+    def _divider(self, x, y, w):
+        """Тонкая горизонтальная линия-разделитель между блоками настроек.
+
+        Цвет — «separator» палитры (он подогнан под каждую тему), а не «border»:
+        у светлой Glass border почти белый (#f7fafd) и линия была не видна."""
+        line = QFrame(self._host)
+        line.setGeometry(x, y, w, 1)
+        line.setStyleSheet("background: %s; border: none;" % self._pal["separator"])
+        return line
+
+    def _build_format_priority_row(self, x, y, card_w):
+        """Format Priority: заголовок + подпись слева, кнопка Edit справа.
+        Возвращает высоту блока (чтобы разделитель ниже не липнул к подписи)."""
+        s = self.app._s
+        self._section_title(tr("Format Priority"), x, y)
+        sub_y = y + s(18)
+        sub_f = fonts.font(s(11), "Regular")
+        self._label(tr("Show/Hide and reorder formats"), sub_f, self.TEXT_COLOR, x, sub_y)
+        btn_w, btn_h = s(76), s(30)
+        self.btn_formats = LinkButton(
+            self._host, tr("Edit"), fonts.font(s(11), "Semibold"),
+            self.CHOOSE, self.LINK_HOVER, self.app.open_formats,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+        self.btn_formats.setGeometry(x + card_w - btn_w, y + s(6), btn_w, btn_h)
+        return max(s(18) + QFontMetrics(sub_f).height(), s(6) + btn_h)
+
     # ------------------------------------------------------------------ #
     def _section_title(self, text, x, y):
         s = self.app._s
@@ -714,12 +753,28 @@ class SettingsPage(WindowDragMixin, QWidget):
         return card_h
 
     def _build_usage_card(self, x, y, card_w):
+        """Allow Dragging сверху, ниже — «Window Mode» слева и компактный
+        переключатель Pinned/Auto-hide справа (в один ряд с остальными
+        select-строками блока Interface)."""
         s = self.app._s
-        card_h = s(38)   # повыше — чтобы пилюля segmented могла «выходить» за блок
+        cb_h = s(30)
+        row_h = s(34)
+        card_h = cb_h + s(6) + row_h
         card = self._card(x, y, card_w, card_h)
 
-        # Segmented занимает левую половину карточки.
-        seg_w = card_w // 2 - s(6)
+        cb = CheckBox(card, tr("Allow Dragging"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb.setChecked(bool(self.settings.get("allow_dragging", False)))
+        cb.setGeometry(0, 0, card_w, cb_h)
+        cb.setToolTip(tr(self.DRAG_TIP))
+        cb.toggled.connect(self._on_drag_change)
+        self._checks["allow_dragging"] = cb
+
+        row_y = cb_h + s(6)
+        self._label(tr("Window Mode"), fonts.font(s(12), "Medium"),
+                    self.TEXT_COLOR, x, y + row_y + s(8))
+
+        seg_w = s(160)                       # компактнее и прижат вправо
         seg = SegmentedControl(
             card,
             [(tr("Pinned"), "toggle"), (tr("Auto-hide"), "focus")],
@@ -728,20 +783,10 @@ class SettingsPage(WindowDragMixin, QWidget):
             self.SEG_BG, self.SEG_SEL,
             self.MUTED_COLOR, self.ON_ACCENT, s(9)
         )
-        seg.setGeometry(0, 0, seg_w, card_h)
+        seg.setGeometry(card_w - seg_w, row_y, seg_w, s(30))
         seg.setToolTip(tr(self.USAGE_TIP))
         seg.changed.connect(self._on_usage_change)
         self._usage_seg = seg
-
-        # Справа — чекбокс перетаскивания окна.
-        drag_x = card_w // 2 + s(8)
-        cb = CheckBox(card, tr("Allow Dragging"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
-        cb.setChecked(bool(self.settings.get("allow_dragging", False)))
-        cb.setGeometry(drag_x, 0, card_w - drag_x, card_h)
-        cb.setToolTip(tr(self.DRAG_TIP))
-        cb.toggled.connect(self._on_drag_change)
-        self._checks["allow_dragging"] = cb
 
         return card_h
 

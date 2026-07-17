@@ -89,5 +89,6 @@ if __name__ == "__main__":
     tray.run()
     window.sync_autostart()       # привести реестр автозапуска к настройке
     window.start_update_watch()   # фоновая проверка обновлений + тост-анонс
+    window.run_first_launch()     # первый старт: Spotlight + подсказка про трей
 
     sys.exit(app.exec())

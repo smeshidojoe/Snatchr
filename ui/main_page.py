@@ -913,7 +913,8 @@ class MainPage(WindowDragMixin, QWidget):
             opts = downloader.audio_formats(self._info)
         else:
             opts = downloader.video_formats(
-                self._info, downloader.is_youtube(self._analyzing_url))
+                self._info, downloader.is_youtube(self._analyzing_url),
+                settings=self.settings)
         self.sel_format.clear()
         self._opt_by_label = {}
         for o in opts:
@@ -961,6 +962,10 @@ class MainPage(WindowDragMixin, QWidget):
             self.spinner.start()
         else:
             self.spinner.stop()
+        # Селектор качества бесполезен, пока форматы не получены (идёт анализ) —
+        # блокируем, чтобы не путать пользователя выбором «до Fetching».
+        self.sel_format.setEnabled(
+            state not in ("fetching", "multi_fetching", "playlist_fetching"))
         self._refresh_download_enabled()
         self._update_timecodes_enabled()
         self._apply_expand()          # плейлист/мульти-выбор — окно выше на 50px
@@ -1059,6 +1064,7 @@ class MainPage(WindowDragMixin, QWidget):
         self._pending_entry = None
         # Аудио — пилюля разрешения не нужна (по переключателю Video/Audio).
         entry["is_audio"] = (self.seg_type.value() == "audio")
+        entry["is_image"] = bool(option.get("thumbnail"))   # обложка — без анимации
         row.start_downloading()
         dl_id = entry["id"]
         convert = bool(downloader.should_convert(option, url, self.settings))
@@ -1084,13 +1090,14 @@ class MainPage(WindowDragMixin, QWidget):
         d = self._dls.get(dl_id)
         if d is None:
             return
-        if p.get("stage") == "post":
-            frac = 1.0
-        elif p.get("stage") == "convert":
-            frac = 0.5 + 0.5 * (p.get("frac") or 0.0)
-        else:
-            base = p.get("frac") or 0.0
-            frac = base * 0.5 if d["convert"] else base
+        # С конвертацией постобработку не показываем отдельным этапом: полоса
+        # уже на 50% после скачивания, дальше её продолжит сама конвертация.
+        if p.get("stage") == "post" and d["convert"]:
+            return
+        frac, pct = downloader.overall_progress(p, d["convert"])
+        if pct is not None:
+            p = dict(p)
+            p["percent_str"] = pct       # процент в тексте — по той же шкале
         d["frac"] = frac
         if d["row"] is not None:
             d["row"].set_progress(frac, p)
@@ -1271,6 +1278,7 @@ class MainPage(WindowDragMixin, QWidget):
                      "host": history.host_label(url), "title": e.get("title") or "",
                      "uploader": e.get("uploader") or "", "duration": e.get("duration") or 0,
                      "is_audio": bool(opt.get("audio") or opt.get("mp3")),
+                     "is_image": bool(opt.get("thumbnail")),
                      "path": None, "thumb": "", "ts": 0, "_thumb_url": e.get("thumbnail")}
             row = self.history.insert_downloading(entry)
             dl_id = entry["id"]

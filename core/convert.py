@@ -40,11 +40,36 @@ def available_encoders():
     return enc
 
 
+def _src_bitrate(v, fmt):
+    """Битрейт ВИДЕОпотока (бит/с) или None. У VP9/webm у потока bit_rate обычно
+    пустой, поэтому запасные пути: format.bit_rate минус звук, затем size/duration."""
+    try:
+        br = int(v.get("bit_rate") or 0)
+        if br > 0:
+            return br
+    except (TypeError, ValueError):
+        pass
+    try:
+        br = int(fmt.get("bit_rate") or 0)
+        if br > 0:
+            return int(br * 0.93)        # вычитаем примерную долю звука
+    except (TypeError, ValueError):
+        pass
+    try:
+        size = float(fmt.get("size") or 0)
+        dur = float(fmt.get("duration") or 0)
+        if size > 0 and dur > 0:
+            return int(size * 8 / dur * 0.93)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def analyze(path):
     """ffprobe -> параметры первого видеопотока (или None)."""
     try:
         r = tools.run([tools.FFPROBE_EXE, "-v", "quiet", "-print_format", "json",
-                       "-show_streams", path], timeout=40)
+                       "-show_streams", "-show_format", path], timeout=40)
         data = json.loads(r.stdout or "{}")
     except Exception:
         return None
@@ -64,27 +89,37 @@ def analyze(path):
         "primaries": v.get("color_primaries") or "",
         "transfer": transfer,
         "space": v.get("color_space") or "",
+        "bit_rate": _src_bitrate(v, data.get("format") or {}),
+        "fps": _fps(v),
     }
+
+
+def _fps(v):
+    """Кадры/с из r_frame_rate («60/1» -> 60.0) или None."""
+    raw = v.get("r_frame_rate") or v.get("avg_frame_rate") or ""
+    try:
+        num, den = str(raw).split("/")
+        fps = float(num) / float(den)
+        return fps if 1.0 <= fps <= 480.0 else None
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 def decide_target(a, force=False):
     """'h264' | 'hevc' | None (None — конвертация не нужна).
 
-    force=True — конвертируем всегда (даже если файл уже монтажный): HDR -> HEVC
-    10-bit, иначе -> H.264 8-bit.
+    Галочка «Convert YouTube Videos» трогает ТОЛЬКО VP9: H.264 и так монтажный,
+    AV1 из селектора исключён. HDR VP9 -> HEVC 10-bit, обычный VP9 -> H.264 8-bit.
+
+    force=True — конвертируем всегда (даже если файл уже монтажный).
     """
     if a is None:
         return None
     if force:
         return "hevc" if a["hdr"] else "h264"
-    codec = a["codec"]
-    if a["hdr"]:
-        if codec in ("hevc", "h265") and a["depth"] >= 10:
-            return None
-        return "hevc"
-    if codec in ("h264", "avc1", "avc"):
+    if a["codec"] not in ("vp9", "vp09"):
         return None
-    return "h264"
+    return "hevc" if a["hdr"] else "h264"
 
 
 def _encoder_order(target, encoders):
@@ -113,21 +148,69 @@ def probe_duration(path):
         return None
 
 
+def target_bitrate(a, target):
+    """Целевой битрейт (бит/с) по исходному из ffprobe, или None (нет данных).
+
+    H.264 менее эффективен, чем VP9, поэтому берём исходный с запасом ~1.3x —
+    качество сохраняется, а файл не раздувается (было: фиксированный CQ/CRF без
+    привязки к источнику -> 24 Мбит VP9 превращались в 67 Мбит H.264).
+    HEVC примерно равен VP9 по эффективности — коэффициент 1.0."""
+    src = (a or {}).get("bit_rate")
+    if not src or src <= 0:
+        return None
+    k = 1.0 if target == "hevc" else 1.3
+    br = int(src * k)
+    return max(500_000, min(br, 200_000_000))
+
+
+def _rate_args(encoder, br):
+    """Аргументы ограничения битрейта под конкретный энкодер (VBR c потолком)."""
+    maxrate = int(br * 1.45)
+    bufsize = maxrate * 2
+    common = ["-b:v", str(br), "-maxrate", str(maxrate), "-bufsize", str(bufsize)]
+    if "nvenc" in encoder:
+        return ["-rc", "vbr"] + common
+    return common          # qsv/amf/libx264/libx265 понимают -b:v/-maxrate/-bufsize
+
+
+def _gop_args(encoder, a):
+    """Keyframe примерно раз в 2 секунды.
+
+    По умолчанию энкодеры ставят длинный GOP (у NVENC вообще бесконечный), и
+    перемотка 4K упирается в редкие опорные кадры — плеер отматывает до далёкого
+    keyframe и декодирует всё до нужного места (это и есть «подлагивает при
+    быстрой перемотке»; faststart тут ни при чём — он про расположение moov)."""
+    fps = (a or {}).get("fps") or 30.0
+    g = max(12, int(round(fps * 2)))
+    args = ["-g", str(g), "-keyint_min", str(max(1, g // 2))]
+    if "nvenc" in encoder:
+        args += ["-forced-idr", "1"]     # чтобы -g реально давал IDR-кадры
+    elif "libx264" in encoder or "libx265" in encoder:
+        args += ["-sc_threshold", "0"]   # равномерный шаг keyframe
+    return args
+
+
 def build_args(in_path, out_path, target, encoder, a):
     args = [tools.FFMPEG_EXE, "-hide_banner", "-y", "-i", in_path,
             "-map", "0:v:0", "-map", "0:a?", "-c:a", "aac", "-b:a", "192k"]
     args += ["-c:v", encoder]
+    args += _gop_args(encoder, a)      # частые keyframe -> отзывчивая перемотка
+    br = target_bitrate(a, target)      # None -> запасной путь по качеству (CQ/CRF)
 
     if target == "hevc":          # HDR 10-bit
         if "nvenc" in encoder:
-            args += ["-preset", "p5", "-rc", "vbr", "-cq", "23", "-pix_fmt", "p010le"]
+            args += ["-preset", "p5", "-pix_fmt", "p010le"]
+            args += _rate_args(encoder, br) if br else ["-rc", "vbr", "-cq", "23"]
         elif "qsv" in encoder:
-            args += ["-global_quality", "23", "-pix_fmt", "p010le"]
+            args += ["-pix_fmt", "p010le"]
+            args += _rate_args(encoder, br) if br else ["-global_quality", "23"]
         elif "amf" in encoder:
             args += ["-quality", "quality", "-pix_fmt", "p010le"]
+            args += _rate_args(encoder, br) if br else []
         else:
-            args += ["-preset", "medium", "-crf", "20",
-                     "-pix_fmt", "yuv420p10le", "-x265-params", "profile=main10"]
+            args += ["-preset", "medium", "-pix_fmt", "yuv420p10le",
+                     "-x265-params", "profile=main10"]
+            args += _rate_args(encoder, br) if br else ["-crf", "20"]
         args += ["-tag:v", "hvc1"]
         if a.get("primaries"):
             args += ["-color_primaries", a["primaries"]]
@@ -137,14 +220,20 @@ def build_args(in_path, out_path, target, encoder, a):
             args += ["-colorspace", a["space"]]
     else:                         # H.264 8-bit
         if "nvenc" in encoder:
-            args += ["-preset", "p5", "-rc", "vbr", "-cq", "21", "-pix_fmt", "yuv420p"]
+            args += ["-preset", "p5", "-pix_fmt", "yuv420p"]
+            args += _rate_args(encoder, br) if br else ["-rc", "vbr", "-cq", "21"]
         elif "qsv" in encoder:
-            args += ["-global_quality", "21", "-pix_fmt", "nv12"]
+            args += ["-pix_fmt", "nv12"]
+            args += _rate_args(encoder, br) if br else ["-global_quality", "21"]
         elif "amf" in encoder:
             args += ["-quality", "quality", "-pix_fmt", "yuv420p"]
+            args += _rate_args(encoder, br) if br else []
         else:
-            args += ["-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
-        args += ["-tag:v", "avc1"]
+            args += ["-preset", "medium", "-pix_fmt", "yuv420p"]
+            args += _rate_args(encoder, br) if br else ["-crf", "20"]
+        # High profile: для 4K заметно лучше Main (8x8 transform) и роднее плеерам —
+        # NVENC по умолчанию отдавал Main.
+        args += ["-profile:v", "high", "-tag:v", "avc1"]
 
     # Машиночитаемый прогресс на stdout (для полосы), без шумной строки stats.
     args += ["-progress", "pipe:1", "-nostats"]

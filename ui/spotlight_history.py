@@ -118,8 +118,16 @@ class GlyphButton(QWidget):
 
         col = _blend(self._fg, self._fg_h, t)
         cx, cy = w / 2, h / 2
-        # «close» — крестик (кнопка обрезки активного файла закрывает панель)
+        # «close» — крестик (кнопка обрезки активного файла закрывает панель),
+        # при наведении краснеет (подложка + сам крестик).
         if self._glyph == "close":
+            red = QColor("#e5484d")
+            red_bg = QColor("#e5484d"); red_bg.setAlpha(60)
+            p.setPen(Qt.NoPen)
+            p.setBrush(_blend(self._base_bg, red_bg, t))
+            p.drawRoundedRect(QRectF(inset, inset, w - 2 * inset, h - 2 * inset),
+                              s(7), s(7))
+            col = _blend(self._fg, red, t)
             d = s(5)
             pen = QPen(col, max(1.6, s(1.9)))
             pen.setCapStyle(Qt.RoundCap)
@@ -266,6 +274,14 @@ class HistoryRow(QWidget):
             self._prog_timer.start()
 
     def _animate_dl(self, to, on_finished=None):
+        # Обложка (thumbnail) качается мгновенно — без слайда текста/появления
+        # блока скорости: _dl_t держим на 0, только зовём on_finished.
+        if self.entry.get("is_image"):
+            self._dl_t = 0.0
+            self.update()
+            if on_finished:
+                on_finished()
+            return
         anim.animate(self, self._dl_t, to, 720, self._dl_tick,
                      easing=QEasingCurve.InOutCubic, on_finished=on_finished,
                      attr="_dl_anim")
@@ -342,6 +358,18 @@ class HistoryRow(QWidget):
             self._draw_text_split(p, QRectF(text_x, bot_c - s(8),
                                             right - text_x, s(16)),
                                   tr("Processing…"), self._muted)
+            p.setOpacity(1.0)
+            return
+        if self._dl.get("stage") == "convert":
+            # Конвертация: пилюля скорости (1.31x) + текст сразу за ней на всю
+            # оставшуюся ширину (в общих колонках он обрезался об «100.0%»).
+            x = text_x
+            spd = self._dl.get("speed") or ""
+            if spd:
+                x += self._draw_pill(p, x, bot_c, spd, self._muted) + s(8)
+            self._draw_text_split(p, QRectF(x, bot_c - s(8), right - x, s(16)),
+                                  self._dl.get("percent_str") or tr("Converting…"),
+                                  self._muted)
             p.setOpacity(1.0)
             return
         fm = QFontMetrics(fstat)
