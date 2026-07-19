@@ -909,6 +909,14 @@ class MainPage(WindowDragMixin, QWidget):
         mode = mode or self.seg_type.value()
         if self._info is None:
             opts = [self._default_option(mode)]
+        elif self._info.get("_ember"):
+            # Ссылку разобрал Ember — качества берём у него (у yt-dlp их нет).
+            from core import ember_dl
+            if mode == "audio":
+                opts = [{"label": tr("Best Quality"), "mp3": True,
+                         "key": "best", "ember": True, "height": 0}]
+            else:
+                opts = ember_dl.format_options(self._info)
         elif mode == "audio":
             opts = downloader.audio_formats(self._info)
         else:

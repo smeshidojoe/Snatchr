@@ -59,6 +59,75 @@ def browser_cookie_args(settings):
     return ["--cookies-from-browser", b] if b else []
 
 
+# Хост ссылки -> домен, под которым лежат куки сервиса.
+_COOKIE_DOMAINS = {
+    "youtube.com": "youtube.com", "youtu.be": "youtube.com",
+    "vk.com": "vk.com", "vkvideo.ru": "vk.com",
+    "instagram.com": "instagram.com", "tiktok.com": "tiktok.com",
+    "twitter.com": "twitter.com", "x.com": "x.com",
+    "reddit.com": "reddit.com", "redd.it": "reddit.com",
+    "twitch.tv": "twitch.tv", "vimeo.com": "vimeo.com",
+    "soundcloud.com": "soundcloud.com", "facebook.com": "facebook.com",
+    "fb.watch": "facebook.com", "ok.ru": "ok.ru", "rutube.ru": "rutube.ru",
+    "pornhub.com": "pornhub.com",
+}
+
+
+def _cookie_domain(url):
+    """Домен кук для ссылки ('www.youtube.com/...' -> 'youtube.com') или ''."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url or "").netloc or "").split("@")[-1].split(":")[0].lower()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    for h, dom in _COOKIE_DOMAINS.items():
+        if host == h or host.endswith("." + h):
+            return dom
+    return ""
+
+
+def fast_cookie_args(settings, url):
+    """Куки ТОЛЬКО нужного сервиса, выгруженные в одноразовый Netscape-файл.
+
+    Зачем: `--cookies-from-browser` заставляет yt-dlp прочитать и расшифровать
+    ВСЮ куки-базу браузера — это ~3 секунды на каждый вызов (а вызовов на одну
+    ссылку бывает несколько). Читаем сами только домен сервиса (~0.03 с) и
+    отдаём готовым файлом. Возвращает [] — тогда вызывающий берёт обычный путь.
+
+    Файл одноразовый: имя начинается с 'use_', и _del_cookie_copy стирает его
+    сразу после запуска процесса (куки не остаются лежать на диске)."""
+    dom = _cookie_domain(url)
+    if not dom:
+        return []
+    browser = (settings or {}).get("cookies_browser") or "auto"
+    if browser == "auto":
+        browser = tools.default_browser()
+    if not browser:
+        return []
+    try:
+        import browser_cookie3
+        reader = getattr(browser_cookie3, browser, None)
+        if reader is None:
+            return []
+        jar = list(reader(domain_name=dom))
+        if not jar:
+            return []                    # для этого сервиса кук нет — не мешаем
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="use_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("# Netscape HTTP Cookie File\n")
+            for c in jar:
+                f.write("%s\t%s\t%s\t%s\t%d\t%s\t%s\n" % (
+                    c.domain, "TRUE" if c.domain.startswith(".") else "FALSE",
+                    c.path or "/", "TRUE" if c.secure else "FALSE",
+                    int(c.expires or 0), c.name, c.value))
+        return ["--cookies", path]
+    except Exception:
+        return []                        # любая осечка -> обычный путь
+
+
 def _del_cookie_copy(args):
     """Удаляет приватную копию кук (use_*.txt) из args сразу после запуска —
     она одноразовая (нужна только на один запуск yt-dlp)."""
@@ -76,11 +145,24 @@ def _del_cookie_copy(args):
         pass
 
 
+def have_cookies(settings, url=""):
+    """Есть ли вообще что подставить в куки — БЕЗ побочных эффектов.
+
+    Отдельно от cookie_args, потому что тот выгружает куки во временный файл:
+    вызов «просто чтобы проверить» плодил бы файлы, которые никто не удалит."""
+    return bool(file_cookie_args(settings)) or bool(browser_cookie_args(settings))
+
+
 def cookie_args(settings, url=""):
-    """Куки, которые применяем ВСЕГДА: свой файл (если задан), иначе — свежие из
-    браузера. Кэширование кук в файл отключено — для всех сайтов (в т.ч. YouTube)
-    куки тянутся заново каждый раз (надёжнее для сессионной авторизации)."""
-    return file_cookie_args(settings) or browser_cookie_args(settings)
+    """Куки, которые применяем ВСЕГДА. Порядок: свой файл из настроек ->
+    быстрый путь (куки только этого сервиса, см. fast_cookie_args) -> чтение
+    всей базы браузера силами yt-dlp.
+
+    Куки всегда свежие: кэширования между запусками нет (надёжнее для
+    сессионной авторизации), быстрый путь лишь сужает выборку до одного домена."""
+    return (file_cookie_args(settings)
+            or fast_cookie_args(settings, url)
+            or browser_cookie_args(settings))
 
 
 # ------------------------------------------------------------------ #
@@ -583,11 +665,26 @@ def is_cookie_error(text):
 
 
 def is_auth_error(text):
-    """Похоже ли, что ошибку можно обойти куками (бот-чек / вход / 403)."""
+    """Похоже ли, что ошибку можно обойти куками (бот-чек / вход / 403).
+
+    Паттерны намеренно узкие: широкое «confirm you» ловило стандартный хвост
+    yt-dlp «Confirm you are on the latest version», из-за чего любая ошибка
+    выглядела как проблема доступа (и повтор без кук не запускался)."""
     low = (text or "").lower()
-    return ("not a bot" in low or "confirm you" in low or "http error 403" in low
-            or "sign in" in low or "login required" in low or "private video" in low
-            or "members-only" in low or "age" in low and "confirm" in low)
+    return any(k in low for k in (
+        # бот-чек / прямой запрет
+        "not a bot", "http error 403",
+        # требование входа (формулировки сильно разнятся по сайтам)
+        "sign in", "login required", "log in", "logged in", "sign up",
+        "requires authentication", "authorization required",
+        # приватность / ограниченный доступ
+        "private video", "is private", "protected", "members-only",
+        "subscribers", "premium",
+        # возрастные ограничения
+        "confirm your age", "age-restricted", "age restricted",
+        # антифлуд: куки часто снимают лимит, без них повтор бесполезен
+        "rate-limit", "rate limit",
+    ))
 
 
 def friendly_error(text, default=None):
@@ -632,7 +729,12 @@ def is_supported_url(url):
 
 def is_playlist_url(url):
     u = (url or "").lower()
-    return ("list=" in u) or ("/playlist" in u)
+    if ("list=" in u) or ("/playlist" in u):
+        return True
+    # Наборы, которые умеет только Ember: сет SoundCloud, лента автора
+    # (профиль/канал) в Twitter/VK/Instagram и т.п.
+    from core import ember_dl
+    return ember_dl.is_collection(u)
 
 
 def is_channel_url(url):
@@ -758,6 +860,8 @@ def _best_thumb(entry):
 
 def playlist_entries(info):
     """Список записей плейлиста: [{url, title, duration, thumbnail, uploader}]."""
+    if (info or {}).get("_ember"):
+        return list(info.get("entries") or [])   # Ember отдаёт уже в этом формате
     pl_uploader = info.get("uploader") or info.get("channel") or ""
     out = []
     for e in (info.get("entries") or []):
@@ -1112,6 +1216,28 @@ def _run_thumbnail_job(url, settings, hooks, title):
     return bool(final), final, log
 
 
+def _try_ember(url, option, settings, hooks, log, job_dir, title):
+    """Скачивание через Ember. Возвращает (ok, dest).
+
+    Используется двояко: как ОСНОВНОЙ путь для Twitter/X и как ЗАПАСНОЙ для
+    прочих поддерживаемых сервисов, когда yt-dlp исчерпал свои повторы."""
+    from core import ember_dl
+    if not ember_dl.can_handle(url) or hooks.is_stopped():
+        return False, ""
+    try:
+        log.event("Trying Ember")
+        result = ember_dl.extract(url, settings)
+        dest = ember_dl.download(result, job_dir, option=option,
+                                 hooks=hooks, title=title)
+        if dest and os.path.isfile(dest):
+            log.info("Ember: downloaded %s" % os.path.basename(dest))
+            return True, dest
+        log.info("Ember: nothing downloaded")
+    except Exception as exc:
+        log.info("Ember failed: %s" % str(exc)[:200])
+    return False, ""
+
+
 def run_job(option, url, settings, hooks, title=None, info=None):
     """
     Полный цикл одного задания: yt-dlp -> (fallback streamlink для Twitch) ->
@@ -1121,7 +1247,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     info — готовая info с анализа: пробуем быстрый путь (--load-info-json) без
     повторного извлечения; при любой неудаче откатываемся к обычному.
     """
-    if (option or {}).get("thumbnail"):
+    if (option or {}).get("thumbnail") and not (option or {}).get("ember"):
         return _run_thumbnail_job(url, settings, hooks, title)
     log = logbook.Log(url)
     log.event("Starting download (yt-dlp)")
@@ -1145,11 +1271,20 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
     use_cookies = True
     ok, dest = False, ""
+    ember_used = False
+
+    # Twitter/X — Ember ОСНОВНОЙ движок (yt-dlp там регулярно не справляется).
+    from core import ember_dl
+    if ember_dl.is_primary(url) and not hooks.is_stopped():
+        ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
+        ember_used = ok
+        if not ok:
+            log.event("Ember failed — falling back to yt-dlp")
     ff_total = _section_seconds(option)   # для полосы прогресса при таймкод-резке
 
     # Быстрый путь: качаем из готовой info (--load-info-json), без повторного
     # извлечения. При любой неудаче — обычное извлечение (полный фолбэк).
-    info_file = _write_info_json(info)
+    info_file = _write_info_json(info) if not ok else None
     if info_file and not hooks.is_stopped():
         log.event("Fast path: load-info-json (no re-extraction)")
         _args = build_download_args(option, url, settings, title, job_dir,
@@ -1177,9 +1312,13 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         if not hooks.is_stopped():
             dest = _resolve(dest)
             ok = bool(dest)
-    if (not ok and not hooks.is_stopped() and cookie_args(settings, url)
-            and is_cookie_error(log.text())):
-        log.event("Cookie extraction failed — retrying without cookies")
+    # Повтор без кук. Два случая: (1) куки не извлеклись (залоченная БД/DPAPI);
+    # (2) куки извлеклись, но САМ САЙТ с ними отдаёт ответ, который экстрактор не
+    # разбирает (VK с авторизацией: «Failed to parse JSON»). Не повторяем, только
+    # если ошибка явно про доступ (приватное/вход/403) — там куки как раз нужны.
+    if (not ok and not hooks.is_stopped() and have_cookies(settings, url)
+            and (is_cookie_error(log.text()) or not is_auth_error(log.text()))):
+        log.event("Retrying without cookies")
         use_cookies = False
         _rm_dir(job_dir)
         job_dir = _new_job_dir()
@@ -1243,6 +1382,13 @@ def run_job(option, url, settings, hooks, title=None, info=None):
                 log.info("Section cut failed: " + str(exc))
                 ok = False
 
+    # yt-dlp исчерпал повторы — пробуем Ember как запасной движок (для сервисов,
+    # которые он поддерживает). Для Twitter он уже отработал выше как основной.
+    if (not ok and not hooks.is_stopped() and not ember_used
+            and not ember_dl.is_primary(url)):
+        ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
+        ember_used = ok
+
     if not ok and not hooks.is_stopped():
         log.event("yt-dlp failed")
         if is_twitch(url) and tools.have_streamlink():
@@ -1253,8 +1399,9 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             dest = out if (ok and os.path.exists(out)) else ""
 
     conv_failed = False
+    # Ember отдаёт готовый H.264/AAC — перекодировать нечего, конвертацию пропускаем.
     if (ok and dest and not hooks.is_stopped() and not section_fallback
-            and should_convert(option, url, settings)):
+            and not ember_used and should_convert(option, url, settings)):
         try:
             hooks.on_status(tr("Converting…"))
             log.event("Converting to editor-friendly mp4")

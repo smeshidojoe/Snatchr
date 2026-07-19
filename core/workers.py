@@ -159,17 +159,48 @@ class AppUpdateWorker(QThread):
             self.done.emit(False, str(exc))
 
 
+def _probe_ember(url, settings):
+    """Анализ через Ember -> info в нашем формате. None, если не вышло."""
+    from core import ember_dl
+    if not ember_dl.can_handle(url):
+        return None
+    try:
+        return ember_dl.to_info(ember_dl.extract(url, settings))
+    except Exception:
+        return None
+
+
 def _probe_with_cookies(url, settings):
-    """probe(url) с куками (файл/браузер). Если извлечение кук из браузера падает
-    (Chrome App-Bound Encryption / залоченная БД) — повторяем без кук, чтобы
-    публичные ссылки всё равно анализировались."""
+    """Анализ ссылки: yt-dlp с куками, с повторами; Ember — вторым движком.
+
+    Ember идёт ПЕРВЫМ для Twitter/X (yt-dlp там регулярно не справляется) и
+    ЗАПАСНЫМ для прочих поддерживаемых сервисов, если yt-dlp не смог.
+
+    Повтор yt-dlp без кук — в двух случаях: (1) куки не извлеклись (Chrome
+    App-Bound Encryption / залоченная БД); (2) куки извлеклись, но сам сайт с
+    ними отдаёт ответ, который экстрактор не разбирает (VK: «Failed to parse
+    JSON»). Не повторяем, только если ошибка явно про доступ — там куки нужны."""
+    from core import ember_dl
+    if ember_dl.is_primary(url):
+        info = _probe_ember(url, settings)
+        if info is not None:
+            return info
+
     ck = downloader.cookie_args(settings or {}, url)
     try:
         return downloader.probe(url, cookies=ck)
     except Exception as exc:
-        if ck and downloader.is_cookie_error(str(exc)):
-            return downloader.probe(url, cookies=None)
-        raise
+        msg = str(exc)
+        if ck and (downloader.is_cookie_error(msg)
+                   or not downloader.is_auth_error(msg)):
+            try:
+                return downloader.probe(url, cookies=None)
+            except Exception as exc2:
+                exc = exc2
+        info = _probe_ember(url, settings)      # последний шанс — Ember
+        if info is not None:
+            return info
+        raise exc
 
 
 def _probe_cached(url, settings):
@@ -213,9 +244,21 @@ class PlaylistProbeWorker(QThread):
         self._settings = settings or {}
 
     def run(self):
+        from core import ember_dl
+        # Наборы, которых yt-dlp не знает (сет SoundCloud, лента автора), —
+        # сразу через Ember; остальные — yt-dlp, а Ember остаётся запасным.
+        if ember_dl.is_collection(self._url):
+            entries = ember_dl.playlist_entries(self._url, self._settings)
+            if entries:
+                self.done.emit({"_ember": True, "entries": entries})
+                return
         try:
             self.done.emit(downloader.probe_flat(self._url))
         except Exception as exc:
+            entries = ember_dl.playlist_entries(self._url, self._settings)
+            if entries:
+                self.done.emit({"_ember": True, "entries": entries})
+                return
             self.error.emit(str(exc))
 
 
