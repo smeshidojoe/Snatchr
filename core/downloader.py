@@ -707,13 +707,19 @@ def is_youtube(url):
 _SUPPORTED_HOSTS = (
     "youtube.com", "youtu.be", "instagram.com", "tiktok.com",
     "reddit.com", "redd.it", "pornhub.com", "vimeo.com", "twitch.tv",
+    # Соцсети (yt-dlp и/или Ember).
+    "twitter.com", "x.com", "facebook.com", "fb.watch", "soundcloud.com",
     # Русскоязычные сервисы (yt-dlp их поддерживает).
     "vk.com", "vkvideo.ru", "ok.ru", "rutube.ru",
 )
 
 
 def is_supported_url(url):
-    """http(s)-ссылка на один из известных сайтов (для тоста из буфера обмена)."""
+    """http(s)-ссылка на один из известных сайтов (для тоста из буфера обмена).
+
+    Кроме явного списка учитываем всё, что умеет Ember (Bluesky, Pinterest,
+    Newgrounds, Tumblr …) — иначе Spotlight отклонял бы ссылку ещё до попытки
+    скачать, хотя движок с ней справляется."""
     u = (url or "").strip()
     if not (u.lower().startswith("http://") or u.lower().startswith("https://")):
         return False
@@ -724,7 +730,10 @@ def is_supported_url(url):
         return False
     if host.startswith("www."):
         host = host[4:]
-    return any(host == h or host.endswith("." + h) for h in _SUPPORTED_HOSTS)
+    if any(host == h or host.endswith("." + h) for h in _SUPPORTED_HOSTS):
+        return True
+    from core import ember_dl
+    return ember_dl.can_handle(u)
 
 
 def is_playlist_url(url):
