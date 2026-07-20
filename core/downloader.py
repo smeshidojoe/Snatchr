@@ -509,6 +509,15 @@ def cleanup_temp():
                 os.remove(p)
             except OSError:
                 pass
+        # Одноразовые копии кук (use_*.txt). В норме их стирает _del_cookie_copy
+        # сразу после запуска процесса, но если нас убили в этот момент — файл
+        # с куками остался бы лежать. Подчищаем на старте (single-instance
+        # гарантирует, что чужих активных копий нет).
+        for p in glob.glob(os.path.join(tmp, "use_*.txt")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
         # Фрагменты «скопировать в буфер»: в буфере лежит лишь ССЫЛКА на файл,
         # поэтому сразу удалять нельзя (сломается вставка). Убираем только старые
         # — свежие мог скопировать пользователь и ещё не вставить.
@@ -720,7 +729,7 @@ def is_supported_url(url):
     Кроме явного списка учитываем всё, что умеет Ember (Bluesky, Pinterest,
     Newgrounds, Tumblr …) — иначе Spotlight отклонял бы ссылку ещё до попытки
     скачать, хотя движок с ней справляется."""
-    u = (url or "").strip()
+    u = str(url or "").strip()
     if not (u.lower().startswith("http://") or u.lower().startswith("https://")):
         return False
     try:
@@ -737,7 +746,7 @@ def is_supported_url(url):
 
 
 def is_playlist_url(url):
-    u = (url or "").lower()
+    u = str(url or "").lower()
     if ("list=" in u) or ("/playlist" in u):
         return True
     # Наборы, которые умеет только Ember: сет SoundCloud, лента автора
@@ -776,7 +785,7 @@ def is_downloadable_single(text):
     сайта: без лишнего текста рядом, без плейлиста, без страницы канала/профиля.
     Для авто-триггеров (тост из буфера, Paste): не всплывать на скопированном
     тексте со ссылкой внутри и не запускать анализ целого канала/плейлиста."""
-    t = (text or "").strip()
+    t = str(text or "").strip()
     if not t or len(t.split()) != 1:        # рядом со ссылкой есть посторонний текст
         return False
     return (is_supported_url(t)
@@ -785,14 +794,27 @@ def is_downloadable_single(text):
 
 
 def slim_info(info):
-    """Урезанная info для кэша: только нужные поля + обложка + форматы."""
-    keep = ("title", "uploader", "channel", "duration", "thumbnail")
+    """Урезанная info для кэша: только нужные поля + обложка + форматы.
+
+    Метки движка (_ember*) сохраняем: без них разобранная Ember ссылка после
+    кэша осталась бы вообще без вариантов качества (у Ember нет yt-dlp-форматов).
+    `protocol` тоже нужен — по нему решается, HLS ли это.
+
+    URL форматов НЕ кэшируем сознательно: у HLS они подписаны и протухают,
+    поэтому для резки секции берётся свежая info (см. run_job)."""
+    info = info if isinstance(info, dict) else {}
+    keep = ("title", "uploader", "channel", "duration", "thumbnail",
+            "_ember", "_ember_heights", "_ember_kind", "height")
     out = {k: info.get(k) for k in keep if info.get(k) is not None}
     fmt_keys = ("format_id", "vcodec", "acodec", "height",
-                "tbr", "vbr", "abr", "dynamic_range", "ext")
+                "tbr", "vbr", "abr", "dynamic_range", "ext", "protocol")
     fmts = []
-    for f in info.get("formats", []):
-        fmts.append({k: f.get(k) for k in fmt_keys if f.get(k) is not None})
+    # formats может отсутствовать, быть None или мусором (часть экстракторов их
+    # не даёт) — кэширование не должно на этом падать.
+    raw = info.get("formats")
+    for f in (raw if isinstance(raw, (list, tuple)) else []):
+        if isinstance(f, dict):
+            fmts.append({k: f.get(k) for k in fmt_keys if f.get(k) is not None})
     out["formats"] = fmts
     return out
 
@@ -869,7 +891,8 @@ def _best_thumb(entry):
 
 def playlist_entries(info):
     """Список записей плейлиста: [{url, title, duration, thumbnail, uploader}]."""
-    if (info or {}).get("_ember"):
+    info = info if isinstance(info, dict) else {}
+    if info.get("_ember"):
         return list(info.get("entries") or [])   # Ember отдаёт уже в этом формате
     pl_uploader = info.get("uploader") or info.get("channel") or ""
     out = []
@@ -1030,9 +1053,26 @@ def _fmt_eta(secs):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def _height_of(option):
+    """Желаемая высота из опции селектора ('1080_H.264' -> 1080), иначе 0."""
+    o = option or {}
+    try:
+        if o.get("height"):
+            return int(o["height"])
+    except (TypeError, ValueError):
+        pass
+    key = str(o.get("key") or "")
+    if "_" in key:
+        head = key.split("_", 1)[0]
+        if head.isdigit():
+            return int(head)
+    return 0
+
+
 def _section_bounds(option):
     """(start, end) секции из option['section']='*a-b' (сек) или None."""
-    m = re.match(r"\*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)", (option or {}).get("section") or "")
+    m = re.match(r"\*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)",
+                 str((option or {}).get("section") or ""))
     if m:
         a, b = float(m.group(1)), float(m.group(2))
         if b > a:
@@ -1281,10 +1321,32 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     use_cookies = True
     ok, dest = False, ""
     ember_used = False
+    hls_used = False
+
+    # Секция из HLS-потока (Twitch VOD и т.п.): yt-dlp отдал бы её ffmpeg, а тот
+    # перебирает сегменты ОТ НАЧАЛА — на 8-часовом VOD это выглядит зависанием.
+    # Качаем только нужные сегменты сами. Не подошло — обычный путь ниже.
+    _sect0 = _section_bounds(option)
+    from core import hls_cut
+    if _sect0 and not hooks.is_stopped() and hls_cut.looks_hls_only(info):
+        _hinfo = info
+        # В кэше URL форматов нет (они протухают) — для резки нужна свежая info.
+        if not _hinfo or not any((f.get("url") or "")
+                                 for f in (_hinfo.get("formats") or [])):
+            try:
+                _hinfo = probe(url, cookies=cookie_args(settings, url), timeout=90)
+            except Exception:
+                _hinfo = info
+        _out = os.path.join(job_dir, (_sanitize_name(title) or "video") + ".mp4")
+        _got = hls_cut.cut(_hinfo, _sect0[0], _sect0[1], _out,
+                           height=_height_of(option), hooks=hooks, log=log)
+        if _got:
+            ok, dest, hls_used = True, _got, True
+            log.event("Section cut from HLS segments")
 
     # Twitter/X — Ember ОСНОВНОЙ движок (yt-dlp там регулярно не справляется).
     from core import ember_dl
-    if ember_dl.is_primary(url) and not hooks.is_stopped():
+    if not ok and ember_dl.is_primary(url) and not hooks.is_stopped():
         ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
         ember_used = ok
         if not ok:
@@ -1408,9 +1470,10 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             dest = out if (ok and os.path.exists(out)) else ""
 
     conv_failed = False
-    # Ember отдаёт готовый H.264/AAC — перекодировать нечего, конвертацию пропускаем.
+    # Ember и HLS-резак отдают готовый H.264/AAC — перекодировать нечего.
     if (ok and dest and not hooks.is_stopped() and not section_fallback
-            and not ember_used and should_convert(option, url, settings)):
+            and not ember_used and not hls_used
+            and should_convert(option, url, settings)):
         try:
             hooks.on_status(tr("Converting…"))
             log.event("Converting to editor-friendly mp4")

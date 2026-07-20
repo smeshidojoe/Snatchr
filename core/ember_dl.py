@@ -154,7 +154,7 @@ def is_collection(url):
     считаем только ленту автора либо явный сет в адресе."""
     if not HAVE or not url:
         return False
-    low = (url or "").lower()
+    low = str(url).lower()
     if supports_timeline(low):
         return True
     return "/sets/" in low and supports_playlist(low)
