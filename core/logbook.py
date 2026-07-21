@@ -39,13 +39,46 @@ class Log:
         return "\n".join(self._lines)
 
     def save_error(self):
-        """Сохраняет лог в %APPDATA%/Snatchr/logs; возвращает путь (или '')."""
+        """Сохраняет лог неудачи; возвращает путь (или '')."""
+        return self._save("error")
+
+    def save(self, kind="download"):
+        """Сохраняет лог УСПЕШНОЙ операции (её тоже полезно видеть постфактум:
+        какой движок сработал, был ли повтор, куда делось время)."""
+        return self._save(kind)
+
+    def _save(self, prefix):
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
             path = os.path.join(
-                LOG_DIR, "error-" + time.strftime("%Y%m%d-%H%M%S") + ".log")
+                LOG_DIR, "%s-%s.log" % (prefix, time.strftime("%Y%m%d-%H%M%S")))
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.text())
             return path
         except OSError:
             return ""
+
+
+# Сколько держим логи. Чистим при старте: папка не должна расти бесконечно,
+# а разбираться в проблеме обычно нужно по свежим следам.
+LOG_TTL = 3 * 24 * 3600
+
+
+def cleanup_logs(ttl=LOG_TTL):
+    """Удаляет логи старше ttl секунд. Возвращает, сколько удалено."""
+    removed = 0
+    try:
+        now = time.time()
+        for name in os.listdir(LOG_DIR):
+            if not name.endswith(".log"):
+                continue
+            p = os.path.join(LOG_DIR, name)
+            try:
+                if now - os.path.getmtime(p) > ttl:
+                    os.remove(p)
+                    removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed

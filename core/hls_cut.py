@@ -40,15 +40,39 @@ def _fmt_eta(secs):
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-# Сегментов за раз качаем немного: фрагменты короткие, а лишний параллелизм
-# только злит CDN.
-_MAX_SEGMENTS = 400
+
+class HlsCutError(Exception):
+    """Резка сорвалась УЖЕ ПОСЛЕ начала скачивания сегментов.
+
+    Отличается от «"" — не наш случай» тем, что откатываться на yt-dlp здесь
+    нельзя: на длинной HLS-секции он отдаёт обрезанный файл с неверной
+    длительностью, и пользователь считает загрузку успешной. Честная ошибка
+    лучше молча битого файла."""
+
+# Потолок на число сегментов в одном куске. У Twitch сегмент = 10 с, так что
+# 1200 штук ≈ 3.3 часа — с запасом на любую разумную вырезку.
+_MAX_SEGMENTS = 1200
 
 
-def _fetch(url, headers=None, timeout=30):
-    req = urllib.request.Request(url, headers=dict(headers or {"User-Agent": _UA}))
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+def _fetch(url, headers=None, timeout=30, retries=0):
+    """Скачивает URL целиком. retries — сколько раз повторить при сбое сети.
+
+    Сегменты обязательно качать с повторами: на часовом отрезке их сотни, и
+    единственная сетевая осечка иначе роняет всю работу — а дальше управление
+    уходило к yt-dlp, который на длинной секции отдавал обрезанный файл с
+    неверной длительностью."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers=dict(headers or {"User-Agent": _UA}))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except Exception as exc:
+            last = exc
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    raise last
 
 
 def hls_format(info, height=0):
@@ -298,7 +322,15 @@ def cut(info, start, end, out_path, height=0, hooks=None, log=None, timeout=30):
                 if hooks is not None and hooks.is_stopped():
                     _rm(raw)
                     return ""
-                chunk = _fetch(seg_url, headers, timeout)
+                # Сегмент 1440p60 весит десятки МБ — таймаут щедрее, чем на
+                # плейлист, плюс повторы на случай сетевой осечки.
+                try:
+                    chunk = _fetch(seg_url, headers, max(timeout, 120), retries=3)
+                except Exception as exc:
+                    _rm(raw)
+                    raise HlsCutError(
+                        "segment %d/%d failed: %s" % (got + 1, len(need),
+                                                      str(exc)[:120]))
                 out.write(chunk)
                 done_bytes += len(chunk)
                 got += 1
@@ -334,6 +366,8 @@ def cut(info, start, end, out_path, height=0, hooks=None, log=None, timeout=30):
             _rm(out_path)
             return ""
         return out_path
+    except HlsCutError:
+        raise                            # уже начали качать — наверх, без отката
     except Exception as exc:
         if log is not None:
             log.info("HLS cut failed: %s" % str(exc)[:200])

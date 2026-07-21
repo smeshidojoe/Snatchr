@@ -523,6 +523,9 @@ class Spotlight(QWidget):
         if pct is not None:
             p = dict(p)
             p["percent_str"] = pct       # процент в тексте — по той же шкале
+        # Полоса не откатывается назад: повтор внутри задания — это по-прежнему
+        # одна загрузка, а прыжок к нулю читается как «началось заново».
+        frac = max(frac, d.get("frac", 0.0))
         d["frac"] = frac
         if d["row"] is not None:
             d["row"].set_progress(frac, p)

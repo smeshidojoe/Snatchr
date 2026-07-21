@@ -1262,6 +1262,7 @@ def _run_thumbnail_job(url, settings, hooks, title):
     _rm_dir(job_dir)
     if final:
         log.event("Done")
+        log.save("thumbnail")
     return bool(final), final, log
 
 
@@ -1338,8 +1339,17 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             except Exception:
                 _hinfo = info
         _out = os.path.join(job_dir, (_sanitize_name(title) or "video") + ".mp4")
-        _got = hls_cut.cut(_hinfo, _sect0[0], _sect0[1], _out,
-                           height=_height_of(option), hooks=hooks, log=log)
+        try:
+            _got = hls_cut.cut(_hinfo, _sect0[0], _sect0[1], _out,
+                               height=_height_of(option), hooks=hooks, log=log)
+        except hls_cut.HlsCutError as exc:
+            # Сегменты уже качались и оборвались. Откатываться на yt-dlp нельзя:
+            # на длинной HLS-секции он отдаёт обрезанный файл с неверной
+            # длительностью, и загрузка выглядит успешной. Честно сообщаем.
+            log.event("Section download failed")
+            log.info("HLS cut aborted: %s" % str(exc)[:200])
+            _rm_dir(job_dir)
+            return False, "", log
         if _got:
             ok, dest, hls_used = True, _got, True
             log.event("Section cut from HLS segments")
@@ -1508,4 +1518,5 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         return False, final, log
     if ok:
         log.event("Done")
+        log.save()          # лог удачной операции тоже сохраняем (см. logbook)
     return ok, final, log

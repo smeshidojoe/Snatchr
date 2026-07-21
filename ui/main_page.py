@@ -1106,6 +1106,10 @@ class MainPage(WindowDragMixin, QWidget):
         if pct is not None:
             p = dict(p)
             p["percent_str"] = pct       # процент в тексте — по той же шкале
+        # Полоса не откатывается: повтор внутри задания (fast-path -> обычный
+        # заход, смена движка) начинает счёт с нуля, но для пользователя это
+        # одна загрузка — прыжок назад выглядит как «началось заново».
+        frac = max(frac, d.get("frac", 0.0))
         d["frac"] = frac
         if d["row"] is not None:
             d["row"].set_progress(frac, p)

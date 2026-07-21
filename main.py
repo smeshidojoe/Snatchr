@@ -77,6 +77,13 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Логи операций держим 3 дня — папка не должна расти бесконечно.
+    try:
+        from core import logbook
+        logbook.cleanup_logs()
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
     _set_app_identity(app)
     # Окно живёт в трее: не закрываем приложение, когда окно скрыто.
