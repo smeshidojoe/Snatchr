@@ -236,7 +236,7 @@ def video_formats(info, youtube=True, settings=None):
     """Best Quality + список разрешений по убыванию (см. спецификацию).
 
     YouTube: Best Quality = максимальное разрешение в VP9, плюс отдельная строка
-    «Best Compatibility (1080p)» (максимальное доступное разрешение с кодеком AVC).
+    «Best Compatibility (MP4)» (максимальное разрешение с кодеком AVC, т.е. лучший MP4).
     Прочие сайты: Best Quality = максимальное разрешение (любой кодек); строки
     разрешений показываем, только если они реально доступны. AV1 не показываем.
 
@@ -247,7 +247,7 @@ def video_formats(info, youtube=True, settings=None):
         options = [
             {"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT, "mp3": False,
              "key": "best"},
-            {"label": tr("Best Compatibility (1080p)"),
+            {"label": tr("Best Compatibility (MP4)"),
              "fmt": AVC_VIDEO_FMT, "mp3": False, "key": "compat"},
         ]
     else:
@@ -1051,6 +1051,48 @@ def _fmt_eta(secs):
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def option_media_hint(option, info):
+    """(height, fps) для ВЫБРАННОГО варианта — то, что реально скачается.
+
+    Нужна для пилюли в строке загрузки: раньше туда шли height/fps из общей
+    info, то есть максимум ролика, и при выборе «Best Compatibility» на 4K-видео
+    пилюля показывала 4K60, хотя качался 1080p. Неизвестно — (0, 0): пусть
+    пилюли не будет, чем неверная (после загрузки данные всё равно уточняются
+    по готовому файлу)."""
+    o = option or {}
+    info = info if isinstance(info, dict) else {}
+    if o.get("thumbnail") or o.get("mp3") or o.get("audio"):
+        return 0, 0
+
+    fmts = [f for f in (info.get("formats") or []) if isinstance(f, dict)]
+    vids = [f for f in fmts if f.get("height")
+            and f.get("vcodec") not in (None, "none")]
+
+    def _pick(cands):
+        if not cands:
+            return 0, 0
+        best = max(cands, key=lambda f: (f.get("height") or 0,
+                                         f.get("tbr") or f.get("vbr") or 0))
+        return int(best.get("height") or 0), int(round(best.get("fps") or 0))
+
+    key = str(o.get("key") or "")
+    if key == "compat":                       # лучший AVC (он же лучший MP4)
+        return _pick([f for f in vids
+                      if _codec_label(f.get("vcodec")) == "H.264"])
+    if key == "best" or not key:
+        return _pick([f for f in vids
+                      if _codec_label(f.get("vcodec")) != "AV1"])
+    if "_" in key:                            # строка разрешения: «1080_H.264»
+        head, codec = key.split("_", 1)
+        if head.isdigit():
+            h = int(head)
+            same = [f for f in vids if (f.get("height") or 0) == h
+                    and _codec_label(f.get("vcodec")) == codec]
+            return _pick(same or [f for f in vids if (f.get("height") or 0) == h]) \
+                if (same or any((f.get("height") or 0) == h for f in vids)) else (h, 0)
+    return 0, 0
 
 
 def _height_of(option):

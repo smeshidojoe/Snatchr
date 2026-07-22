@@ -104,7 +104,7 @@ _RU = {
     "To": "До",
     "Invalid time range": "Неверный интервал времени",
     "Best Quality": "Лучшее качество",
-    "Best Compatibility (1080p)": "Лучшая совместимость (1080p)",
+    "Best Compatibility (MP4)": "Лучшая совместимость (MP4)",
     "Thumbnail": "Обложка",
     "Paste video link here...": "Вставьте ссылку на видео...",
     "Paste video links (one per line)…": "Вставьте ссылки на видео (по одной в строке)…",

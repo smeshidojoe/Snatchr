@@ -112,7 +112,7 @@ class MainPage(WindowDragMixin, QWidget):
             return [{"label": tr("Best Quality"), "fmt": "ba/b", "mp3": True}]
         return [
             {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT, "mp3": False},
-            {"label": tr("Best Compatibility (1080p)"),
+            {"label": tr("Best Compatibility (MP4)"),
              "fmt": downloader.AVC_VIDEO_FMT, "mp3": False},
             {"label": tr("Thumbnail"), "thumbnail": True, "mp3": False},
         ]
@@ -434,6 +434,12 @@ class MainPage(WindowDragMixin, QWidget):
         if self._is_multi():
             return
         url = (self.url_edit.text() or "").strip()
+        # Эту ссылку уже разобрали и ждём Download — повторный анализ не нужен и
+        # ВРЕДЕН: он заново заполняет селектор и сбрасывает выбранный формат на
+        # «Best Quality» (пользователь выбрал Best Compatibility — а скачивалось
+        # 4K). Отложенный таймер мог сработать после выбора.
+        if url and url == self._analyzing_url and self._state == "ready":
+            return
         if not (url.startswith("http://") or url.startswith("https://")):
             # Невалидный ввод (например, ссылка без http) — сбрасываем устаревшее
             # состояние «ready», чтобы Download не остался активным.
@@ -1073,6 +1079,10 @@ class MainPage(WindowDragMixin, QWidget):
         # Аудио — пилюля разрешения не нужна (по переключателю Video/Audio).
         entry["is_audio"] = (self.seg_type.value() == "audio")
         entry["is_image"] = bool(option.get("thumbnail"))   # обложка — без анимации
+        # Пилюля должна показывать ВЫБРАННЫЙ вариант, а не максимум ролика
+        # (иначе на 4K-видео при «Best Compatibility» висело 4K60 вместо 1080p).
+        h, fps = downloader.option_media_hint(option, self._info)
+        entry["height"], entry["fps"] = h, fps
         row.start_downloading()
         dl_id = entry["id"]
         convert = bool(downloader.should_convert(option, url, self.settings))
