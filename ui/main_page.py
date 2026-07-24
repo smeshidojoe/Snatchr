@@ -99,11 +99,28 @@ class MainPage(WindowDragMixin, QWidget):
         self._set_state("idle")
         self.history.rebuild(history.load())      # показать накопленную историю
 
-    @staticmethod
-    def _default_option(mode):
+    def _default_option(self, mode):
+        """Формат «по умолчанию» — тот, что стоит ПЕРВЫМ в Format Priority.
+
+        Раньше здесь был жёстко «Best Quality», из-за чего настройка приоритета
+        игнорировалась в пустом селекторе (до разбора ссылки и после загрузки)."""
         if mode == "audio":
             return {"label": tr("Best Quality"), "fmt": "ba/b", "mp3": True}
-        return {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
+        from core import formats
+        hidden = formats.hidden(self.settings)
+        for key in formats.order(self.settings):
+            if key in hidden:
+                continue
+            if key == "best":
+                break
+            if key == "compat":
+                return {"label": tr("Best Compatibility (MP4)"),
+                        "fmt": downloader.AVC_VIDEO_FMT, "mp3": False,
+                        "key": "compat"}
+            # Строки разрешения без разобранной ссылки не построить — их
+            # пропускаем: «первым доступным» остаётся best/compat.
+        return {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT,
+                "mp3": False, "key": "best"}
 
     @staticmethod
     def _multi_options(mode):
@@ -1031,18 +1048,24 @@ class MainPage(WindowDragMixin, QWidget):
                   and cur == self._analyzing_url)
         self.btn_download.setEnabled(en)
 
-    def _reset_info(self):
+    def _reset_info(self, keep_format=False):
+        """Сброс состояния разбора. keep_format=True — оставить селектор как есть
+        (загрузка уже запущена, и он показывает выбранный формат)."""
         self._info = None
         self._active_worker = None
         self._remove_pending()             # проанализированная строка уезжает обратно
         self._clear_pl_header()            # убрать закреплённую шапку плейлиста
         self.lbl_msg.setText("")
         self.list.clear()
-        # Селектор форматов возвращаем в дефолт.
+        if keep_format:
+            return
+        # Селектор возвращаем в дефолт — первый по Format Priority (если там
+        # первой стоит «Best Compatibility», визуально ничего не сменится).
+        opt = self._default_option(self.seg_type.value())
         self.sel_format.clear()
-        self.sel_format.add_item(tr("Best Quality"))
-        self.sel_format.set_current(tr("Best Quality"))
-        self._selected = self._default_option(self.seg_type.value())
+        self.sel_format.add_item(opt["label"])
+        self.sel_format.set_current(opt["label"])
+        self._selected = opt
 
     # ------------------------------------------------------------------ #
     #  Скачивание
@@ -1100,6 +1123,9 @@ class MainPage(WindowDragMixin, QWidget):
         self.btn_cancel.hide()
         self._info = None
         self._analyzing_url = ""
+        # Загрузка запущена и живёт своей строкой — селектор возвращаем к дефолту
+        # (первый по Format Priority; если там «Best Compatibility» — визуально
+        # не изменится). Поле свободно, можно кидать следующую ссылку.
         self._reset_info()
         self._set_state("idle")
 

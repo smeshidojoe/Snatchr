@@ -731,13 +731,28 @@ class TrayIcon:
         if name:
             path = os.path.join(ICONS_DIR, name + ".png")
             if os.path.isfile(path):
-                if name in COLORED_ICONS:      # цветные (play) — не перекрашиваем
-                    pm = raw_pixmap(path, 64)
-                else:
-                    color = "#000000" if tools.windows_uses_light_theme() else "#ffffff"
-                    pm = tint_pixmap(path, color, 64)
+                pm = None
+                try:
+                    if name in COLORED_ICONS:  # цветные (play) — не перекрашиваем
+                        pm = raw_pixmap(path, 64)
+                    else:
+                        color = ("#000000" if tools.windows_uses_light_theme()
+                                 else "#ffffff")
+                        pm = tint_pixmap(path, color, 64)
+                except Exception:
+                    pm = None
                 if pm is not None and not pm.isNull():
                     return QIcon(pm)
+                # Перекраска сорвалась (разовый сбой рендера / не тот поток) —
+                # НЕ теряем выбранную иконку из-за этого: показываем её как есть,
+                # дефолт (play) только если файла реально нет.
+                try:
+                    raw = raw_pixmap(path, 64)
+                    if raw is not None and not raw.isNull():
+                        return QIcon(raw)
+                    return QIcon(path)
+                except Exception:
+                    return QIcon(path)
         return self._default_icon()
 
     def base_pixmap(self, size):
