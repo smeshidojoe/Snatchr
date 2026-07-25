@@ -14,12 +14,18 @@ import os
 import json
 import time
 import uuid
+import threading
 from urllib.parse import urlparse
 
 from core.config import APP_DIR
 from core import trimmer
 
 HISTORY_PATH = os.path.join(APP_DIR, "history.json")
+
+# Один замок на все read-modify-write истории: add() зовётся из главного потока,
+# а set_waveform() — из фонового воркера волны. Без сериализации воркер, начав
+# load() до новой записи и завершившись позже, затирал её своим save().
+_LOCK = threading.RLock()
 THUMBS_DIR = os.path.join(APP_DIR, "thumbnails")
 WAVEFORMS_DIR = os.path.join(APP_DIR, "waveforms")   # заготовки волн (аудио)
 
@@ -34,15 +40,16 @@ def waveform_path(entry_id):
 
 def set_waveform(entry_id, path):
     """Записывает путь готовой заготовки волны в запись истории."""
-    items = load()
-    changed = False
-    for it in items:
-        if it.get("id") == entry_id:
-            it["waveform"] = path or ""
-            changed = True
-            break
-    if changed:
-        _save(items)
+    with _LOCK:
+        items = load()
+        changed = False
+        for it in items:
+            if it.get("id") == entry_id:
+                it["waveform"] = path or ""
+                changed = True
+                break
+        if changed:
+            _save(items)
 
 # Человекочитаемое имя площадки по хосту ссылки (подпись под URL в списке).
 _HOST_NAMES = {
@@ -84,10 +91,16 @@ def load():
 
 
 def _save(items):
+    # Пишем во временный файл и подменяем атомарно: краш на середине записи
+    # иначе оставил бы битый json -> load() вернул бы [] и вся история пропала.
     try:
         os.makedirs(APP_DIR, exist_ok=True)
-        with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+        tmp = HISTORY_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(items, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, HISTORY_PATH)
     except OSError:
         pass
 
@@ -163,14 +176,15 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
         "waveform": "",              # заготовка волны (генерится в фоне для аудио)
         "ts": int(time.time()),
     }
-    items = load()
-    items.insert(0, entry)
-    # Подрезаем хвост, удаляя обложки/волны выпавших записей.
-    for old in items[MAX_ITEMS:]:
-        _remove_thumb(old.get("thumb"))
-        _remove_waveform(old.get("waveform"))
-    items = items[:MAX_ITEMS]
-    _save(items)
+    with _LOCK:
+        items = load()
+        items.insert(0, entry)
+        # Подрезаем хвост, удаляя обложки/волны выпавших записей.
+        for old in items[MAX_ITEMS:]:
+            _remove_thumb(old.get("thumb"))
+            _remove_waveform(old.get("waveform"))
+        items = items[:MAX_ITEMS]
+        _save(items)
     return entry
 
 
@@ -192,32 +206,37 @@ def _remove_thumb(thumb):
 
 def remove(entry_id):
     """Удаляет запись (и её обложку) из истории."""
-    items = load()
-    kept = []
-    for it in items:
-        if it.get("id") == entry_id:
-            _remove_thumb(it.get("thumb"))
-            _remove_waveform(it.get("waveform"))
-        else:
-            kept.append(it)
-    _save(kept)
-    return kept
+    with _LOCK:
+        items = load()
+        kept = []
+        for it in items:
+            if it.get("id") == entry_id:
+                _remove_thumb(it.get("thumb"))
+                _remove_waveform(it.get("waveform"))
+            else:
+                kept.append(it)
+        _save(kept)
+        return kept
 
 
 def file_gone(path):
-    """Файл ДЕЙСТВИТЕЛЬНО удалён? True только если файла нет, НО его папка
-    доступна. Если недоступна сама папка (диск/сеть/OneDrive не смонтированы,
-    нестандартный CWD сразу после самообновления) — файл просто временно
-    недоступен: возвращаем False, чтобы не стереть историю по разовому сбою."""
+    """Файл ДЕЙСТВИТЕЛЬНО удалён? True — файла нет, а его ДИСК доступен.
+
+    Раньше проверяли непосредственную папку файла, из-за чего удаление ЦЕЛОЙ
+    папки с видео (а не отдельных файлов) не отсеивалось: папки нет -> считали
+    это временным сбоем. Теперь ориентир — корень пути (диск): смонтирован ->
+    файла нет -> реально удалён, каким бы способом. Диск недоступен (съёмный
+    отключён, сеть/OneDrive не поднялись) — запись НЕ трогаем."""
     if not path:
         return True
     try:
         if os.path.isfile(path):
             return False
-        parent = os.path.dirname(path) or "."
-        if not os.path.isdir(parent):
-            return False           # папки нет/недоступна — запись НЕ трогаем
-        return True                # папка есть, а файла нет — реально удалён
+        drive = os.path.splitdrive(os.path.abspath(path))[0]
+        root = (drive + os.sep) if drive else os.sep
+        if not os.path.isdir(root):
+            return False           # диск недоступен — запись НЕ трогаем
+        return True                # диск есть, а файла нет — реально удалён
     except OSError:
         return False
 
@@ -226,16 +245,17 @@ def prune_missing():
     """Убирает записи, чей файл реально удалён с диска (+ их обложки). Временную
     недоступность папки (см. file_gone) НЕ считаем удалением, поэтому разовый сбой
     доступа больше не затирает историю. Возвращает актуальный список."""
-    items = load()
-    kept, dropped = [], []
-    for it in items:
-        if file_gone(it.get("path")):
-            dropped.append(it)
-        else:
-            kept.append(it)
-    if dropped:
-        for it in dropped:
-            _remove_thumb(it.get("thumb"))
-            _remove_waveform(it.get("waveform"))
-        _save(kept)
-    return kept
+    with _LOCK:
+        items = load()
+        kept, dropped = [], []
+        for it in items:
+            if file_gone(it.get("path")):
+                dropped.append(it)
+            else:
+                kept.append(it)
+        if dropped:
+            for it in dropped:
+                _remove_thumb(it.get("thumb"))
+                _remove_waveform(it.get("waveform"))
+            _save(kept)
+        return kept

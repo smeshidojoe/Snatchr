@@ -977,6 +977,16 @@ class HistoryList(QWidget):
                 return True
         return False
 
+    def remove_by_id(self, entry_id):
+        """Мгновенно (визуально) убирает строку с данным id, если она есть.
+        True — нашли и убрали. Тяжёлую очистку файлов/JSON вызывающий делает
+        отдельно/в фоне, чтобы удаление ощущалось моментальным."""
+        for r in list(self._rows):
+            if r.entry.get("id") == entry_id:
+                self.remove_row(r)
+                return True
+        return False
+
     def remove_row(self, row):
         """Плавно убирает строку (напр., отменённая загрузка) и подтягивает
         остальные вверх."""

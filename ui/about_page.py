@@ -1,18 +1,84 @@
+import os
 import threading
 import webbrowser
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics, QImage, QPixmap
+from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtGui import (QFontMetrics, QImage, QPixmap, QPainter, QColor, QPen)
 from PySide6.QtWidgets import QWidget, QLabel
 
 from PIL import Image, ImageDraw
 
-from core.constants import APP_NAME, APP_VERSION, PROFILE_IMG, DEVELOPER_URL
+from core.constants import (APP_NAME, APP_VERSION, PROFILE_IMG, DEVELOPER_URL,
+                            DONATE_BUTTONS, ICONS_DIR)
 from core import updater
 from core import fonts
 from core import themes
 from core.i18n import tr
 from ui.widgets import LinkButton, ClickableLabel, WindowDragMixin
+
+
+class DonateButton(QWidget):
+    """Кнопка поддержки: скруглённая, фирменный цвет фона, текст (+ опц. иконка
+    из assets/icons/<name>.png). Клик открывает url (пустой url — no-op)."""
+
+    def __init__(self, app, label, bg, fg, url, icon_name, parent=None):
+        super().__init__(parent)
+        self.app = app
+        self._label = label
+        self._bg = QColor(bg)
+        self._fg = QColor(fg)
+        self._url = url or ""
+        self._hover = False
+        s = app._s
+        self._font = fonts.font(s(12), "Semibold")
+        # Иконка (если PNG есть) — иначе только текст.
+        self._icon = None
+        path = os.path.join(ICONS_DIR, (icon_name or "") + ".png")
+        if icon_name and os.path.isfile(path):
+            pm = QPixmap(path)
+            if not pm.isNull():
+                self._icon = pm.scaledToHeight(s(18), Qt.SmoothTransformation)
+        # Белую кнопку (CloudTips) обводим — иначе сливается с фоном окна.
+        self._border = QColor("#d8dee8") if bg.lower() == "#ffffff" else None
+        self.setCursor(Qt.PointingHandCursor)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if (e.button() == Qt.LeftButton and self._url
+                and self.rect().contains(e.position().toPoint())):
+            webbrowser.open(self._url)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        s = self.app._s
+        w, h = self.width(), self.height()
+        bg = self._bg.lighter(108) if self._hover else self._bg
+        p.setPen(QPen(self._border, 1) if self._border else Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), h / 2.0, h / 2.0)
+        # Текст (+ иконка) по центру.
+        fm = QFontMetrics(self._font)
+        tw = fm.horizontalAdvance(self._label)
+        gap = s(8) if self._icon else 0
+        iw = self._icon.width() if self._icon else 0
+        x = (w - (iw + gap + tw)) / 2.0
+        if self._icon:
+            p.drawPixmap(int(x), int((h - self._icon.height()) / 2),
+                         self._icon)
+            x += iw + gap
+        p.setFont(self._font)
+        p.setPen(self._fg)
+        p.drawText(QRectF(x, 0, tw + s(4), h), Qt.AlignLeft | Qt.AlignVCenter,
+                   self._label)
+        p.end()
 
 
 class AboutPage(WindowDragMixin, QWidget):
@@ -106,9 +172,22 @@ class AboutPage(WindowDragMixin, QWidget):
         self.update_status = self._center_label("", fonts.font(s(12), "Regular"),
                                                 self.MUTED_COLOR, st_y)
 
-        # 5. «2026 Developed by …» — внизу (почта убрана).
-        developed_y = self.height_ - s(32)
+        # 5. Кнопки поддержки — по одной на строку, по центру.
+        self._build_donate_buttons(cx, st_y + s(30))
+
+        # 6. «2026 Developed by …» — внизу (почта убрана).
+        developed_y = self.height_ - s(30)
         self._build_developed_line(cx, developed_y)
+
+    # ------------------------------------------------------------------ #
+    def _build_donate_buttons(self, cx, y):
+        s = self.app._s
+        bw, bh, gap = s(210), s(38), s(10)
+        for key, label, bg, fg, url, icon in DONATE_BUTTONS:
+            btn = DonateButton(self.app, tr(label), bg, fg, url, icon, self)
+            btn.setGeometry(cx - bw // 2, y, bw, bh)
+            y += bh + gap
+        self._donate_bottom = y - gap       # низ последней кнопки
 
     # ------------------------------------------------------------------ #
     def _build_developed_line(self, cx, y):

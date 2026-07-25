@@ -17,6 +17,7 @@ class BottomBar(QWidget):
         self.app = app
         self.settings = settings
         self._mode = "main"
+        self._mode_anim = False        # идёт анимация перехода main<->settings
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self._load_icons()
@@ -35,6 +36,9 @@ class BottomBar(QWidget):
         self.ic_back_h     = themed_icon(theme, "back-black.png", self._icon_hover, gz)
         self.ic_folder     = themed_icon(theme, "folder.png",     self._icon, fz)
         self.ic_folder_h   = themed_icon(theme, "folder.png",     self._icon_hover, fz)
+        iz = self.app._s(22)
+        self.ic_about      = themed_icon(theme, "info.png",       self._icon, iz)
+        self.ic_about_h    = themed_icon(theme, "info.png",       self._icon_hover, iz)
 
     def _build(self):
         s = self.app._s
@@ -45,80 +49,214 @@ class BottomBar(QWidget):
         )
         self.btn_settings.resize(s(32), s(32))
 
+        # Оригинальная центральная папка — оставлена, но СКРЫТА: держит старое
+        # положение на случай, если раскладку захочется вернуть. Рабочая — копия
+        # btn_folder2 в новой раскладке (между settings и about).
         self.btn_folder = IconButton(
             self.app, self.ic_folder, self.ic_folder_h,
             s(24), self._open_folder
         )
         self.btn_folder.resize(s(32), s(32))
 
+        self.btn_folder2 = IconButton(
+            self.app, self.ic_folder, self.ic_folder_h,
+            s(24), self._open_folder
+        )
+        self.btn_folder2.resize(s(32), s(32))
+
+        self.btn_about = IconButton(
+            self.app, self.ic_about, self.ic_about_h,
+            s(18), self._open_about
+        )
+        self.btn_about.resize(s(28), s(28))
+
         self.btn_exit = LinkButton(self.app, tr("Exit"), fonts.font(s(11), "Regular"),
                                    self._icon, self._icon_hover, self._exit_app)
         self.btn_exit.resize(s(48), s(32))
 
-        # Кнопки привязаны к окну: если оно уже видимо (пересоздание панели при
-        # смене темы/языка), новые виджеты надо показать явно — иначе панель
-        # окажется пустой. set_page_mode дальше сам скроет лишние кнопки.
-        for b in (self.btn_settings, self.btn_folder, self.btn_exit):
+        # Кнопки привязаны к окну: при пересоздании панели (смена темы/языка)
+        # новые виджеты надо показать явно — set_page_mode дальше скроет лишние.
+        for b in (self.btn_settings, self.btn_folder2, self.btn_about, self.btn_exit):
             b.show()
+        self.btn_folder.hide()          # оригинал спрятан (см. выше)
 
     def teardown(self):
         """Удаляет кнопки панели (они привязаны к окну, а не к самой панели,
         поэтому при пересоздании панели их нужно убрать вручную)."""
-        for w in (self.btn_settings, self.btn_folder, self.btn_exit):
+        for w in (self.btn_settings, self.btn_folder, self.btn_folder2,
+                  self.btn_about, self.btn_exit):
             w.setParent(None)
             w.deleteLater()
 
     def _on_left(self):
         self.app.on_left_button()
 
-    def reposition(self):
-        """Пересчитать позиции кнопок (после смены высоты окна)."""
+    def _open_about(self):
+        self.app.open_about()
+
+    # --- геометрия ------------------------------------------------------ #
+    def _bar_y_at(self, h):
+        return h - self.app._s(48)
+
+    def _btn_y_at(self, h):
+        return self._bar_y_at(h) + self.app._s(8)
+
+    def _about_y_at(self, h):
+        return self._bar_y_at(h) + (self.app._s(48) - self.btn_about.height()) // 2
+
+    def _bar_y(self):
+        return self._bar_y_at(self.app.WIN_H)
+
+    def _btn_y(self):
+        return self._btn_y_at(self.app.WIN_H)
+
+    def _folder2_x(self, page):
+        """X папки: в настройках — центр (место скрытого оригинала), иначе —
+        своя позиция в ряду main."""
         s = self.app._s
-        bar_y = self.app.WIN_H - s(48)
-        self.setGeometry(0, bar_y, self.app.WIN_W, s(48))
+        if page == "settings":
+            return self.app.WIN_W // 2 - s(16)
+        left_c = s(12) + s(16)
+        right_c = (self.app.WIN_W - s(60)) + s(24)
+        step = (right_c - left_c) / 3.0
+        return int(left_c + step - self.btn_folder2.width() / 2)
 
-        btn_y = bar_y + s(8)
+    def _about_x(self):
+        s = self.app._s
+        left_c = s(12) + s(16)
+        right_c = (self.app.WIN_W - s(60)) + s(24)
+        step = (right_c - left_c) / 3.0
+        return int(left_c + 2 * step - self.btn_about.width() / 2)
+
+    def _about_y(self):
+        return self._about_y_at(self.app.WIN_H)
+
+    def reposition(self):
+        """Начальная раскладка (и после resize) — без анимации, по текущему mode.
+        settings и exit на прежних местах, folder2 в ряду (или в центре в
+        настройках), about виден только на главной."""
+        s = self.app._s
+        self.setGeometry(0, self._bar_y(), self.app.WIN_W, s(48))
+        btn_y = self._btn_y()
         self.btn_settings.move(s(12), btn_y)
-        self.btn_folder.move(self.app.WIN_W // 2 - s(16), btn_y)
         self.btn_exit.move(self.app.WIN_W - s(60), btn_y)
-
+        self.btn_folder.move(self.app.WIN_W // 2 - s(16), btn_y)   # старый центр (скрыт)
+        # Во время перехода main<->settings folder2/about ведут собственные
+        # анимации (X + динамический Y) — их здесь не трогаем, иначе перебьём.
+        # settings/exit/folder(скрыт) уже сдвинуты по Y выше — этого достаточно.
+        if self._mode_anim:
+            self.btn_settings.raise_()
+            return
+        self.btn_folder2.move(self._folder2_x(self._mode), btn_y)
+        self.btn_about.move(self._about_x(), self._about_y())
+        self.btn_about.setVisible(self._mode == "main")
+        self.btn_folder2.setVisible(self._mode != "about")
+        self.btn_exit.setVisible(self._mode != "about")
         self.btn_settings.raise_()
         if self._mode != "about":
-            self.btn_folder.raise_()
+            self.btn_folder2.raise_()
+            self.btn_about.raise_()
             self.btn_exit.raise_()
 
-    def set_page_mode(self, page):
+    def set_page_mode(self, page, target_h=None):
         """
-        main     — шестерёнка + папка + Exit
-        settings — стрелка назад + папка + Exit
+        main     — шестерёнка + папка(в ряду) + about + Exit
+        settings — стрелка + папка(едет в центр) + Exit (about уезжает вниз)
         about    — только стрелка назад
-        """
-        self._mode = page
-        # Шестерёнка/стрелка переключаются мгновенно (без фейда).
-        if page == "main":
-            self.btn_settings.set_icons(self.ic_settings, self.ic_settings_h)
-        else:
-            self.btn_settings.set_icons(self.ic_back, self.ic_back_h)
 
-        # Папка и Exit — с фейдом (когда окно видимо).
-        self._set_aux_visible(page != "about")
+        target_h — целевая высота окна (окно анимируется параллельно). Нужна,
+        чтобы папка/about ехали к ФИНАЛЬНОМУ Y по прямой (одна OutCubic с окном),
+        а не ломаной траекторией из-за динамического Y во время роста окна.
+        """
+        prev, self._mode = self._mode, page
+        self.btn_settings.set_icons(*(
+            (self.ic_settings, self.ic_settings_h) if page == "main"
+            else (self.ic_back, self.ic_back_h)))
+        animate = self.app.isVisible() and {prev, page} <= {"main", "settings"}
+        h = target_h if target_h is not None else self.app.WIN_H
+
+        if page == "about":
+            self._mode_anim = False
+            self._set_visible(self.btn_folder2, False)
+            self._set_visible(self.btn_about, False)
+            self._set_visible(self.btn_exit, False)
+        else:
+            if animate:
+                self._mode_anim = True
+            self._set_visible(self.btn_exit, True)
+            # Папка едет между рядной позицией (main) и центром (settings),
+            # по прямой к финальному Y (той же OutCubic/длительностью, что окно).
+            self._move_to(self.btn_folder2, self._folder2_x(page),
+                          self._btn_y_at(h), animate, on_done=self._end_mode_anim)
+            self._set_visible(self.btn_folder2, True)
+            # About есть только на главной: уезжает вниз+гаснет при уходе в настройки.
+            self._about_transition(page == "main", animate, h)
         self.btn_settings.raise_()
 
-    def _set_aux_visible(self, visible):
-        animate = self.app.isVisible()
-        for btn in (self.btn_folder, self.btn_exit):
-            if visible:
-                if not btn.isVisible():
-                    btn.show()
-                    btn.raise_()
-                    if animate:
-                        anim.fade(btn, 0.0, 1.0, 180)
+    def _end_mode_anim(self):
+        self._mode_anim = False
+        self.reposition()
+
+    def _about_transition(self, show, animate, target_h):
+        """About появляется/уходит: slide по вертикали (16px) + fade к финальному
+        Y (при целевой высоте окна). Резкий старт — плавный конец (OutCubic)."""
+        b = self.btn_about
+        off = self.app._s(16)
+        base_y = self._about_y_at(target_h)
+        if show:
+            b.move(self._about_x(), base_y + (off if animate else 0))
+            b.setVisible(True)
+            b.raise_()
+            if animate:
+                # t: 1->0 — приезжает снизу вверх, проявляясь.
+                anim.animate(b, 1.0, 0.0, anim.WIN_RESIZE_MS,
+                             lambda t: b.move(self._about_x(),
+                                              int(base_y + off * t)),
+                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim")
+                anim.fade(b, 0.0, 1.0, anim.WIN_RESIZE_MS)
+        else:
+            if not b.isVisible():
+                return
+            if animate:
+                # t: 0->1 — уезжает вниз, гаснет.
+                sy = b.y()
+                anim.animate(b, 0.0, 1.0, anim.WIN_RESIZE_MS,
+                             lambda t: b.move(self._about_x(),
+                                              int(sy + off * t)),
+                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim")
+                anim.fade(b, 1.0, 0.0, anim.PAGE_FADE_OUT_MS, on_finished=b.hide)
             else:
-                if btn.isVisible():
-                    if animate:
-                        anim.fade(btn, 1.0, 0.0, 160, on_finished=btn.hide)
-                    else:
-                        btn.hide()
+                b.hide()
+
+    def _set_visible(self, btn, visible, animate=None):
+        if animate is None:
+            animate = self.app.isVisible()
+        if visible:
+            if not btn.isVisible():
+                btn.show()
+                btn.raise_()
+                if animate:
+                    anim.fade(btn, 0.0, 1.0, 180)
+        elif btn.isVisible():
+            if animate:
+                anim.fade(btn, 1.0, 0.0, 160, on_finished=btn.hide)
+            else:
+                btn.hide()
+
+    def _move_to(self, btn, tx, ty, animate, on_done=None):
+        """Плавно двигает кнопку по прямой к (tx, ty). Длительность/кривая
+        совпадают с анимацией окна (anim.WIN_RESIZE_*) — синхронная диагональ."""
+        if not animate:
+            btn.move(tx, ty)
+            if on_done:
+                on_done()
+            return
+        sx, sy = btn.x(), btn.y()
+        anim.animate(btn, 0.0, 1.0, anim.WIN_RESIZE_MS,
+                     lambda t: btn.move(int(sx + (tx - sx) * t),
+                                        int(sy + (ty - sy) * t)),
+                     easing=anim.WIN_RESIZE_EASING,
+                     on_finished=on_done, attr="_bar_move_anim")
 
     def _open_folder(self):
         path = self.settings.get("download_path", "")

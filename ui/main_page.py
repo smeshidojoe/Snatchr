@@ -1290,8 +1290,7 @@ class MainPage(WindowDragMixin, QWidget):
         self._more_menu.popup_at(gpos)
 
     def _remove_entry(self, entry):
-        history.remove(entry.get("id", ""))
-        self.app.refresh_histories()
+        self.app.remove_history_entry(entry.get("id", ""))
 
     def _delete_entry(self, entry):
         if self.app.delete_file(entry):

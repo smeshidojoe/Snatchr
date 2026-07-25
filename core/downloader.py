@@ -51,6 +51,27 @@ def file_cookie_args(settings):
     return ["--cookies", f] if f and os.path.isfile(f) else []
 
 
+# Значения селектора «Download Speed Limit» (МБ/с). 0 = без лимита.
+SPEED_LIMITS_MBPS = (0, 1, 3, 5, 7, 10, 15, 30, 50)
+
+_MB = 1024 * 1024
+
+
+def limit_rate_bytes(settings):
+    """Лимит скорости из настроек в байт/с (0 = без ограничения). МБ/с -> байт."""
+    try:
+        mbps = int((settings or {}).get("speed_limit_mbps") or 0)
+    except (TypeError, ValueError):
+        mbps = 0
+    return mbps * _MB if mbps > 0 else 0
+
+
+def limit_rate_args(settings):
+    """--limit-rate из настроек (МБ/с -> байт/с). 0/пусто -> [] (без лимита)."""
+    b = limit_rate_bytes(settings)
+    return ["--limit-rate", str(b)] if b else []
+
+
 def browser_cookie_args(settings):
     """--cookies-from-browser <browser> (выбранный в настройках или авто) или []."""
     b = (settings or {}).get("cookies_browser") or "auto"
@@ -450,6 +471,7 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
         f"%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
         f"%(progress.total_bytes_estimate)s",
     ]
+    args += limit_rate_args(settings)   # ограничение скорости из настроек
     if not info_json:                   # с готовой info извлечения нет — PO не нужен
         args += tools.pot_ytdlp_args(url)   # PO-токен провайдер (только YouTube)
     if impersonate:
@@ -698,7 +720,7 @@ def is_auth_error(text):
 
 def friendly_error(text, default=None):
     """Человекочитаемое (и локализованное) объяснение ошибки по выводу утилит."""
-    low = (text or "").lower()
+    low = str(text or "").lower()
     for needle, msg in _ERROR_MAP:
         if needle in low:
             return tr(msg)
@@ -707,7 +729,7 @@ def friendly_error(text, default=None):
 
 # ------------------------------------------------------------------ #
 def is_youtube(url):
-    u = (url or "").lower()
+    u = str(url or "").lower()
     return "youtube.com" in u or "youtu.be" in u
 
 
@@ -1383,7 +1405,8 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         _out = os.path.join(job_dir, (_sanitize_name(title) or "video") + ".mp4")
         try:
             _got = hls_cut.cut(_hinfo, _sect0[0], _sect0[1], _out,
-                               height=_height_of(option), hooks=hooks, log=log)
+                               height=_height_of(option), hooks=hooks, log=log,
+                               limit_bps=limit_rate_bytes(settings))
         except hls_cut.HlsCutError as exc:
             # Сегменты уже качались и оборвались. Откатываться на yt-dlp нельзя:
             # на длинной HLS-секции он отдаёт обрезанный файл с неверной

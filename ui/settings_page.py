@@ -279,6 +279,9 @@ class SettingsPage(WindowDragMixin, QWidget):
         y += self._build_autopaste_block(pad, y, card_w) + s(14)
         # Одновременных загрузок (1..3).
         self._build_parallel_row(pad, y, card_w)
+        y += s(34) + s(8)
+        # Лимит скорости загрузки (Мбит/с; «Unlimited» = без ограничения).
+        self._build_speed_limit_row(pad, y, card_w)
         y += s(34) + s(16)
         self._divider(pad, y, card_w)         # разделитель после Parallel Downloads
         y += s(16)
@@ -476,6 +479,21 @@ class SettingsPage(WindowDragMixin, QWidget):
         cur = str(self.settings.get("parallel_downloads", 2))
         self._build_select_row(tr("Parallel Downloads"), x, y, ["1", "2", "3"],
                                cur, lambda v: self.app.set_parallel_downloads(int(v)))
+
+    def _speed_label(self, mbps):
+        return tr("Unlimited") if not mbps else "%d MB/s" % mbps
+
+    def _build_speed_limit_row(self, x, y, card_w):
+        from core.downloader import SPEED_LIMITS_MBPS
+        self._speed_by_label = {self._speed_label(m): m for m in SPEED_LIMITS_MBPS}
+        values = [self._speed_label(m) for m in SPEED_LIMITS_MBPS]
+        cur = self._speed_label(int(self.settings.get("speed_limit_mbps", 0) or 0))
+        self._build_select_row(tr("Download Speed Limit"), x, y, values, cur,
+                               self._on_speed_limit_change)
+
+    def _on_speed_limit_change(self, label):
+        self.settings["speed_limit_mbps"] = self._speed_by_label.get(label, 0)
+        self.app.save_settings()
 
     def _build_autostart_checkbox(self, x, y, card_w):
         s = self.app._s

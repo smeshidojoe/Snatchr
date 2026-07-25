@@ -285,7 +285,8 @@ def _stream_ffmpeg(args, total, hooks):
     return proc.wait()
 
 
-def cut(info, start, end, out_path, height=0, hooks=None, log=None, timeout=30):
+def cut(info, start, end, out_path, height=0, hooks=None, log=None, timeout=30,
+        limit_bps=0):
     """Скачивает только сегменты, покрывающие [start, end], и точно вырезает.
 
     Возвращает путь к готовому файлу или "" — тогда вызывающий идёт обычным
@@ -334,6 +335,13 @@ def cut(info, start, end, out_path, height=0, hooks=None, log=None, timeout=30):
                 out.write(chunk)
                 done_bytes += len(chunk)
                 got += 1
+                # Лимит скорости: держим среднюю не выше limit_bps, досыпая
+                # паузой, если скачали быстрее, чем «положено» ко времени.
+                if limit_bps > 0:
+                    target = done_bytes / float(limit_bps)   # сколько должно пройти
+                    ahead = target - (time.time() - started)
+                    if ahead > 0:
+                        time.sleep(min(ahead, 5.0))
                 if hooks is not None and getattr(hooks, "on_progress", None):
                     frac = got / float(len(need))
                     # Скорость меряем сами (сегменты качаем мы, а не yt-dlp), а

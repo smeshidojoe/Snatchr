@@ -7,6 +7,18 @@ from PySide6.QtCore import QPropertyAnimation, QVariantAnimation, QEasingCurve
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 
+# --- общие тайминги/кривые (единый источник для синхронных анимаций) ------ #
+# Смена размера окна: плавно на старте И финише (InOutCubic). Нижняя панель
+# (папка/about) синхронизируется этими же значениями — иначе диагональ ломается.
+WIN_RESIZE_MS = 340
+WIN_RESIZE_EASING = QEasingCurve.InOutCubic
+
+# Кросс-фейд между вкладками (уходящая чуть быстрее — лёгкий перехлёст).
+PAGE_FADE_OUT_MS = 240
+PAGE_FADE_IN_MS = 300
+PAGE_FADE_EASING = QEasingCurve.InOutCubic
+
+
 def fade(widget, start, end, duration=200,
          easing=QEasingCurve.InOutQuad, on_finished=None):
     """Плавное изменение прозрачности виджета через QGraphicsOpacityEffect."""

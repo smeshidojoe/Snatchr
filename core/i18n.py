@@ -41,6 +41,8 @@ _RU = {
     "Copy downloaded file to clipboard": "Копировать скачанный файл в буфер",
     "Launch at startup": "Запускать при старте системы",
     "Parallel Downloads": "Одновременных загрузок",
+    "Download Speed Limit": "Лимит скорости загрузки",
+    "Unlimited": "Без лимита",
     "Reset Settings": "Сбросить настройки",
     "Open Logs Folder": "Открыть папку логов",
     "Paste link on open": "Вставлять ссылку при открытии",
@@ -88,6 +90,7 @@ _RU = {
     "Click the tray icon to open the main window.":
         "Нажмите на иконку в трее, чтобы открыть окно программы.",
     "OK": "OK",
+    "Buy me a coffee": "Купить мне кофе",
     "Menu Bar Icon": "Иконка в трее",
     "Theme": "Тема",
     "Language": "Язык",

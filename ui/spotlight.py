@@ -724,7 +724,7 @@ class Spotlight(QWidget):
         self._fit_for_extra(target + self.GAP)
         anim.animate(self, 0.0, 1.0, 560,
                      lambda v: self._set_trim_h(int(target * v)),
-                     easing=QEasingCurve.InOutCubic,
+                     easing=QEasingCurve.OutCubic,
                      on_finished=self.trim.end_anim, attr="_trim_anim")
 
     def _load_trim(self, path, waveform=None):
@@ -758,7 +758,7 @@ class Spotlight(QWidget):
             self._relayout()
         anim.animate(self, 1.0, 0.0, 500,
                      lambda v: self._set_trim_h(int(start * v)),
-                     easing=QEasingCurve.InOutCubic, on_finished=done, attr="_trim_anim")
+                     easing=QEasingCurve.OutCubic, on_finished=done, attr="_trim_anim")
 
     def _fit_for_extra(self, extra):
         screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
@@ -920,8 +920,7 @@ class Spotlight(QWidget):
         QTimer.singleShot(400, lambda: setattr(self, "_suppress_hide", False))
 
     def _remove_entry(self, entry):
-        history.remove(entry.get("id", ""))
-        self.app.refresh_histories()         # отразить в окне и Spotlight
+        self.app.remove_history_entry(entry.get("id", ""))   # мгновенно + фон
 
     def _delete_entry(self, entry):
         if self.app.delete_file(entry):      # файл с диска + запись из истории

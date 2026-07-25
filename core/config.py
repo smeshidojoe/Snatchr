@@ -37,6 +37,7 @@ def defaults():
         "toast_copy_file":   True,        # копировать скачанный файл в буфер (Toast)
         "autostart":         False,       # запускать Snatchr при старте Windows
         "parallel_downloads": 2,          # одновременных загрузок (1..3)
+        "speed_limit_mbps": 0,            # лимит скорости, МБ/с (0 = без лимита)
         "autopaste":         False,       # вставлять ссылку из буфера при открытии окна
         "trim_volume":       0.8,         # громкость превью в панели обрезки (0..1)
         "format_order":      [],          # порядок строк селектора (пусто => по умолчанию)

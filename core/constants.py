@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.3"
 
 # Репозиторий для проверки обновлений (релизы на GitHub).
 # TODO: указать реальный "owner/repo".
@@ -10,6 +10,24 @@ GITHUB_REPO = "SmeshidoJoe/Snatchr"
 
 # Ссылка, открывающаяся по клику на «SmeshidoJoe» в окне About.
 DEVELOPER_URL = "https://github.com/SmeshidoJoe"
+
+# Кнопки поддержки в окне About. Ссылки — заглушки, заполнить реальными.
+# (URL пуст -> кнопка не открывает ничего; заполнишь позже.)
+KOFI_URL           = ""
+BOOSTY_URL         = ""
+DONATIONALERTS_URL = ""
+CLOUDTIPS_URL      = "https://pay.cloudtips.ru/p/b044728c"
+
+# Стиль каждой кнопки: (ключ, подпись, цвет фона, цвет текста, url-константа,
+# имя PNG-иконки в assets/icons без расширения — если файла нет, рисуем без неё).
+# Цвета — фирменные: Ko-fi бежевый, Boosty оранжевый, DonationAlerts красный,
+# CloudTips белый с синим текстом.
+DONATE_BUTTONS = [
+    ("kofi",           "Buy me a coffee", "#cbb79f", "#2a2320", KOFI_URL,           "kofi"),
+    ("boosty",         "Boosty",          "#f15f2c", "#ffffff", BOOSTY_URL,         "boosty"),
+    ("donationalerts", "DonationAlerts",  "#f57d07", "#ffffff", DONATIONALERTS_URL, "donationalerts"),
+    ("cloudtips",      "CloudTips",       "#ffffff", "#1b3b6f", CLOUDTIPS_URL,      "cloudtips"),
+]
 
 # В сборке PyInstaller ресурсы лежат во временной папке _MEIPASS; в разработке —
 # в корне проекта. (Папка установки exe берётся отдельно, см. core/updater.py.)

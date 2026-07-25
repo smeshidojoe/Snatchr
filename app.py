@@ -153,7 +153,7 @@ class App(QWidget):
         self.WIN_W          = self._s(492)
         self.WIN_H_FULL     = self._s(480)
         self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(70)    # фикс.; остальное — скролл
-        self.WIN_H_ABOUT    = self._s(480)
+        self.WIN_H_ABOUT    = self._s(572)   # ровно под кнопки поддержки + подпись
         self.WIN_H          = self.WIN_H_FULL
         self.CORNER_R       = self._s(14)
         self.BORDER_W       = max(2, self._s(3))
@@ -338,43 +338,54 @@ class App(QWidget):
             return
         self._nav_busy = True
         self.current_page = "settings"
-        self.bottom_bar.set_page_mode("settings")
+        self.bottom_bar.set_page_mode("settings", target_h=self.WIN_H_SETTINGS)
         self.about_page.hide()
         self.settings_page.setGeometry(self.content_x, self.content_y,
                                        self.content_w, self.content_h)
         self._animate_height(self.WIN_H_SETTINGS)   # Settings выше базовой
-        self.settings_page.show()
-        self.settings_page.raise_()
-        anim.fade(self.main_page, 1.0, 0.0, 180, on_finished=self.main_page.hide)
-        anim.fade(self.settings_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+
+        # Последовательно: сначала уходит главная, ПОТОМ появляется Settings
+        # (как в About), а не crossfade.
+        def after_out():
+            self.main_page.hide()
+            self.settings_page.show()
+            self.settings_page.raise_()
+            anim.fade(self.settings_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
+
+        anim.fade(self.main_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def close_settings(self):
         if self.current_page != "settings" or self._nav_busy:
             return
         self._nav_busy = True
         self.current_page = "main"
-        self.bottom_bar.set_page_mode("main")
         # Учитываем расширение главной (Multiple Links): возвращаемся к нужной высоте.
         extra = self.main_page.expand_extra()
         target = self.WIN_H_FULL + extra
+        self.bottom_bar.set_page_mode("main", target_h=target)
         new_ch = target - self.BAR_H - self.BORDER_W
         self.main_page._extra = extra
         self.main_page.setGeometry(self.content_x, self.content_y, self.content_w, new_ch)
         self.main_page.relayout(new_ch)
-        self._animate_height(target)                 # одновременно с фейдом
-        self.main_page.show()
-        self.main_page.raise_()
-        self.bottom_bar.btn_settings.raise_()
-        self.bottom_bar.btn_folder.raise_()
-        self.bottom_bar.btn_exit.raise_()
+        self._animate_height(target)                 # размер меняется параллельно
 
-        def done():
+        # Последовательно: сначала уходит Settings, ПОТОМ появляется главная.
+        def after_out():
             self.settings_page.hide()
             self.reset_settings_scroll()     # ушли из настроек — прокрутку в начало
-            self._nav_done()
+            self.main_page.show()
+            self.main_page.raise_()
+            self.bottom_bar.btn_settings.raise_()
+            self.bottom_bar.btn_folder2.raise_()
+            self.bottom_bar.btn_about.raise_()
+            self.bottom_bar.btn_exit.raise_()
+            anim.fade(self.main_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
 
-        anim.fade(self.settings_page, 1.0, 0.0, 200, on_finished=done)
-        anim.fade(self.main_page, 0.0, 1.0, 200)
+        anim.fade(self.settings_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def reset_settings_scroll(self):
         """Прокрутку настроек — в начало. Зовём при выходе из Settings и при
@@ -385,8 +396,11 @@ class App(QWidget):
             pass
 
     def open_about(self):
-        if self.current_page != "settings" or self._nav_busy:
+        # About доступен и с главной, и из настроек (кнопка на нижней панели).
+        if self.current_page not in ("main", "settings") or self._nav_busy:
             return
+        self._about_return = self.current_page      # куда вернёт «назад»
+        from_page = self.main_page if self.current_page == "main" else self.settings_page
         self._nav_busy = True
         self.current_page = "about"
         self.bottom_bar.set_page_mode("about")
@@ -395,30 +409,49 @@ class App(QWidget):
                                     self.content_w, self.about_content_h)
 
         def after_out():
-            self.settings_page.hide()
+            from_page.hide()
             self.about_page.show()
             self.about_page.raise_()
-            anim.fade(self.about_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+            anim.fade(self.about_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
 
-        anim.fade(self.settings_page, 1.0, 0.0, 180, on_finished=after_out)
+        anim.fade(from_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def close_about(self):
         if self.current_page != "about" or self._nav_busy:
             return
+        # Возврат туда, откуда открыли About (главная или настройки).
+        dest = getattr(self, "_about_return", "settings")
         self._nav_busy = True
-        self.current_page = "settings"
-        self.bottom_bar.set_page_mode("settings")
-        self._animate_height(self.WIN_H_SETTINGS)
-        self.settings_page.setGeometry(self.content_x, self.content_y,
-                                       self.content_w, self.content_h)
+        self.current_page = dest
+        self.bottom_bar.set_page_mode(dest)
+        if dest == "settings":
+            self._animate_height(self.WIN_H_SETTINGS)
+            page = self.settings_page
+            page.setGeometry(self.content_x, self.content_y,
+                             self.content_w, self.content_h)
+        else:
+            extra = self.main_page.expand_extra()
+            self._animate_height(self.WIN_H_FULL + extra)
+            page = self.main_page
+            new_ch = self.WIN_H_FULL + extra - self.BAR_H - self.BORDER_W
+            page.setGeometry(self.content_x, self.content_y, self.content_w, new_ch)
+            page.relayout(new_ch)
 
         def after_out():
             self.about_page.hide()
-            self.settings_page.show()
-            self.settings_page.raise_()
-            anim.fade(self.settings_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+            page.show()
+            page.raise_()
+            self.bottom_bar.btn_settings.raise_()
+            self.bottom_bar.btn_folder2.raise_()
+            self.bottom_bar.btn_about.raise_()
+            self.bottom_bar.btn_exit.raise_()
+            anim.fade(page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
 
-        anim.fade(self.about_page, 1.0, 0.0, 180, on_finished=after_out)
+        anim.fade(self.about_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def open_formats(self):
         """Settings -> Format Priority (fade, высота окна не меняется)."""
@@ -436,9 +469,11 @@ class App(QWidget):
             self.settings_page.hide()
             self.format_page.show()
             self.format_page.raise_()
-            anim.fade(self.format_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+            anim.fade(self.format_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
 
-        anim.fade(self.settings_page, 1.0, 0.0, 180, on_finished=after_out)
+        anim.fade(self.settings_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def close_formats(self):
         """Format Priority -> обратно в Settings (fade)."""
@@ -455,9 +490,11 @@ class App(QWidget):
             self.format_page.hide()
             self.settings_page.show()
             self.settings_page.raise_()
-            anim.fade(self.settings_page, 0.0, 1.0, 200, on_finished=self._nav_done)
+            anim.fade(self.settings_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
+                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
 
-        anim.fade(self.format_page, 1.0, 0.0, 180, on_finished=after_out)
+        anim.fade(self.format_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
+                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
 
     def _nav_done(self):
         self._nav_busy = False
@@ -492,8 +529,8 @@ class App(QWidget):
             self.main_page.relayout(new_ch)
             self.update()
 
-        anim.animate(self, start_extra, target_extra, 300, apply,
-                     easing=QEasingCurve.OutCubic, attr="_main_exp_anim")
+        anim.animate(self, start_extra, target_extra, anim.WIN_RESIZE_MS, apply,
+                     easing=anim.WIN_RESIZE_EASING, attr="_main_exp_anim")
 
     def _animate_height(self, target):
         """
@@ -518,8 +555,9 @@ class App(QWidget):
             self.bottom_bar.reposition()
             self.update()
 
-        anim.animate(self, start, target, 260, lambda v: apply(int(round(v))),
-                     easing=QEasingCurve.OutCubic,
+        anim.animate(self, start, target, anim.WIN_RESIZE_MS,
+                     lambda v: apply(int(round(v))),
+                     easing=anim.WIN_RESIZE_EASING,
                      on_finished=lambda: apply(target), attr="_h_anim")
 
     def set_window_height(self, new_h):
@@ -1084,6 +1122,25 @@ class App(QWidget):
                 target.add_mirror(dl_id, entry)
                 target.update_mirror(dl_id, frac)
 
+    def remove_history_entry(self, entry_id):
+        """«Убрать из списка»: строка исчезает МГНОВЕННО из обоих окон, а
+        удаление записи из JSON (+ обложки/волны) уходит в фон — пользователь
+        не ждёт файловых операций и пересборки списка."""
+        if not entry_id:
+            return
+        try:
+            self.main_page.history.remove_by_id(entry_id)
+        except Exception:
+            pass
+        if self.spotlight is not None:
+            try:
+                self.spotlight.history.remove_by_id(entry_id)
+            except Exception:
+                pass
+        # Фон: чистим JSON и файлы после того, как UI уже обновился.
+        from core import history
+        QTimer.singleShot(0, lambda: history.remove(entry_id))
+
     def refresh_histories(self):
         """Немедленно пересобирает историю в окне и Spotlight из файла (после
         удаления/переименования ролика в одном из мест — отражается в обоих)."""
@@ -1450,7 +1507,8 @@ class App(QWidget):
         self.main_page.on_window_shown()      # обновить историю окна (убрать удалённые)
         self.main_page.raise_()
         self.bottom_bar.btn_settings.raise_()
-        self.bottom_bar.btn_folder.raise_()
+        self.bottom_bar.btn_folder2.raise_()
+        self.bottom_bar.btn_about.raise_()
         self.bottom_bar.btn_exit.raise_()
         # Учитываем расширение главной (режим Multiple Links).
         extra = self.main_page.expand_extra()
