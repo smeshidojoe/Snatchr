@@ -99,6 +99,13 @@ C:\Users\<username>\AppData\Roaming\Snatchr
 
 ---
 
+## ⚖️ Legal Copyright Disclaimer
+
+> [!CAUTION]
+> Videos on YouTube and other sites may be subject to DMCA protection. The authors of Parabolic do not endorse, and are not responsible for, the use of this application in means that will violate these laws.
+
+---
+
 <div align="center">
 
 Made by <a href="https://github.com/SmeshidoJoe">SmeshidoJoe</a>
