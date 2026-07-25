@@ -13,8 +13,95 @@ from PySide6.QtWidgets import (
     QPushButton, QAbstractButton, QLabel, QWidget, QFrame, QLineEdit
 )
 
+from core import fonts, themes
 from core.i18n import tr
 from ui import anim
+
+
+class FloatingHint(QLabel):
+    """
+    Короткая всплывающая подпись над виджетом («Copied»): появляется с подъёмом
+    и проявлением, держится, затем уезжает вверх и гаснет.
+
+    Родитель — окно, а не сам виджет: иначе подпись обрезалась бы границами
+    строки истории. Позиция берётся из глобальных координат якоря.
+    """
+
+    HOLD_MS = 750
+
+    @classmethod
+    def show_over(cls, anchor, text=None, color=None, dy=8):
+        """Показывает подсказку над anchor. Повторный вызов убирает предыдущую."""
+        win = anchor.window()
+        if win is None:
+            return None
+        prev = getattr(win, "_floating_hint", None)
+        if prev is not None:
+            try:
+                prev.hide()
+                prev.deleteLater()
+            except RuntimeError:
+                pass
+        hint = cls(win, anchor, text or tr("Copied"), color, dy)
+        win._floating_hint = hint
+        hint._start()
+        return hint
+
+    def __init__(self, win, anchor, text, color, dy):
+        super().__init__(text, win)
+        self.app = getattr(anchor, "app", None) or win
+        s = getattr(self.app, "_s", lambda v: v)
+        pal = themes.palette(getattr(self.app, "settings", {}).get(
+            "theme", themes.DEFAULT_THEME) if hasattr(self.app, "settings")
+            else themes.DEFAULT_THEME)
+        col = color or pal.get("ok", "#34c759")
+        self.setFont(fonts.font(s(10), "Semibold"))
+        self.setStyleSheet(f"color: {col}; background: transparent;")
+        self.setAlignment(Qt.AlignCenter)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        fm = QFontMetrics(self.font())
+        w = fm.horizontalAdvance(text) + s(10)
+        h = fm.height() + s(2)
+        # Центр по якорю, над ним. Координаты якоря переводим в систему окна.
+        top_left = anchor.mapTo(win, QPoint(0, 0))
+        x = top_left.x() + (anchor.width() - w) // 2
+        y = top_left.y() - h - s(2)
+        self._x = max(0, min(x, win.width() - w))
+        self._y = y
+        self._dy = s(dy)
+        self.setGeometry(self._x, self._y + self._dy, w, h)
+
+    def _start(self):
+        self.show()
+        self.raise_()
+        # Подъём + проявление: резкий старт, мягкое приземление.
+        anim.animate(self, 1.0, 0.0, 200,
+                     lambda t: self.move(self._x, int(self._y + self._dy * t)),
+                     easing=QEasingCurve.OutCubic, attr="_hint_move")
+        anim.fade(self, 0.0, 1.0, 180)
+        QTimer.singleShot(self.HOLD_MS, self._leave)
+
+    def _leave(self):
+        try:
+            if not self.isVisible():
+                return
+        except RuntimeError:
+            return                       # виджет уже удалён (повторный клик)
+        y0 = self.y()
+        up = self._dy * 0.75
+        anim.animate(self, 0.0, 1.0, 220,
+                     lambda t: self.move(self._x, int(y0 - up * t)),
+                     easing=QEasingCurve.InCubic, attr="_hint_move")
+        anim.fade(self, 1.0, 0.0, 220, on_finished=self._gone)
+
+    def _gone(self):
+        # Снимаем ссылку с окна: иначе там останется указатель на удалённый
+        # объект, и следующее обращение к нему бросит RuntimeError.
+        win = self.parent()
+        if win is not None and getattr(win, "_floating_hint", None) is self:
+            win._floating_hint = None
+        self.deleteLater()
 
 
 class SmoothScroll(QObject):

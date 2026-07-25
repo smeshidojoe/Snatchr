@@ -110,11 +110,16 @@ class BottomBar(QWidget):
     def _btn_y(self):
         return self._btn_y_at(self.app.WIN_H)
 
+    # Страницы, на которых папка стоит по центру (место скрытого оригинала):
+    # Settings и вложенный в него Format Priority — переход между ними не должен
+    # дёргать кнопку из центра в ряд.
+    _CENTERED = ("settings", "formats")
+
     def _folder2_x(self, page):
-        """X папки: в настройках — центр (место скрытого оригинала), иначе —
-        своя позиция в ряду main."""
+        """X папки: на Settings/Format Priority — центр (место скрытого
+        оригинала), иначе — своя позиция в ряду main."""
         s = self.app._s
-        if page == "settings":
+        if page in self._CENTERED:
             return self.app.WIN_W // 2 - s(16)
         left_c = s(12) + s(16)
         right_c = (self.app.WIN_W - s(60)) + s(24)
@@ -162,6 +167,7 @@ class BottomBar(QWidget):
         """
         main     — шестерёнка + папка(в ряду) + about + Exit
         settings — стрелка + папка(едет в центр) + Exit (about уезжает вниз)
+        formats  — как settings (папка остаётся в центре, не дёргается)
         about    — только стрелка назад
 
         target_h — целевая высота окна (окно анимируется параллельно). Нужна,

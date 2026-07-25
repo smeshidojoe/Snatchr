@@ -1,0 +1,33 @@
+# Snatchr — runtime dependencies.
+# Versions pinned to the current working environment (Windows, Python 3.x).
+#   pip install -r requirements.txt
+
+# GUI (Essentials + Addons are pulled in by PySide6 itself; listed for builds).
+PySide6==6.11.1
+
+# Image processing: About logo, history thumbnails.
+pillow==12.1.0
+
+# Browser cookie extraction (authenticated downloads).
+browser-cookie3==0.20.1
+
+# Global hotkey for Spotlight.
+keyboard==0.13.5
+
+# WinAPI: win32api / win32gui / win32process (tray position, windows, processes).
+pywin32==311
+
+
+# --- Build only (not needed to run from source) ---------------------------- #
+# pyinstaller==6.11.1
+
+
+# --- External binaries (NOT pip) ------------------------------------------- #
+# yt-dlp.exe, ffmpeg.exe, deno.exe are downloaded by the app itself into
+# %APPDATA%/Snatchr/tools on first run (see core/tools.py).
+
+# --- Optional local library ------------------------------------------------ #
+# `ember` — custom extraction engine (core/ember_dl.py). The import is wrapped
+# in try/except: without it the app falls back to yt-dlp. Not on PyPI, install
+# from:
+#   https://github.com/smeshidojoe/Ember

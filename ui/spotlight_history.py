@@ -67,6 +67,7 @@ class GlyphButton(QWidget):
         self._hover_bg = QColor(pal["sel_chip"]).lighter(140)
         self._hover_t = 0.0
         self._pressed = False
+        self._press_p = 1.0        # прогресс анимации нажатия (1 = покой)
         isz = s(19) if glyph == "scissors" else s(16)   # ножницы чуть крупнее
         f = _GLYPH_ICON.get(glyph)
         theme = app.settings.get("theme", themes.DEFAULT_THEME)
@@ -101,7 +102,32 @@ class GlyphButton(QWidget):
         was = self._pressed
         self._pressed = False
         if was and self.rect().contains(e.position().toPoint()):
+            self.press_bounce()
             self.clicked.emit()
+
+    def press_bounce(self):
+        """Отклик на нажатие: сжатие -> лёгкий перелёт -> возврат (как у
+        переключателей в настройках)."""
+        def tick(v):
+            self._press_p = v
+            self.update()
+
+        def fin():
+            self._press_p = 1.0
+            self.update()
+
+        anim.animate(self, 0.0, 1.0, 240, tick,
+                     easing=QEasingCurve.Linear, on_finished=fin,
+                     attr="_press_anim")
+
+    @staticmethod
+    def _scale_of(p):
+        # Сжатие -> overshoot -> возврат (та же кривая, что у чекбокса).
+        if p <= 0.30:
+            return 1.0 + (0.88 - 1.0) * (p / 0.30)
+        if p <= 0.70:
+            return 0.88 + (1.10 - 0.88) * ((p - 0.30) / 0.40)
+        return 1.10 + (1.0 - 1.10) * ((p - 0.70) / 0.30)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -110,6 +136,12 @@ class GlyphButton(QWidget):
         s = self.app._s
         w, h = self.width(), self.height()
         t = self._hover_t
+        # Масштаб нажатия — вокруг центра кнопки.
+        if self._press_p < 1.0:
+            k = self._scale_of(self._press_p)
+            p.translate(w / 2.0, h / 2.0)
+            p.scale(k, k)
+            p.translate(-w / 2.0, -h / 2.0)
         # постоянная подложка (меньше габаритов кнопки; ярче при наведении)
         inset = s(4)
         p.setPen(Qt.NoPen)
@@ -974,6 +1006,15 @@ class HistoryList(QWidget):
         for r in self._rows:
             if r.entry.get("id") == entry_id:
                 r.flash_error(text)
+                return True
+        return False
+
+    def show_copied(self, entry_id):
+        """Всплывающее «Copied» над кнопкой копирования нужной строки."""
+        from ui.widgets import FloatingHint
+        for r in self._rows:
+            if r.entry.get("id") == entry_id:
+                FloatingHint.show_over(r._btn_copy)
                 return True
         return False
 

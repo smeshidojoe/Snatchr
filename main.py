@@ -1,10 +1,6 @@
 import os
 import sys
 
-# Отключаем аппаратное декодирование в Qt Multimedia (FFmpeg-бэкенд): у VP9 через
-# HW-декодер маленький пул кадров, и при перемотке превью в панели обрезки он
-# переполняется («Static surface pool size exceeded» / vp9 get_buffer failed).
-# Программное декодирование коротких роликов дешёвое и стабильное.
 os.environ.setdefault("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", "")
 
 from PySide6.QtWidgets import QApplication
@@ -84,8 +80,23 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Перехват падений: в собранном exe stdout никуда не ведёт, без этого
+    # traceback исчезает бесследно. Ставим ДО QApplication.
+    try:
+        from core import crashlog
+        crashlog.install()
+        crashlog.cleanup()
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
     _set_app_identity(app)
+    # Пул фоновых обложек не должен задерживать выход сетевым таймаутом.
+    try:
+        from core import workers
+        app.aboutToQuit.connect(workers.shutdown_pools)
+    except Exception:
+        pass
     # Окно живёт в трее: не закрываем приложение, когда окно скрыто.
     app.setQuitOnLastWindowClosed(False)
 

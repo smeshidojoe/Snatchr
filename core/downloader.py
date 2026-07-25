@@ -36,6 +36,10 @@ MIN_HEIGHT = 480     # ниже 480p не показываем
 # разрешения — и когда YouTube (обычно с куками) отдаёт VP9 только в 360p, а
 # H.264 в 1080p, скачивалось 360p. AV1 исключаем — тяжело декодируется.
 BEST_VIDEO_FMT = "bv*[vcodec!^=av01]+ba/b"
+# Best Quality: сначала максимальное разрешение, а среди равных — предпочесть
+# H.264. Без этой сортировки yt-dlp брал VP9 по битрейту даже там, где AVC есть
+# (напр. ролик с потолком 720p), и запускалась ненужная конвертация.
+BEST_VIDEO_SORT = "res,vcodec:h264"
 # Совместимость: максимальное разрешение с кодеком AVC (обычно до 1080p).
 AVC_VIDEO_FMT = "bv*[vcodec^=avc]+ba/b"
 PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
@@ -206,6 +210,32 @@ def probe(url, no_playlist=True, timeout=60, cookies=None):
 
 
 # ------------------------------------------------------------------ #
+def best_picks_vp9(info):
+    """
+    Приедет ли по Best Quality именно VP9 (и значит нужна конвертация).
+
+    Best Quality сортируется как «максимальное разрешение, среди равных —
+    H.264» (BEST_VIDEO_SORT), поэтому VP9 достаётся только там, где на самом
+    высоком разрешении H.264 нет — обычно выше 1080p. Считаем это по реальному
+    списку форматов, а не по догадке о площадке.
+    """
+    max_h = 0
+    avc_h = 0
+    for f in (info or {}).get("formats") or []:
+        if f.get("vcodec") in (None, "none"):
+            continue
+        v = (f.get("vcodec") or "").lower()
+        if v.startswith(("av01", "av1")):     # AV1 в Best Quality не участвует
+            continue
+        h = f.get("height") or 0
+        max_h = max(max_h, h)
+        if v.startswith(("avc1", "h264")):
+            avc_h = max(avc_h, h)
+    if not max_h:
+        return True                # форматов не видно — прежнее поведение
+    return avc_h < max_h           # H.264 на максимуме нет -> будет VP9
+
+
 def _res_label(height):
     if height >= 4320:
         return "8K"
@@ -266,14 +296,18 @@ def video_formats(info, youtube=True, settings=None):
     """
     if youtube:
         options = [
-            {"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT, "mp3": False,
-             "key": "best"},
+            {"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT,
+             "sort": BEST_VIDEO_SORT, "mp3": False, "key": "best",
+             # Будет ли на деле VP9 — знаем уже здесь, по списку форматов.
+             # Так конвертация не планируется зря (и файл сразу пакуется в MP4).
+             "vp9": best_picks_vp9(info)},
             {"label": tr("Best Compatibility (MP4)"),
              "fmt": AVC_VIDEO_FMT, "mp3": False, "key": "compat"},
         ]
     else:
         options = [{"label": tr("Best Quality"), "fmt": BEST_VIDEO_FMT,
-                    "mp3": False, "key": "best"}]
+                    "sort": BEST_VIDEO_SORT, "mp3": False, "key": "best",
+                    "vp9": best_picks_vp9(info)}]
 
     vids = []
     for f in info.get("formats", []):
@@ -483,6 +517,8 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
         args += ["--ffmpeg-location", loc]
 
     args += ["-f", option["fmt"]]
+    if option.get("sort"):
+        args += ["-S", option["sort"]]
     if option.get("mp3"):
         args += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
     elif option.get("audio"):
@@ -869,11 +905,14 @@ def _picks_vp9(option):
     Конвертация трогает только VP9 (см. convert.decide_target), поэтому для
     H.264-строк её планировать нельзя: иначе файл зря склеивался бы в MKV, а
     полоса прогресса резервировала бы половину под конвертацию, которой нет."""
-    key = (option or {}).get("key") or ""
+    o = option or {}
+    key = o.get("key") or ""
     if key == "compat":
         return False                     # Best Compatibility — заведомо AVC
     if key == "best":
-        return True                      # лучший не-AV1 на YouTube — обычно VP9
+        # Посчитано при анализе по реальным форматам (см. best_picks_vp9).
+        # Старые записи без флага — прежнее поведение.
+        return bool(o.get("vp9", True))
     if "_" in key:
         return key.split("_", 1)[1] == "VP9"
     return True                          # ключ неизвестен — прежнее поведение
@@ -1104,8 +1143,14 @@ def option_media_hint(option, info):
         return _pick([f for f in vids
                       if _codec_label(f.get("vcodec")) == "H.264"])
     if key == "best" or not key:
-        return _pick([f for f in vids
-                      if _codec_label(f.get("vcodec")) != "AV1"])
+        cands = [f for f in vids if _codec_label(f.get("vcodec")) != "AV1"]
+        # Best Quality сортируется как «максимум разрешения, среди равных —
+        # H.264» (BEST_VIDEO_SORT). Пилюля должна показывать ТО ЖЕ: иначе на
+        # ролике, где VP9 60 fps, а AVC 30 fps, она обещала бы 60.
+        max_h = max((f.get("height") or 0 for f in cands), default=0)
+        avc_top = [f for f in cands if (f.get("height") or 0) == max_h
+                   and _codec_label(f.get("vcodec")) == "H.264"]
+        return _pick(avc_top or cands)
     if "_" in key:                            # строка разрешения: «1080_H.264»
         head, codec = key.split("_", 1)
         if head.isdigit():

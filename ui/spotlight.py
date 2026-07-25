@@ -896,12 +896,12 @@ class Spotlight(QWidget):
 
     # --- строки истории ------------------------------------------------ #
     def _copy_entry(self, entry):
+        # Подсветку рамки поиска не используем: она далеко от кнопки и читается
+        # непонятно — вместо неё «Copied» прямо над самой кнопкой.
         path = entry.get("path", "")
         if path and os.path.isfile(path):
             self.app._copy_file_to_clipboard(path)
-            self.search.flash(QColor("#34c759"))
-        else:
-            self.search.flash(QColor("#e05a5a"))
+            self.history.show_copied(entry.get("id", ""))
 
     def _show_more_menu(self, entry, gpos):
         import time as _t

@@ -1,14 +1,81 @@
 """
 Фоновые потоки (QThread) для движка: установка бинарников, анализ ссылки,
 скачивание. Всё с обработкой ошибок — UI никогда не зависает.
+
+Короткоживущие массовые задачи (обложки строк) идут не через QThread, а через
+пул — см. PooledWorker ниже.
 """
 
 import os
 import urllib.request
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, QThreadPool, QRunnable, QObject, Signal
 
 from core import tools, downloader
+
+
+# Пул для обложек. Плейлист или пачка ссылок раньше поднимали по потоку ОС на
+# строку (30 ссылок — 30 потоков, все стартуют разом): интерфейс подтормаживал,
+# а параллельные запросы отбирали полосу у самой загрузки. Пул держит очередь и
+# лимит — одиночная ссылка работает как прежде, разница только на пачках.
+_THUMB_POOL = QThreadPool()
+_THUMB_POOL.setMaxThreadCount(4)
+
+
+class _PoolTask(QRunnable):
+    """Обёртка задачи для пула: выполняет work() своего воркера."""
+
+    def __init__(self, worker):
+        super().__init__()
+        self._worker = worker
+
+    def run(self):
+        w = self._worker
+        try:
+            w.work()
+        except Exception:
+            # Воркер обязан сам отдать пустой результат; сюда попадаем только
+            # при поломке самого воркера — сообщаем в крэш-лог и не молчим.
+            try:
+                import sys
+                from core import crashlog
+                crashlog.save(*sys.exc_info(),
+                              context="pooled=%s" % type(w).__name__)
+            except Exception:
+                pass
+        finally:
+            try:
+                w.finished.emit()
+            except RuntimeError:
+                pass                     # виджет-владелец уже удалён
+
+
+class PooledWorker(QObject):
+    """
+    База для массовых фоновых задач. API намеренно совпадает с QThread в той
+    части, которую использует UI (`start()`, сигнал `finished`, свой сигнал
+    результата), поэтому места вызова не меняются.
+
+    Наследник реализует work().
+    """
+
+    finished = Signal()
+
+    def start(self):
+        _THUMB_POOL.start(_PoolTask(self))
+
+    def work(self):
+        raise NotImplementedError
+
+
+def shutdown_pools(msecs=1200):
+    """Гасит пул при выходе: очередь сбрасываем, начатым даём короткий срок.
+    Без этого закрытие могло ждать сетевой таймаут обложки (до 15 c)."""
+    try:
+        _THUMB_POOL.clear()            # ещё не начатые задачи выбрасываем
+        _THUMB_POOL.waitForDone(msecs)
+    except Exception:
+        pass
 
 
 class SetupWorker(QThread):
@@ -262,15 +329,15 @@ class PlaylistProbeWorker(QThread):
             self.error.emit(str(exc))
 
 
-class ThumbWorker(QThread):
-    """Загрузка обложки по URL (bytes)."""
+class ThumbWorker(PooledWorker):
+    """Загрузка обложки по URL (bytes). Через пул — их бывает по одной на строку."""
     done = Signal(bytes)
 
     def __init__(self, url, parent=None):
         super().__init__(parent)
         self._url = url
 
-    def run(self):
+    def work(self):
         try:
             req = urllib.request.Request(self._url, headers={"User-Agent": "Snatchr"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -307,7 +374,7 @@ class WaveformWorker(QThread):
         self.done.emit(self._id, r or "")
 
 
-class SpotlightThumbWorker(QThread):
+class SpotlightThumbWorker(PooledWorker):
     """Для строки-прогресса Spotlight (Paste/Toast, без анализа): одним вызовом
     yt-dlp достаёт обложку + название + автора, чтобы строка сразу показывала
     нормальные данные (а не URL/площадку) и превью. Ошибки глушим."""
@@ -317,7 +384,7 @@ class SpotlightThumbWorker(QThread):
         super().__init__(parent)
         self._url = url
 
-    def run(self):
+    def work(self):
         try:
             # --print пишет в stdout в системной кодировке (frozen yt-dlp игнорирует
             # PYTHONUTF8) -> кириллица приходит как «крякозябры». --print-to-file

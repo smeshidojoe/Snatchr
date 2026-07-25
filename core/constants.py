@@ -4,8 +4,6 @@ import sys
 APP_NAME    = "Snatchr"
 APP_VERSION = "0.9.3"
 
-# Репозиторий для проверки обновлений (релизы на GitHub).
-# TODO: указать реальный "owner/repo".
 GITHUB_REPO = "SmeshidoJoe/Snatchr"
 
 # Ссылка, открывающаяся по клику на «SmeshidoJoe» в окне About.

@@ -2,7 +2,7 @@ import os
 import threading
 import webbrowser
 
-from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtCore import Qt, Signal, QRectF, QEasingCurve
 from PySide6.QtGui import (QFontMetrics, QImage, QPixmap, QPainter, QColor, QPen)
 from PySide6.QtWidgets import QWidget, QLabel
 
@@ -15,6 +15,7 @@ from core import fonts
 from core import themes
 from core.i18n import tr
 from ui.widgets import LinkButton, ClickableLabel, WindowDragMixin
+from ui import anim
 
 
 class DonateButton(QWidget):
@@ -40,6 +41,7 @@ class DonateButton(QWidget):
                 self._icon = pm.scaledToHeight(s(18), Qt.SmoothTransformation)
         # Белую кнопку (CloudTips) обводим — иначе сливается с фоном окна.
         self._border = QColor("#d8dee8") if bg.lower() == "#ffffff" else None
+        self._press_p = 1.0            # прогресс анимации нажатия (1 = покой)
         self.setCursor(Qt.PointingHandCursor)
 
     def enterEvent(self, e):
@@ -51,15 +53,47 @@ class DonateButton(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        if (e.button() == Qt.LeftButton and self._url
+        if (e.button() == Qt.LeftButton
                 and self.rect().contains(e.position().toPoint())):
-            webbrowser.open(self._url)
+            # Отклик даём даже с пустой ссылкой-заглушкой: клик должен читаться.
+            self._press_bounce()
+            if self._url:
+                webbrowser.open(self._url)
+
+    def _press_bounce(self):
+        """Отклик на нажатие: сжатие -> лёгкий перелёт -> возврат (как у
+        переключателей в настройках и кнопок истории)."""
+        def tick(v):
+            self._press_p = v
+            self.update()
+
+        def fin():
+            self._press_p = 1.0
+            self.update()
+
+        anim.animate(self, 0.0, 1.0, 240, tick,
+                     easing=QEasingCurve.Linear, on_finished=fin,
+                     attr="_press_anim")
+
+    @staticmethod
+    def _scale_of(p):
+        # Кнопка широкая, поэтому амплитуда мягче, чем у маленьких иконок.
+        if p <= 0.30:
+            return 1.0 + (0.96 - 1.0) * (p / 0.30)
+        if p <= 0.70:
+            return 0.96 + (1.03 - 0.96) * ((p - 0.30) / 0.40)
+        return 1.03 + (1.0 - 1.03) * ((p - 0.70) / 0.30)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
+        if self._press_p < 1.0:
+            k = self._scale_of(self._press_p)
+            p.translate(w / 2.0, h / 2.0)
+            p.scale(k, k)
+            p.translate(-w / 2.0, -h / 2.0)
         bg = self._bg.lighter(108) if self._hover else self._bg
         p.setPen(QPen(self._border, 1) if self._border else Qt.NoPen)
         p.setBrush(bg)

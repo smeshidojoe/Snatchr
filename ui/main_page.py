@@ -120,7 +120,7 @@ class MainPage(WindowDragMixin, QWidget):
             # Строки разрешения без разобранной ссылки не построить — их
             # пропускаем: «первым доступным» остаётся best/compat.
         return {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT,
-                "mp3": False, "key": "best"}
+                "sort": downloader.BEST_VIDEO_SORT, "mp3": False, "key": "best"}
 
     @staticmethod
     def _multi_options(mode):
@@ -128,7 +128,11 @@ class MainPage(WindowDragMixin, QWidget):
         if mode == "audio":
             return [{"label": tr("Best Quality"), "fmt": "ba/b", "mp3": True}]
         return [
-            {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT, "mp3": False},
+            # sort: как и для одиночной ссылки — максимальное разрешение, среди
+            # равных H.264 (иначе на роликах с потолком 1080p и ниже приезжал бы
+            # VP9 и запускалась лишняя конвертация).
+            {"label": tr("Best Quality"), "fmt": downloader.BEST_VIDEO_FMT,
+             "sort": downloader.BEST_VIDEO_SORT, "mp3": False},
             {"label": tr("Best Compatibility (MP4)"),
              "fmt": downloader.AVC_VIDEO_FMT, "mp3": False},
             {"label": tr("Thumbnail"), "thumbnail": True, "mp3": False},
@@ -1275,6 +1279,7 @@ class MainPage(WindowDragMixin, QWidget):
         path = entry.get("path", "")
         if path and os.path.isfile(path):
             self.app._copy_file_to_clipboard(path)
+            self.history.show_copied(entry.get("id", ""))
 
     def _more_row(self, entry, gpos):
         import time as _t
