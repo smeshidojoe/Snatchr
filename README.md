@@ -106,6 +106,12 @@ C:\Users\<username>\AppData\Roaming\Snatchr
 
 ---
 
+> [!NOTE]  
+> This is a fully vibecoded product, it may contain some bugs
+> but i try to fix them as fast as i find them
+
+---
+
 <div align="center">
 
 Made by <a href="https://github.com/SmeshidoJoe">SmeshidoJoe</a>
