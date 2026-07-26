@@ -153,7 +153,11 @@ class App(QWidget):
         self.WIN_W          = self._s(492)
         self.WIN_H_FULL     = self._s(480)
         self.WIN_H_SETTINGS = self.WIN_H_FULL + self._s(70)    # фикс.; остальное — скролл
-        self.WIN_H_ABOUT    = self._s(572)   # ровно под кнопки поддержки + подпись
+        # About: ровно под кнопки поддержки + подпись. Считаем от их количества,
+        # чтобы окно не пустовало, когда часть кнопок выключена (см.
+        # constants.ENABLED_DONATE_BUTTONS). 572 — высота при четырёх кнопках.
+        from core.constants import DONATE_BUTTONS
+        self.WIN_H_ABOUT = self._s(572) - (4 - len(DONATE_BUTTONS)) * self._s(48)
         self.WIN_H          = self.WIN_H_FULL
         self.CORNER_R       = self._s(14)
         self.BORDER_W       = max(2, self._s(3))

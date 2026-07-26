@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.9.3"
+APP_VERSION = "0.9.4"
 
 GITHUB_REPO = "SmeshidoJoe/Snatchr"
 
@@ -20,12 +20,20 @@ CLOUDTIPS_URL      = "https://pay.cloudtips.ru/p/b044728c"
 # имя PNG-иконки в assets/icons без расширения — если файла нет, рисуем без неё).
 # Цвета — фирменные: Ko-fi бежевый, Boosty оранжевый, DonationAlerts красный,
 # CloudTips белый с синим текстом.
-DONATE_BUTTONS = [
+_ALL_DONATE_BUTTONS = [
     ("kofi",           "Buy me a coffee", "#cbb79f", "#2a2320", KOFI_URL,           "kofi"),
     ("boosty",         "Boosty",          "#f15f2c", "#ffffff", BOOSTY_URL,         "boosty"),
     ("donationalerts", "DonationAlerts",  "#f57d07", "#ffffff", DONATIONALERTS_URL, "donationalerts"),
     ("cloudtips",      "CloudTips",       "#ffffff", "#1b3b6f", CLOUDTIPS_URL,      "cloudtips"),
 ]
+
+# Какие кнопки показывать сейчас. Остальные ждут реальных ссылок — определения
+# выше не трогаем, чтобы включить обратно достаточно дописать ключ сюда.
+# Высота окна About считается от числа видимых кнопок (см. app.WIN_H_ABOUT).
+ENABLED_DONATE_BUTTONS = ["cloudtips"]
+
+DONATE_BUTTONS = [b for b in _ALL_DONATE_BUTTONS
+                  if b[0] in ENABLED_DONATE_BUTTONS]
 
 # В сборке PyInstaller ресурсы лежат во временной папке _MEIPASS; в разработке —
 # в корне проекта. (Папка установки exe берётся отдельно, см. core/updater.py.)

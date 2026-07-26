@@ -3,7 +3,8 @@ import threading
 import webbrowser
 
 from PySide6.QtCore import Qt, Signal, QRectF, QEasingCurve
-from PySide6.QtGui import (QFontMetrics, QImage, QPixmap, QPainter, QColor, QPen)
+from PySide6.QtGui import (QFontMetrics, QImage, QPixmap, QPainter, QColor, QPen,
+                           QPainterPath)
 from PySide6.QtWidgets import QWidget, QLabel
 
 from PIL import Image, ImageDraw
@@ -38,9 +39,13 @@ class DonateButton(QWidget):
         if icon_name and os.path.isfile(path):
             pm = QPixmap(path)
             if not pm.isNull():
-                self._icon = pm.scaledToHeight(s(18), Qt.SmoothTransformation)
+                self._icon = pm.scaledToHeight(s(22), Qt.SmoothTransformation)
         # Белую кнопку (CloudTips) обводим — иначе сливается с фоном окна.
         self._border = QColor("#d8dee8") if bg.lower() == "#ffffff" else None
+        # Левый сегмент под иконкой — акцентом текущей темы: кнопка читается как
+        # бейдж и не теряется на светлом фоне окна.
+        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._accent = QColor(pal["accent"])
         self._press_p = 1.0            # прогресс анимации нажатия (1 = покой)
         self.setCursor(Qt.PointingHandCursor)
 
@@ -95,23 +100,44 @@ class DonateButton(QWidget):
             p.scale(k, k)
             p.translate(-w / 2.0, -h / 2.0)
         bg = self._bg.lighter(108) if self._hover else self._bg
-        p.setPen(QPen(self._border, 1) if self._border else Qt.NoPen)
-        p.setBrush(bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), h / 2.0, h / 2.0)
-        # Текст (+ иконка) по центру.
+        body = QRectF(0.5, 0.5, w - 1, h - 1)
+        r = h / 2.0
+
+        # Содержимое (иконка + текст) центрируем в ОСТАВШЕЙСЯ части пилюли —
+        # правее акцентного сегмента, иначе текст уезжает под него.
         fm = QFontMetrics(self._font)
         tw = fm.horizontalAdvance(self._label)
-        gap = s(8) if self._icon else 0
         iw = self._icon.width() if self._icon else 0
-        x = (w - (iw + gap + tw)) / 2.0
-        if self._icon:
-            p.drawPixmap(int(x), int((h - self._icon.height()) / 2),
-                         self._icon)
-            x += iw + gap
+        seg_w = (iw + s(20)) if self._icon else 0.0     # ширина акцентной «шапки»
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(body, r, r)
+
+        if seg_w:
+            # Сегмент: скруглён слева по форме пилюли, справа обрезан ровно.
+            p.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(body, r, r)
+            p.setClipPath(clip)
+            acc = self._accent.lighter(112) if self._hover else self._accent
+            p.setBrush(acc)
+            p.drawRect(QRectF(0, 0, seg_w, h))
+            p.restore()
+            p.drawPixmap(int((seg_w - iw) / 2),
+                         int((h - self._icon.height()) / 2), self._icon)
+
+        # Обводка — поверх заливок, иначе сегмент перекрывает её слева.
+        if self._border:
+            p.setPen(QPen(self._border, 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(body, r, r)
+
         p.setFont(self._font)
         p.setPen(self._fg)
-        p.drawText(QRectF(x, 0, tw + s(4), h), Qt.AlignLeft | Qt.AlignVCenter,
-                   self._label)
+        text_x = seg_w + (w - seg_w - tw) / 2.0 if seg_w else (w - tw) / 2.0
+        p.drawText(QRectF(text_x, 0, tw + s(4), h),
+                   Qt.AlignLeft | Qt.AlignVCenter, self._label)
         p.end()
 
 
@@ -216,7 +242,7 @@ class AboutPage(WindowDragMixin, QWidget):
     # ------------------------------------------------------------------ #
     def _build_donate_buttons(self, cx, y):
         s = self.app._s
-        bw, bh, gap = s(210), s(38), s(10)
+        bw, bh, gap = s(178), s(38), s(10)      # пилюля покороче — меньше «воздуха» по краям
         for key, label, bg, fg, url, icon in DONATE_BUTTONS:
             btn = DonateButton(self.app, tr(label), bg, fg, url, icon, self)
             btn.setGeometry(cx - bw // 2, y, bw, bh)
