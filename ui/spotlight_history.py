@@ -23,6 +23,7 @@ from core.icons import themed_pixmap
 from core.trimmer import res_label
 from ui import anim
 from ui.widgets import SmoothScroll
+from core import perflog
 
 
 def _blend(c0, c1, t):
@@ -46,6 +47,18 @@ def _same_file(a, b):
         return False
 
 
+
+def _list_scrolling(widget):
+    """Едет ли сейчас список, которому принадлежит виджет."""
+    w = widget.parent()
+    while w is not None:
+        checker = getattr(w, "is_scrolling", None)
+        if callable(checker):
+            return checker()
+        w = w.parent()
+    return False
+
+
 # ------------------------------------------------------------------ #
 class GlyphButton(QWidget):
     """Кнопка истории: иконка (crop/copy) или три точки (more) на скруглённой
@@ -60,19 +73,44 @@ class GlyphButton(QWidget):
         s = app._s
         self.setFixedSize(s(34), s(34))
         self.setCursor(Qt.PointingHandCursor)
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._hover_t = 0.0
+        self._pressed = False
+        self._press_p = 1.0        # прогресс анимации нажатия (1 = покой)
+        self._reload_theme()
+
+    def _reload_theme(self):
+        """Цвета и затонированные иконки из текущей палитры (зовётся и при
+        живой смене темы)."""
+        app, s = self.app, self.app._s
+        theme = app.settings.get("theme", themes.DEFAULT_THEME)
+        pal = themes.palette(theme)
         self._fg = QColor(pal["muted"])
         self._fg_h = QColor(pal["text"])
         self._base_bg = QColor(pal["sel_chip"])
         self._hover_bg = QColor(pal["sel_chip"]).lighter(140)
-        self._hover_t = 0.0
-        self._pressed = False
-        self._press_p = 1.0        # прогресс анимации нажатия (1 = покой)
-        isz = s(19) if glyph == "scissors" else s(16)   # ножницы чуть крупнее
-        f = _GLYPH_ICON.get(glyph)
-        theme = app.settings.get("theme", themes.DEFAULT_THEME)
+        isz = s(19) if self._glyph == "scissors" else s(16)   # ножницы чуть крупнее
+        f = _GLYPH_ICON.get(self._glyph)
         self._pm = themed_pixmap(theme, f, pal["muted"], isz) if f else None
         self._pm_h = themed_pixmap(theme, f, pal["text"], isz) if f else None
+
+    def apply_theme(self, pal=None):
+        self._reload_theme()
+        self.update()
+
+    def sync_hover(self):
+        """Сверяет подсветку с РЕАЛЬНЫМ положением курсора.
+
+        Qt шлёт leaveEvent, когда курсор уходит с виджета, но НЕ когда виджет
+        уезжает из-под неподвижного курсора — а строки истории двигаются
+        (каскад, вставка, пересчёт). Из-за этого подсветка залипала."""
+        from PySide6.QtGui import QCursor
+        try:
+            under = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        except RuntimeError:
+            return
+        if under != self._hover:
+            self._hover = under
+            self._animate_hover(1.0 if under else 0.0)
 
     def set_glyph(self, g):
         self._glyph = g
@@ -87,6 +125,10 @@ class GlyphButton(QWidget):
         self._animate_hover(0.0)
 
     def _animate_hover(self, to):
+        if _list_scrolling(self):
+            self._hover_t = to           # во время прокрутки — без анимации
+            self.update()
+            return
         anim.animate(self, self._hover_t, to, 150, self._hover_tick,
                      easing=QEasingCurve.OutCubic, attr="_hover_anim")
 
@@ -235,16 +277,7 @@ class HistoryRow(QWidget):
         self._dl = {}                    # прогресс: speed/size/downloaded/eta/pct
         self._dl_t = 0.0                 # транзишн (0 = обычная, 1 = пилюли скачивания)
         self.resize(width, self._h)
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
-        self._text_col = QColor(pal["title"])
-        self._muted = QColor(pal["muted"])
-        self._accent = QColor(pal["accent"])
-        self._track = QColor(pal["field_bg"])
-        self._ok = QColor(pal["ok"])
-        self._err = QColor(pal["error"])
-        self._hover_bg = QColor(pal["sel_chip"]); self._hover_bg.setAlpha(150)
-        self._chip = QColor(pal["sel_chip"])         # непрозрачная подложка пилюль
-        self._on_accent = QColor(pal["on_accent"])   # текст поверх залитого прогресса
+        self._reload_theme()
         self._hover = False
         self._pm = self._load_thumb()
         self._sub = self._make_sub()     # площадка + разрешение (Instagram · 1080p)
@@ -526,6 +559,23 @@ class HistoryRow(QWidget):
         self._spin_angle = (self._spin_angle + 12) % 360
         self.update()
 
+    def update_entry(self, entry):
+        """Обновляет данные строки БЕЗ пересоздания виджета.
+
+        Тяжёлое (обложка с диска, разбор подписи) трогаем только если
+        соответствующие поля записи действительно изменились."""
+        old = self.entry or {}
+        self.entry = entry
+        if (old.get("thumb") != entry.get("thumb")
+                or old.get("path") != entry.get("path")):
+            self._pm = self._load_thumb()
+        if (old.get("title") != entry.get("title")
+                or old.get("host") != entry.get("host")
+                or old.get("height") != entry.get("height")
+                or old.get("url") != entry.get("url")):
+            self._sub = self._make_sub()
+        self.update()
+
     def to_pending(self, entry):
         """Анализ завершён: «Fetching…» уезжает вниз и гаснет, обложка+инфо
         проявляются (transition 1->0)."""
@@ -596,6 +646,40 @@ class HistoryRow(QWidget):
         self._active = on
         self._btn_trim.set_glyph("close" if on else "scissors")
 
+    def _reload_theme(self):
+        """Цвета строки из текущей палитры (зовётся и при живой смене темы)."""
+        pal = themes.palette(self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._text_col = QColor(pal["title"])
+        self._muted = QColor(pal["muted"])
+        self._accent = QColor(pal["accent"])
+        self._track = QColor(pal["field_bg"])
+        self._ok = QColor(pal["ok"])
+        self._err = QColor(pal["error"])
+        self._hover_bg = QColor(pal["sel_chip"]); self._hover_bg.setAlpha(150)
+        self._chip = QColor(pal["sel_chip"])         # непрозрачная подложка пилюль
+        self._on_accent = QColor(pal["on_accent"])   # текст поверх залитого прогресса
+
+    def apply_theme(self, pal=None):
+        self._reload_theme()
+        for b in (self._btn_more, self._btn_copy, self._btn_trim, self._btn_stop):
+            if b is not None:
+                b.apply_theme()
+        self.update()
+
+    def sync_hover(self):
+        """Сверяет свою подсветку и подсветку кнопок с положением курсора."""
+        from PySide6.QtGui import QCursor
+        try:
+            under = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        except RuntimeError:
+            return
+        if under != self._hover:
+            self._hover = under
+            self._animate_hover(1.0 if under else 0.0)
+        for b in (self._btn_more, self._btn_copy, self._btn_trim, self._btn_stop):
+            if b is not None:
+                b.sync_hover()
+
     def set_width(self, w):
         self.resize(w, self._h)
         self._layout()
@@ -636,6 +720,10 @@ class HistoryRow(QWidget):
         self._animate_hover(0.0)
 
     def _animate_hover(self, to):
+        if _list_scrolling(self):
+            self._hover_t = to           # во время прокрутки — без анимации
+            self.update()
+            return
         anim.animate(self, self._hover_t, to, 160, self._hover_tick,
                      easing=QEasingCurve.OutCubic, attr="_hover_anim")
 
@@ -839,9 +927,7 @@ class HistoryList(QWidget):
         self._allow_trim = allow_trim
         self._draw_bg = draw_bg           # окно рисует историю без подложки (фон окна свой)
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
-        self._bg = QColor(pal["card_bg"])
-        self._border = QColor(pal["border"])
+        self._reload_theme()
         self._rows = []
         self._pad = s(6)
         self._row_h = s(72)
@@ -852,17 +938,18 @@ class HistoryList(QWidget):
         self._area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._area.setFrameShape(QFrame.NoFrame)
         self._area.viewport().setStyleSheet("background: transparent;")
-        self._area.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:vertical { background: transparent; width: 7px; margin: 3px; }"
-            f"QScrollBar::handle:vertical {{ background: {pal['muted']};"
-            "  border-radius: 3px; min-height: 26px; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+        self._style_scroll_area()
         self._content = QWidget()
         self._content.setStyleSheet("background: transparent;")
         self._area.setWidget(self._content)
         self._smooth_scroll = SmoothScroll(self._area, parent=self)
+        # Подсветку на время прокрутки не анимируем (см. _on_scrolled).
+        self._scroll_busy = False
+        self._scroll_idle = QTimer(self)
+        self._scroll_idle.setSingleShot(True)
+        self._scroll_idle.setInterval(140)
+        self._scroll_idle.timeout.connect(self._scroll_settled)
+        self._area.verticalScrollBar().valueChanged.connect(self._on_scrolled)
 
     def resizeEvent(self, event):
         p = self._pad
@@ -896,8 +983,14 @@ class HistoryList(QWidget):
                 r._pos_anim = a
             else:
                 r.move(0, target_y)
+        # Строки могли уехать из-под курсора — сверяем подсветку.
+        QTimer.singleShot(0, self.sync_hover)
 
     def _make_row(self, entry, downloading=False, pending=False, fetching=False):
+        with perflog.measure("создание строки истории", id=entry.get("id")):
+            return self._make_row_now(entry, downloading, pending, fetching)
+
+    def _make_row_now(self, entry, downloading=False, pending=False, fetching=False):
         r = HistoryRow(self.app, entry, self._row_width(), self._content,
                        downloading=downloading, allow_trim=self._allow_trim,
                        pending=pending, fetching=fetching)
@@ -917,21 +1010,127 @@ class HistoryList(QWidget):
         for r in self._rows:
             r.set_active(bool(path) and _same_file(r.entry.get("path"), path))
 
-    def rebuild(self, entries):
+    # Каскад появления строк: сколько штук анимируем и с каким шагом. Анимируем
+    # только верхние — на длинной истории остальные всё равно за экраном, а
+    # полсотни одновременных анимаций дали бы рывки.
+    CASCADE_MAX = 8
+    CASCADE_STEP_MS = 90
+
+    def rebuild(self, entries, cascade=False):
+        with perflog.measure("HistoryList.rebuild", rows=len(entries),
+                             cascade=cascade):
+            self._rebuild_now(entries, cascade)
+
+    def _rebuild_now(self, entries, cascade=False):
+        """Пересобирает список. cascade=True — строки появляются по очереди
+        сверху вниз (fade + наезд), начиная с самой свежей."""
         # Строки активных загрузок не хранятся в json — сохраняем их объекты
         # (их worker->row связи должны жить) и держим сверху.
         keep = [r for r in self._rows if r.is_downloading() or r.is_pending()
                 or r.is_fetching() or r.is_error()]
+        # Готовые строки переиспользуем по id: обложка и подпись уже загружены,
+        # заново читать их с диска незачем. Раньше список сносился целиком, и на
+        # каждом открытии окна все обложки перечитывались.
+        pool = {}
         for r in self._rows:
-            if r not in keep:
+            if r in keep:
+                continue
+            rid = (r.entry or {}).get("id")
+            if rid and rid not in pool:
+                pool[rid] = r
+            else:
                 r.setParent(None)
                 r.deleteLater()
         self._content.setFixedWidth(self._row_width())
-        made = [self._make_row(e) for e in entries]
+        made = []
+        for e in entries:
+            row = pool.pop(e.get("id"), None)
+            if row is None:
+                made.append(self._make_row(e))
+            else:
+                row.update_entry(e)
+                made.append(row)
+        for r in pool.values():          # не пригодившиеся — убираем
+            r.setParent(None)
+            r.deleteLater()
         self._rows = keep + made
         for r in self._rows:
             r.set_width(self._row_width())
         self._reflow(animate=False)
+        if cascade and made:
+            self._cascade_in(made)
+
+    def _cascade_in(self, rows):
+        """Появление пачки строк по очереди: каждая выезжает снизу и проявляется."""
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        s = self.app._s
+        shift = s(14)
+        # Пока каскад идёт, список «занят»: восемь строк со сдвигом 90 мс плюс
+        # 240 мс на каждую — почти секунда анимаций. Если в это время начать
+        # прокрутку, она конкурирует с ними и список кажется подвисшим. Поэтому
+        # держим список запланированных строк и обрываем каскад по первому
+        # действию пользователя (см. finish_cascade).
+        self._cascade_pending = []       # ещё не начавшие
+        self._cascade_rows = []          # все участники (в т.ч. уже едущие)
+        for i, r in enumerate(rows[:self.CASCADE_MAX]):
+            base_y = r.y()
+            self._cascade_pending.append((r, base_y))
+            self._cascade_rows.append((r, base_y))
+            r.move(0, base_y + shift)
+            # Прячем до своей очереди СТАТИЧЕСКИМ эффектом. Раньше здесь стоял
+            # anim.fade(r, 0, 0, 1) — но fade по завершении снимает эффект с
+            # виджета, и через миллисекунду строка снова становилась видимой:
+            # вся пачка вспыхивала разом, а потом дёргалась по очереди.
+            eff = QGraphicsOpacityEffect(r)
+            eff.setOpacity(0.0)
+            r.setGraphicsEffect(eff)
+            QTimer.singleShot(i * self.CASCADE_STEP_MS,
+                              lambda rr=r, y=base_y: self._cascade_step(rr, y, shift))
+
+
+    def finish_cascade(self):
+        """Мгновенно завершает каскад: строки на местах, эффекты сняты.
+
+        Обрывать надо и те строки, что уже едут: иначе их анимации продолжают
+        тикать поверх прокрутки — а это и есть та самая «подвисшая секунда»."""
+        rows = getattr(self, "_cascade_rows", None)
+        if not rows:
+            return
+        self._cascade_pending = []
+        self._cascade_rows = []
+        for row, base_y in rows:
+            try:
+                anim.stop(row, "_cascade_anim")
+                anim.stop(row, "_fade_anim")
+                row.setGraphicsEffect(None)
+                row.move(0, base_y)
+            except RuntimeError:
+                pass
+
+    def _cascade_step(self, row, base_y, shift):
+        # Каскад мог быть оборван (пользователь начал прокрутку) — тогда строка
+        # уже на месте и трогать её не нужно.
+        if not any(r is row for r, _ in getattr(self, "_cascade_pending", [])):
+            return
+        try:
+            if not row.isVisible():
+                return
+        except RuntimeError:
+            return                              # строку успели убрать
+        # Позицию задаём здесь же: между постановкой в очередь и своим тиком
+        # мог пройти пересчёт раскладки и вернуть строку на место.
+        row.move(0, int(base_y + shift))
+        self._cascade_pending = [(r, y) for r, y in self._cascade_pending
+                                 if r is not row]
+        def done(rr=row):
+            self._cascade_rows = [(r, y) for r, y in
+                                  getattr(self, "_cascade_rows", []) if r is not rr]
+
+        anim.animate(row, 1.0, 0.0, 240,
+                     lambda t, rr=row, y=base_y: rr.move(0, int(y + shift * t)),
+                     easing=QEasingCurve.OutCubic, on_finished=done,
+                     attr="_cascade_anim")
+        anim.fade(row, 0.0, 1.0, 240)
 
     def insert_new(self, entry):
         """Добавляет готовую запись сверху с анимацией наезда."""
@@ -1008,6 +1207,69 @@ class HistoryList(QWidget):
                 r.flash_error(text)
                 return True
         return False
+
+    def _style_scroll_area(self):
+        """Стиль полосы прокрутки списка (цвет ручки — из палитры)."""
+        pal = themes.palette(self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 7px; margin: 3px; }"
+            f"QScrollBar::handle:vertical {{ background: {pal['muted']};"
+            "  border-radius: 3px; min-height: 26px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+
+    def _reload_theme(self):
+        pal = themes.palette(self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._bg = QColor(pal["card_bg"])
+        self._border = QColor(pal["border"])
+        if getattr(self, "_area", None) is not None:
+            self._style_scroll_area()
+
+    def is_scrolling(self):
+        """Идёт ли сейчас прокрутка (тогда подсветку не анимируем)."""
+        return getattr(self, "_scroll_busy", False)
+
+    def _paint_probe(self):
+        """Сколько стоит один полный перерис списка (для perf-лога)."""
+        with perflog.measure("перерисовка списка", rows=len(self._rows)):
+            self.repaint()
+
+    def _on_scrolled(self, _value=None):
+        """Пока список едет, строки проезжают под неподвижным курсором и Qt
+        осыпает их enter/leave. Каждое запускало анимацию подсветки на 150 мс с
+        тиками каждые 8 мс — десятки анимаций поверх самой прокрутки. На время
+        движения подсветку не анимируем, а после остановки сверяем один раз."""
+        self.finish_cascade()          # пользователь взялся за список — не мешаем
+        self._scroll_busy = True
+        self._scroll_idle.start()
+
+    def _scroll_settled(self):
+        self._scroll_busy = False
+        self.sync_hover()
+
+    def sync_hover(self):
+        """Сверяет подсветку всех строк с положением курсора."""
+        for r in list(self._rows):
+            try:
+                r.sync_hover()
+            except RuntimeError:
+                pass
+
+    def leaveEvent(self, e):
+        # Курсор ушёл со списка — гасим подсветку у всех строк разом.
+        self.sync_hover()
+        super().leaveEvent(e)
+
+    def apply_theme(self, pal=None):
+        """Перекрашивает список и все его строки без пересоздания."""
+        self._reload_theme()
+        for r in self._rows:
+            try:
+                r.apply_theme()
+            except RuntimeError:
+                pass
+        self.update()
 
     def show_copied(self, entry_id):
         """Всплывающее «Copied» над кнопкой копирования нужной строки."""

@@ -170,15 +170,28 @@ class App(QWidget):
         self.content_h = self.WIN_H_SETTINGS - self.BAR_H - self.BORDER_W
         self.about_content_h = self.WIN_H_ABOUT - self.BAR_H - self.BORDER_W
 
-    def _crossfade(self, snap):
-        """Плавный кросс-фейд: поверх нового окна показываем снимок старого и гасим."""
+    def _cover_with_snapshot(self, snap):
+        """Накрывает окно снимком текущего вида (непрозрачно) и отдаёт наложение.
+
+        Ставится ДО перестройки страниц: под ним прячется и сама пересборка, и
+        первый кадр новой темы. Иначе получалось моргание — новый вид успевал
+        мелькнуть, затем сверху ложился снимок старого и гас."""
         from PySide6.QtWidgets import QLabel
         ov = QLabel(self)
         ov.setPixmap(snap)
         ov.setGeometry(0, 0, snap.width(), snap.height())
+        ov.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         ov.raise_()
         ov.show()
-        anim.fade(ov, 1.0, 0.0, 300, on_finished=ov.deleteLater)
+        return ov
+
+    def _crossfade(self, ov):
+        """Гасит наложение, открывая новый вид."""
+        if ov is None:
+            return
+        ov.raise_()          # новые страницы создавались поверх — поднимаем снимок
+        anim.fade(ov, 1.0, 0.0, 420, easing=QEasingCurve.InOutCubic,
+                  on_finished=ov.deleteLater)
 
     def _load_window_colors(self):
         """Цвета фона/рамки окна из палитры текущей темы."""
@@ -190,27 +203,60 @@ class App(QWidget):
         self.PAGE_BG      = pal["page_bg"]
         self.SEP_COLOR    = pal["separator"]
 
-    def _build_pages(self):
-        """Создаёт страницы и нижнюю панель (вызывается при старте и при смене
-        темы/языка — тогда старые виджеты предварительно удаляются)."""
-        self.settings_page = SettingsPage(self, self, self.settings,
+    # --- ленивые страницы ---------------------------------------------- #
+    # Settings/About/Format Priority строятся при ПЕРВОМ открытии, а не на
+    # старте: вместе они занимали ~0.8 c до появления иконки в трее, хотя в
+    # типичной сессии не открываются ни разу. Внутренние поля _*_page держат
+    # «построена ли» — код, который просто прибирается за страницами (teardown,
+    # сброс при скрытии окна), должен смотреть в них, а не в свойства, иначе
+    # уборка сама же всё и построит.
+
+    @property
+    def settings_page(self):
+        if self._settings_page is None:
+            self._settings_page = SettingsPage(self, self, self.settings,
+                                               self.content_w, self.content_h)
+            self._settings_page.setGeometry(self.content_x, self.content_y,
+                                            self.content_w, self.content_h)
+            self._settings_page.hide()
+            self._settings_page.ensurePolished()
+        return self._settings_page
+
+    @property
+    def about_page(self):
+        if self._about_page is None:
+            self._about_page = AboutPage(self, self, self.settings,
+                                         self.content_w, self.about_content_h)
+            self._about_page.setGeometry(self.content_x, self.content_y,
+                                         self.content_w, self.about_content_h)
+            self._about_page.hide()
+            self._about_page.ensurePolished()
+        return self._about_page
+
+    @property
+    def format_page(self):
+        if self._format_page is None:
+            # Format Priority — размер окна тот же, что у Settings.
+            self._format_page = FormatPage(self, self, self.settings,
+                                           self.content_w, self.content_h)
+            self._format_page.setGeometry(self.content_x, self.content_y,
                                           self.content_w, self.content_h)
-        self.settings_page.setGeometry(self.content_x, self.content_y,
-                                       self.content_w, self.content_h)
-        self.settings_page.hide()
+            self._format_page.hide()
+            self._format_page.ensurePolished()
+        return self._format_page
 
-        self.about_page = AboutPage(self, self, self.settings,
-                                    self.content_w, self.about_content_h)
-        self.about_page.setGeometry(self.content_x, self.content_y,
-                                    self.content_w, self.about_content_h)
-        self.about_page.hide()
+    def _built_pages(self):
+        """Уже построенные вторичные страницы (для уборки/сброса — без создания)."""
+        return [p for p in (self._settings_page, self._about_page,
+                            self._format_page) if p is not None]
 
-        # Format Priority — размер окна тот же, что у Settings.
-        self.format_page = FormatPage(self, self, self.settings,
-                                      self.content_w, self.content_h)
-        self.format_page.setGeometry(self.content_x, self.content_y,
-                                     self.content_w, self.content_h)
-        self.format_page.hide()
+    def _build_pages(self):
+        """Создаёт главную страницу и нижнюю панель (вызывается при старте и при
+        смене темы/языка — тогда старые виджеты предварительно удаляются).
+        Остальные страницы создаются лениво (см. свойства выше)."""
+        self._settings_page = None
+        self._about_page = None
+        self._format_page = None
 
         self.main_content_h = self.WIN_H_FULL - self.BAR_H - self.BORDER_W
         self.main_page = MainPage(self, self, self.settings,
@@ -222,22 +268,51 @@ class App(QWidget):
                                     self.WIN_W, self.BAR_H)
         self.bottom_bar.reposition()
 
-        self.settings_page.ensurePolished()
-        self.about_page.ensurePolished()
-        self.format_page.ensurePolished()
         self.main_page.ensurePolished()
 
+        # Историю обычно наполняет on_window_shown, но при пересборке (смена
+        # темы/языка) окно УЖЕ открыто и этого сигнала не будет — список остался
+        # бы пустым до перезапуска. Наполняем сразу и без каскада: во время
+        # кросс-фейда темы бегущие строки выглядели бы дёрганием.
+        if self.isVisible():
+            self.main_page.fill_history(cascade=False)
+
     def apply_appearance(self):
-        """Применяет тему/язык немедленно: перестраивает страницы и
-        перерисовывает окно. Вызывается из About при смене темы/языка.
-        Перестроение откладываем на следующий тик событий — нельзя удалять
-        страницу прямо внутри сигнала её же селектора."""
+        """Применяет тему/язык немедленно. Вызывается из настроек при смене
+        темы/языка. Работу откладываем на следующий тик событий — нельзя
+        трогать страницу прямо внутри сигнала её же селектора."""
         QTimer.singleShot(0, self._apply_appearance_now)
+
+    def apply_theme_live(self):
+        """
+        Смена ТОЛЬКО темы: перекрашиваем существующие виджеты вместо пересборки.
+
+        Язык так не сделать — от него зависит ширина надписей, а раскладка у нас
+        считается при построении; для него остаётся путь через _apply_appearance_now.
+        """
+        pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
+        self._load_window_colors()
+        # Spotlight кэширует палитру при создании — пересоздадим при показе.
+        if self.spotlight is not None:
+            self.spotlight.hide_spotlight()
+            self.spotlight.deleteLater()
+            self.spotlight = None
+        self.bottom_bar.apply_theme(pal)
+        self.main_page.apply_theme(pal)
+        for page in self._built_pages():        # только уже созданные
+            page.apply_theme(pal)
+        self.update()
 
     def _apply_appearance_now(self):
         if self._updating or self.main_page.is_busy():
             return
-        snap = self.grab()                      # кадр старого вида для кросс-фейда
+        # Селектор темы/языка после выбора звал update() — это лишь планирует
+        # перерисовку, и в снимок попадало ЕЩЁ СТАРОЕ значение, которое потом
+        # висело весь фейд. Дорисовываем окно до снимка.
+        self.repaint()
+        # Накрываем окно снимком СРАЗУ: вся пересборка идёт под ним, наружу
+        # выходит уже готовый новый вид.
+        overlay = self._cover_with_snapshot(self.grab())
         i18n.set_language(self.settings.get("language", "English"))
         self._load_window_colors()
 
@@ -250,16 +325,18 @@ class App(QWidget):
         # Запоминаем позицию прокрутки настроек, чтобы после пересборки (смена
         # темы/языка из блока Usage) остаться на том же месте, а не улететь наверх.
         scroll_pos = 0
-        try:
-            scroll_pos = self.settings_page._scroll_area.verticalScrollBar().value()
-        except Exception:
-            pass
+        if self._settings_page is not None:      # не строим её ради прокрутки
+            try:
+                scroll_pos = self._settings_page._scroll_area.verticalScrollBar().value()
+            except Exception:
+                pass
 
         # Удаляем старые страницы и панель. Кнопки нижней панели привязаны к окну,
         # поэтому их убираем отдельно (иначе остаются «фантомные» кнопки).
+        # Непостроенные страницы просто пропускаем — создавать их, чтобы тут же
+        # удалить, бессмысленно.
         self.bottom_bar.teardown()
-        for w in (self.settings_page, self.about_page, self.format_page,
-                  self.main_page, self.bottom_bar):
+        for w in self._built_pages() + [self.main_page, self.bottom_bar]:
             w.setParent(None)
             w.deleteLater()
 
@@ -268,7 +345,9 @@ class App(QWidget):
         # Тему/язык меняют на странице настроек — на ней и остаёмся.
         self.current_page = "settings"
         self.set_window_height(self.WIN_H_SETTINGS)
-        self.bottom_bar.set_page_mode("settings")
+        # Без анимации: панель только что создана заново в режиме main, и иначе
+        # папка при каждой смене темы заново ехала бы из ряда в центр.
+        self.bottom_bar.set_page_mode("settings", animate=False)
         self.settings_page.setGeometry(self.content_x, self.content_y,
                                        self.content_w, self.content_h)
         self.settings_page.show()
@@ -278,8 +357,15 @@ class App(QWidget):
             self.settings_page._scroll_area.verticalScrollBar().setValue(scroll_pos)
         except Exception:
             pass
-        self.update()
-        self._crossfade(snap)                   # плавный переход к новой теме
+        # ВАЖНО: поднять снимок обратно наверх ДО перерисовки. Новые страницы
+        # созданы позже него и по порядку наложения оказались выше, а
+        # settings_page.raise_() подняла их ещё выше — без этого repaint ниже
+        # рисовал новый вид ПОВЕРХ снимка, и он вспыхивал перед фейдом.
+        overlay.raise_()
+        # Новый вид дорисовываем, пока он скрыт снимком, и только потом гасим
+        # снимок — значение селектора сразу видно новым, без «залипания».
+        self.repaint()
+        self._crossfade(overlay)                # плавный переход к новому виду
 
     # ------------------------------------------------------------------ #
     #  Отрисовка фона: скруглённый прямоугольник + радиальный градиент + рамка
@@ -343,7 +429,8 @@ class App(QWidget):
         self._nav_busy = True
         self.current_page = "settings"
         self.bottom_bar.set_page_mode("settings", target_h=self.WIN_H_SETTINGS)
-        self.about_page.hide()
+        if self._about_page is not None:      # не строим её только чтобы скрыть
+            self._about_page.hide()
         self.settings_page.setGeometry(self.content_x, self.content_y,
                                        self.content_w, self.content_h)
         self._animate_height(self.WIN_H_SETTINGS)   # Settings выше базовой
@@ -394,8 +481,10 @@ class App(QWidget):
     def reset_settings_scroll(self):
         """Прокрутку настроек — в начало. Зовём при выходе из Settings и при
         скрытии окна; переход в Format Priority и обратно позицию СОХРАНЯЕТ."""
+        if self._settings_page is None:
+            return                            # ещё не открывали — и прокрутки нет
         try:
-            self.settings_page._scroll_area.verticalScrollBar().setValue(0)
+            self._settings_page._scroll_area.verticalScrollBar().setValue(0)
         except Exception:
             pass
 
@@ -853,6 +942,11 @@ class App(QWidget):
             self._hotkey = None
 
     def _ensure_spotlight(self):
+        from core import perflog
+        with perflog.measure("создание Spotlight"):
+            return self._ensure_spotlight_now()
+
+    def _ensure_spotlight_now(self):
         """Создаёт (но не показывает) окно Spotlight, если его ещё нет. Нужно для
         фоновых загрузок (Paste/Toast), которые кладут строку в историю, даже
         когда Spotlight не открывали."""
@@ -861,8 +955,13 @@ class App(QWidget):
             self.spotlight = Spotlight(self)
         return self.spotlight
 
+
     def toggle_spotlight(self):
-        self._ensure_spotlight().toggle()
+        from core import perflog
+        perflog.note("хоткей дошёл до UI-потока")
+        with perflog.measure("toggle_spotlight целиком"):
+            self._ensure_spotlight().toggle()
+        perflog.note("toggle_spotlight завершён")
 
     # --- настройки Spotlight ------------------------------------------- #
     def set_spotlight_enabled(self, on):
@@ -1414,6 +1513,11 @@ class App(QWidget):
         return rise if self._tray_edge == "bottom" else -rise
 
     def show_near_tray(self):
+        from core import perflog
+        with perflog.measure("show_near_tray"):
+            self._show_near_tray_now()
+
+    def _show_near_tray_now(self):
         self._shown = True
         fresh = not self.isVisible()
 
@@ -1499,13 +1603,12 @@ class App(QWidget):
         if self.current_page != "main":
             self.current_page = "main"
             self.bottom_bar.set_page_mode("main")
-        self.settings_page.setGraphicsEffect(None)
-        self.about_page.setGraphicsEffect(None)
-        self.format_page.setGraphicsEffect(None)
+        # Только по уже построенным: этот метод зовётся при каждом показе окна,
+        # и обращение к свойствам создало бы все страницы на первом же клике.
+        for p in self._built_pages():
+            p.setGraphicsEffect(None)
+            p.hide()
         self.main_page.setGraphicsEffect(None)
-        self.settings_page.hide()
-        self.about_page.hide()
-        self.format_page.hide()
         self.reset_settings_scroll()          # окно скрыли/сбросили — прокрутку в начало
         self.main_page.show()
         self.main_page.on_window_shown()      # обновить историю окна (убрать удалённые)

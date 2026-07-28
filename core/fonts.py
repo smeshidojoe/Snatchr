@@ -8,9 +8,6 @@ FAMILY = "SF Pro Display"
 MONO   = "Consolas"   # моноширинный (для пути загрузки), как в референсе
 
 # Совместимость со старым кодом (family-имена).
-FONT_REGULAR = FAMILY
-FONT_LIGHT   = "SF Pro Display Light"
-FONT_THIN    = "SF Pro Display Thin"
 
 # Все веса «SF Pro Display» регистрируются под одним family с разными стилями.
 _FILES = [
@@ -28,6 +25,11 @@ _FILES = [
 
 _loaded = False
 
+# Кеш готовых QFont по (размер, стиль). QFontDatabase.font() каждый раз ищет
+# шрифт в базе, а при построении окна он зовётся под сотню раз — на старте это
+# заметная доля времени. Ключей мало (десяток размеров × 7 стилей).
+_font_cache = {}
+
 
 def load():
     """Регистрирует шрифты приложения (один раз за сессию)."""
@@ -42,21 +44,35 @@ def load():
             except Exception:
                 pass
     _loaded = True
+    # Всё, что успели запросить до регистрации, попало в кеш запасным шрифтом —
+    # сбрасываем, иначе неверный шрифт закрепится на всю сессию.
+    _font_cache.clear()
 
 
 def font(size, style="Regular"):
     """
     QFont нужного стиля «SF Pro Display».
     style: Thin | Light | Regular | Medium | Semibold | Bold | Heavy
+
+    Результат кешируется; наружу отдаём копию, чтобы вызывающий код не мог
+    изменить запись в кеше (QFont — значение, но объект общий).
     """
-    f = QFontDatabase.font(FAMILY, style, size)
-    if f.family() != FAMILY:        # на случай, если стиль не подхватился
-        f = QFont(FAMILY, size)
-    return f
+    key = (size, style)
+    f = _font_cache.get(key)
+    if f is None:
+        f = QFontDatabase.font(FAMILY, style, size)
+        if f.family() != FAMILY:    # на случай, если стиль не подхватился
+            f = QFont(FAMILY, size)
+        _font_cache[key] = f
+    return QFont(f)
 
 
 def mono(size):
     """Моноширинный шрифт (для пути загрузки)."""
-    f = QFont(MONO, size)
-    f.setStyleHint(QFont.Monospace)
-    return f
+    key = (size, "__mono__")
+    f = _font_cache.get(key)
+    if f is None:
+        f = QFont(MONO, size)
+        f.setStyleHint(QFont.Monospace)
+        _font_cache[key] = f
+    return QFont(f)

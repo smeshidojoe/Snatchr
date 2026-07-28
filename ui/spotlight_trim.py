@@ -44,15 +44,24 @@ class _PeaksWorker(QThread):
     обрезки не морозило UI. Кэширует результат."""
     done = Signal(list, str)         # peaks, path (для проверки актуальности)
 
-    def __init__(self, path, cache, parent=None):
+    def __init__(self, path, cache, parent=None, entry_id=""):
         super().__init__(parent)
         self._path, self._cache = path, cache
+        self._entry_id = entry_id
 
     def run(self):
         try:
             pk = trimmer.audio_peaks(self._path)
             if pk and self._cache:
-                trimmer.save_peaks(pk, self._cache)
+                import os as _os
+                _os.makedirs(_os.path.dirname(self._cache), exist_ok=True)
+                saved = trimmer.save_peaks(pk, self._cache)
+                # Привязываем волну к записи истории — тогда она удалится вместе
+                # с ней (раньше кэш видео лежал в %TEMP% под хешем пути и не
+                # чистился никогда).
+                if saved and self._entry_id:
+                    from core import history
+                    history.set_waveform(self._entry_id, saved)
         except Exception:
             pk = []
         self.done.emit(pk, self._path)
@@ -645,9 +654,12 @@ class TrimPanel(QWidget):
         # Видео рендерит сам Qt (QVideoWidget): без покадровых QImage/QPixmap на
         # UI-потоке. Раньше 4K-кадры конвертировались вручную (33 МБ на кадр),
         # UI не успевал, очередь videoFrameChanged росла и съедала всю память.
-        self._video = QVideoWidget(self)
-        self._video.setStyleSheet("background: #000000;")
-        self._video.hide()
+        # Видеовиджет и плеер создаются ЛЕНИВО — при первом открытии файла.
+        # Иначе Qt поднимал мультимедиа-подсистему и грузил библиотеки FFmpeg
+        # уже при создании Spotlight (в консоли — строка «qt.multimedia.ffmpeg:
+        # Using Qt multimedia with FFmpeg…»), хотя обрезку могли ни разу не
+        # открыть. Это и была задержка первого вызова Spotlight.
+        self._video = None
         self._anim_busy = False          # идёт анимация панели -> видео скрыто
         self._preview = QLabel(self)         # аудио: фон под волну (и заглушка)
         self._preview.setAlignment(Qt.AlignCenter)
@@ -656,7 +668,6 @@ class TrimPanel(QWidget):
         # --- плеер (звук + видео через QVideoWidget) ----------------------
         self._player = self._audio = None
         self._volume = float(app.settings.get("trim_volume", 0.8))
-        self._build_player()
         self._vol = _VolumeSlider(app, self._volume, self)
         self._vol.changed.connect(self._on_volume)
         self._ph = _PreviewPlayhead(self)    # плейхед поверх превью (аудио-waveform)
@@ -765,6 +776,27 @@ class TrimPanel(QWidget):
         p.setBrush(col)
         p.drawPolygon(poly)
 
+    def _peaks_cache_path(self, path):
+        """Куда класть посчитанную волну.
+
+        Для записи истории — рядом с волнами аудио (waveforms/<id>.peaks): так
+        файл привязан к записи и удаляется вместе с ней. Для файла вне истории
+        (id нет) остаётся временный кэш по хешу пути.
+        """
+        if self._entry_id:
+            from core import history
+            return history.waveform_path(self._entry_id)
+        if not path:
+            return ""
+        import tempfile
+        import hashlib
+        # md5 пути — стабильный ключ (hash() солится per-process,
+        # кэш не переживал бы перезапуск -> опять 5с чёрного экрана).
+        key = hashlib.md5(
+            os.path.normpath(path).encode("utf-8", "replace")).hexdigest()
+        return os.path.join(tempfile.gettempdir(),
+                            "snatchr_pk_%s.peaks" % key[:16])
+
     def _on_peaks_ready(self, peaks, path):
         if path != self._path or not peaks:      # волна нужна и видео (лента)
             return
@@ -862,7 +894,7 @@ class TrimPanel(QWidget):
         # не потеряло высоту из-за ухода от краёв.
         return s(280) + s(56) + s(44) + s(30) + s(12)
 
-    def open_for(self, path, waveform=None):
+    def open_for(self, path, waveform=None, entry_id=""):
         # Тот же файл, что открывали в прошлый раз: НЕ чистим превью и filmstrip —
         # прошлый кадр/полоса остаются на месте, а новый кадр 0 идентичен, поэтому
         # реоткрытие без черноты и моргания «как будто перезапустилась обрезка».
@@ -870,15 +902,18 @@ class TrimPanel(QWidget):
         same = bool(path and self._path
                     and os.path.normpath(path) == os.path.normpath(self._path))
         self._path = path
+        self._entry_id = entry_id or ""
         self._busy = False
         self._abandoned = False
         self._dirty = False              # новый файл — изменений ещё нет
         self._is_audio = _is_audio_file(path)
+        self._ensure_media()             # плеер нужен только начиная отсюда
         self._custom_strip = None
         self._btn_play.set_glyph("play")
         # Видео рендерит QVideoWidget, аудио — волна на _preview/_ph. Во время
         # анимации раскрытия видео держим скрытым (см. begin_anim).
-        self._video.setVisible(not self._is_audio and not self._anim_busy)
+        if self._video is not None:
+            self._video.setVisible(not self._is_audio and not self._anim_busy)
         self._preview.setVisible(self._is_audio)
         if not same:
             self._preview.clear()
@@ -892,18 +927,12 @@ class TrimPanel(QWidget):
         self._peaks = (trimmer.load_peaks(waveform)
                        if (waveform and os.path.isfile(waveform)) else [])
         if not self._peaks:              # нет готового — пробуем кэш, иначе фон
-            import tempfile
-            import hashlib
-            # md5 пути — стабильный ключ (hash() солится per-process,
-            # кэш не переживал бы перезапуск -> опять 5с чёрного экрана).
-            key = hashlib.md5(
-                os.path.normpath(path or "").encode("utf-8", "replace")).hexdigest()
-            cache = os.path.join(
-                tempfile.gettempdir(), "snatchr_pk_%s.peaks" % key[:16])
-            if os.path.isfile(cache):
+            cache = self._peaks_cache_path(path)
+            if cache and os.path.isfile(cache):
                 self._peaks = trimmer.load_peaks(cache)
             if not self._peaks and path:  # считаем в фоне — UI не морозим
-                self._peaks_worker = _PeaksWorker(path, cache, self)
+                self._peaks_worker = _PeaksWorker(path, cache, self,
+                                                  entry_id=self._entry_id)
                 self._peaks_worker.done.connect(self._on_peaks_ready)
                 self._peaks_worker.start()
         self._custom_strip = (self._peaks_pixmap(1400, 200)
@@ -923,12 +952,27 @@ class TrimPanel(QWidget):
         высоте, ни применить к нему анимацию. Поэтому во время анимации он
         появлялся сразу целиком (и пропадал последним). Прячем на это время."""
         self._anim_busy = True
-        self._video.hide()
+        if self._video is not None:
+            self._video.hide()
 
     def end_anim(self):
         """Анимация закончилась — возвращаем видеовиджет (если файл видео)."""
         self._anim_busy = False
-        self._video.setVisible(not self._is_audio and bool(self._path))
+        if self._video is not None:
+            self._video.setVisible(not self._is_audio and bool(self._path))
+
+    def _ensure_media(self):
+        """Создаёт видеовиджет и плеер при первой реальной надобности."""
+        if self._player is not None:
+            return
+        s = self.app._s
+        self._video = QVideoWidget(self)
+        self._video.setStyleSheet("background: #000000;")
+        self._video.hide()
+        self._video.lower()              # под остальные элементы панели
+        self._build_player()
+        self._layout()                   # поставить видео на своё место
+        del s
 
     def _build_player(self):
         """(Пере)создаёт QMediaPlayer + звук + видеовыход и подключает сигналы."""
@@ -946,6 +990,8 @@ class TrimPanel(QWidget):
         файловый хендл (Qt FFmpeg-backend на Windows держит демуксер открытым до
         УНИЧТОЖЕНИЯ QMediaPlayer; setSource(QUrl()) не всегда отпускает файл).
         Сам QVideoWidget переживает пересоздание — его переподключаем."""
+        if self._player is None:
+            return
         for obj in (self._player, self._audio):
             try:
                 obj.setParent(None)
@@ -958,6 +1004,8 @@ class TrimPanel(QWidget):
         self.stop()               # stop уже пересоздаёт плеер и отпускает файл
 
     def stop(self):
+        if self._player is None:
+            return
         # Закрыли обрезку — ВЫГРУЖАЕМ файл (снимаем блокировку, чтобы его можно было
         # удалить/переместить). Превью не чистим: последний кадр остаётся, и повторное
         # открытие того же файла проходит бесшовно.
@@ -989,7 +1037,8 @@ class TrimPanel(QWidget):
         pad = s(10)
         prev_h = s(280)
         self._preview.setGeometry(pad, pad, w - 2 * pad, prev_h)
-        self._video.setGeometry(pad, pad, w - 2 * pad, prev_h)
+        if self._video is not None:
+            self._video.setGeometry(pad, pad, w - 2 * pad, prev_h)
         self._ph.setGeometry(pad, pad, w - 2 * pad, prev_h)
         self._ph.setVisible(self._is_audio)
         self._ph.raise_()
@@ -1060,6 +1109,8 @@ class TrimPanel(QWidget):
 
     # --- сигналы плеера ------------------------------------------------ #
     def _on_duration(self, ms):
+        if self._player is None:
+            return
         self._dur = max(0.0, ms / 1000.0)
         if self._dur <= 0:
             return
@@ -1082,6 +1133,8 @@ class TrimPanel(QWidget):
         self.app.save_settings()
 
     def _on_position(self, ms):
+        if self._player is None:
+            return
         sec = ms / 1000.0
         self._bar.set_play_pos(sec)
         self._follow_playhead()              # превью едет за плейхедом (если зумнуто)
@@ -1102,6 +1155,8 @@ class TrimPanel(QWidget):
 
     # --- управление ---------------------------------------------------- #
     def _toggle_play(self):
+        if self._player is None:
+            return
         if self._player.playbackState() == QMediaPlayer.PlayingState:
             self._player.pause()
         else:
@@ -1111,6 +1166,8 @@ class TrimPanel(QWidget):
             self._player.play()
 
     def _on_scrub(self, sec):
+        if self._player is None:
+            return
         # Плейхед двигается сразу, а перемотку плеера откладываем (троттлинг).
         if self._player.playbackState() == QMediaPlayer.PlayingState:
             self._player.pause()
@@ -1120,6 +1177,8 @@ class TrimPanel(QWidget):
             self._scrub_timer.start()
 
     def _do_scrub(self):
+        if self._player is None:
+            return
         if self._scrub_pending is not None:
             self._player.setPosition(int(self._scrub_pending * 1000))
             self._scrub_pending = None

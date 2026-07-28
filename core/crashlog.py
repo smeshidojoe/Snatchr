@@ -32,6 +32,20 @@ CRASH_TTL = 14 * 24 * 3600
 _installed = False
 
 
+# Управляющие исключения — это не падения программы.
+#
+# KeyboardInterrupt особенно важен: при запуске из консоли IDE нажатие сочетания
+# с Ctrl (у нас хоткей Spotlight — ctrl+shift+e) заставляет консоль слать
+# процессу сигнал прерывания. Раньше он уходил в никуда, а с появлением этого
+# модуля на каждое нажатие писался полный отчёт — первый сбор окружения стоит
+# ~300 мс, и всё это в UI-потоке, прямо перед открытием окна.
+_NOT_A_CRASH = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+def _is_crash(exc_type):
+    return not (isinstance(exc_type, type) and issubclass(exc_type, _NOT_A_CRASH))
+
+
 def _safe(fn, default=""):
     try:
         return fn()
@@ -102,14 +116,16 @@ def install():
     _installed = True
 
     def _hook(exc_type, exc, tb):
+        if not _is_crash(exc_type):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
         save(exc_type, exc, tb)
         sys.__excepthook__(exc_type, exc, tb)
 
     sys.excepthook = _hook
 
     def _thread_hook(args):
-        # SystemExit при штатном завершении потока падением не считаем.
-        if args.exc_type is SystemExit:
+        if not _is_crash(args.exc_type):
             return
         save(args.exc_type, args.exc_value, args.exc_traceback,
              context="thread=%s" % getattr(args.thread, "name", "?"))
@@ -118,6 +134,21 @@ def install():
         threading.excepthook = _thread_hook
 
     _patch_qthread()
+    _warm_up()
+
+
+def _warm_up():
+    """Прогревает сбор окружения в фоне.
+
+    Первый вызов тянет за собой ленивые импорты (~300 мс). Если это случится в
+    момент реального падения, отчёт задержит поток; делаем заранее и не на UI.
+    """
+    def run():
+        try:
+            _environment()
+        except Exception:
+            pass
+    threading.Thread(target=run, name="crashlog-warmup", daemon=True).start()
 
 
 def _patch_qthread():

@@ -22,19 +22,6 @@ def _exe_path():
     return os.path.abspath(sys.executable)
 
 
-def is_enabled():
-    """Прописан ли Snatchr в автозапуске (по данным реестра)."""
-    if not _is_frozen():
-        return False
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
-            val, _ = winreg.QueryValueEx(k, _NAME)
-            return bool(val)
-    except OSError:
-        return False
-
-
 def set_enabled(on):
     """Включает/выключает автозапуск. Возвращает True при успехе (или в dev,
     где регистрировать нечего). Ошибки реестра проглатываем -> False."""

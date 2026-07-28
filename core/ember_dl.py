@@ -26,7 +26,6 @@ from core import tools
 from core.i18n import tr
 
 # Сервисы, для которых Ember — основной движок (не запасной).
-PRIMARY_SERVICES = ("twitter",)
 
 
 def available():
@@ -228,11 +227,16 @@ def to_info(result):
     }
 
 
-def format_options(info):
+def format_options(info, settings=None):
     """Опции селектора качества для Ember-ссылки (аналог downloader.video_formats).
 
     Ember сам склеивает лучшее качество, поэтому «Best Quality» — без ограничения
-    высоты, а остальные строки просто задают потолок (max_height)."""
+    высоты, а остальные строки просто задают потолок (max_height).
+
+    settings — те же настройки, что и у yt-dlp-ветки: Format Priority скрывает
+    и переупорядочивает строки. Ключи здесь того же вида («480_H.264»), так что
+    прячется всё ровно как у yt-dlp. Без settings список отдаётся как есть."""
+    from core import formats
     from core.trimmer import res_label
     opts = [{"label": tr("Best Quality"), "mp3": False, "key": "best",
              "ember": True, "height": 0}]
@@ -241,7 +245,7 @@ def format_options(info):
                      "key": "%d_H.264" % h, "ember": True, "height": int(h)})
     opts.append({"label": tr("Thumbnail"), "thumbnail": True, "mp3": False,
                  "key": "thumbnail", "ember": True, "height": 0})
-    return opts
+    return formats.apply(opts, settings) if settings else opts
 
 
 # ------------------------------------------------------------------ #

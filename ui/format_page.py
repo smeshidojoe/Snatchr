@@ -125,7 +125,10 @@ class FormatPage(WindowDragMixin, QWidget):
         self.settings = settings
         self.width_ = width
         self.height_ = height
-        self._pal = themes.palette(settings.get("theme", themes.DEFAULT_THEME))
+        # СВОЯ копия: themes.palette() отдаёт словарь прямо из реестра тем, и
+        # правка его на месте испортила бы палитру глобально (строки списка
+        # держат ссылку на этот же словарь — потому копия, а не переприсваивание).
+        self._pal = dict(themes.palette(settings.get("theme", themes.DEFAULT_THEME)))
         self.init_window_drag(app)
         self.resize(width, height)
         self._rows = []
@@ -141,6 +144,7 @@ class FormatPage(WindowDragMixin, QWidget):
         lbl.setStyleSheet("color: %s; background: transparent;" % self._pal["title"])
         lbl.move(pad, s(12))
         lbl.adjustSize()
+        self._title_lbl = lbl
 
         top = s(42)
         area = QScrollArea(self)
@@ -149,14 +153,7 @@ class FormatPage(WindowDragMixin, QWidget):
         area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         area.setFrameShape(QFrame.NoFrame)
         area.viewport().setStyleSheet("background: transparent;")
-        area.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:vertical { background: transparent; width: 7px; margin: 2px; }"
-            "QScrollBar::handle:vertical { background: %s;"
-            "  border-radius: 3px; min-height: 24px; }" % self._pal["muted"] +
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
-            " { background: transparent; }")
+        self._style_scroll_area(area)
         area.setGeometry(0, top, self.width_, self.height_ - top)
         self._scroll_area = area
         self._smooth_scroll = SmoothScroll(area, parent=self)
@@ -167,6 +164,31 @@ class FormatPage(WindowDragMixin, QWidget):
         self._pad = pad
         area.setWidget(content)
         self.reload()
+
+    def _style_scroll_area(self, area):
+        """Стиль полосы прокрутки (цвет ручки — из палитры)."""
+        area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 7px; margin: 2px; }"
+            "QScrollBar::handle:vertical { background: %s;"
+            "  border-radius: 3px; min-height: 24px; }" % self._pal["muted"] +
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
+            " { background: transparent; }")
+
+    def apply_theme(self, pal):
+        """Живая смена темы: обновляем СВОЮ копию палитры на месте — строки
+        списка держат ссылку на неё и подхватят цвета без пересоздания.
+        Словарь из themes.palette() при этом остаётся нетронутым."""
+        self._pal.clear()
+        self._pal.update(pal)
+        self._title_lbl.setStyleSheet(
+            "color: %s; background: transparent;" % self._pal["title"])
+        self._style_scroll_area(self._scroll_area)
+        self._relayout_rows()          # разделители пересоздаются с новым цветом
+        for r in self._rows:
+            r.update()
+        self.update()
 
     def reload(self):
         """(Пере)создаёт строки списка по текущему порядку из настроек."""

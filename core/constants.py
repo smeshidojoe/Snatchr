@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.5"
 
 GITHUB_REPO = "SmeshidoJoe/Snatchr"
 
@@ -43,6 +43,10 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR  = os.path.join(BASE_DIR, "assets")
 ICONS_DIR   = os.path.join(ASSETS_DIR, "icons")     # иконки трея (общие)
+# Логотипы платформ поддержки — ОТДЕЛЬНО от icons/: список иконок трея в
+# настройках перечисляет всё содержимое icons/, и логотип CloudTips попадал
+# туда как вариант иконки приложения.
+DONATE_ICONS_DIR = os.path.join(ASSETS_DIR, "donate")
 FONTS_DIR   = os.path.join(ASSETS_DIR, "fonts")
 THEMES_DIR  = os.path.join(ASSETS_DIR, "Themes")    # ассеты по темам
 PROFILE_IMG = os.path.join(ASSETS_DIR, "profile.png")

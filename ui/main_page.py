@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QWidget, QLineEdit, QTextEdit, QLabel
 import os
 import uuid
 
-from core import fonts, downloader, tools, cache, themes, history
+from core import fonts, downloader, tools, cache, themes, history, perflog
 from core.i18n import tr
 from core.icons import themed_icon, themed_pixmap
 from core.workers import (
@@ -13,7 +13,8 @@ from core.workers import (
     MultiProbeWorker, PlaylistProbeWorker,
 )
 from ui.widgets import (
-    IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
+    IconButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
+    ThemedOwner,
     DownloadButton, Spinner, ScrollList, InfoCardRow,
     PlaylistHeader, TimeCodeEdit, rounded_pixmap,
 )
@@ -22,33 +23,35 @@ from ui.download_scheduler import DownloadScheduler
 from ui import anim
 
 
-class MainPage(WindowDragMixin, QWidget):
+class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     """Главный экран: ввод ссылки(ок), анализ, выбор формата, Download."""
 
-    def _load_theme(self):
-        """Загружает цвета текущей темы в атрибуты экземпляра."""
-        p = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
-        self._pal = p
-        self.FIELD_BG    = p["field_bg"]
-        self.TITLE_COLOR = p["title"]
-        self.TEXT_COLOR  = p["text"]
-        self.MUTED_COLOR = p["muted"]
-        self.CB_OFF      = p["cb_off"]
-        self.CB_ON       = p["cb_on"]
-        self.SEG_BG      = p["seg_bg"]
-        self.SEG_SEL     = p["seg_sel"]
-        self.SEL_CHIP    = p["sel_chip"]
-        self.SEL_CHEVRON = p["sel_chevron"]
-        self.DL_BG       = p["download_bg"]
-        self.DL_BG_HOVER = p["download_bg_hover"]
-        self.ANALYZE_BG  = p["analyze_bg"]
-        self.ANALYZE_HOV = p["analyze_bg_hover"]
-        self.STOP_BG     = p["stop_bg"]
-        self.PROG_TRACK  = p["prog_track"]
-        self.OK_COLOR    = p["ok"]
-        self.ERR_COLOR   = p["error"]
-        self.ON_ACCENT   = p["on_accent"]
+    THEME_ATTRS = {
+        "FIELD_BG": "field_bg",
+        "TITLE_COLOR": "title",
+        "TEXT_COLOR": "text",
+        "MUTED_COLOR": "muted",
+        "CB_OFF": "cb_off",
+        "CB_ON": "cb_on",
+        "SEG_BG": "seg_bg",
+        "SEG_SEL": "seg_sel",
+        "SEL_CHIP": "sel_chip",
+        "SEL_CHEVRON": "sel_chevron",
+        "DL_BG": "download_bg",
+        "DL_BG_HOVER": "download_bg_hover",
+        "ANALYZE_BG": "analyze_bg",
+        "ANALYZE_HOV": "analyze_bg_hover",
+        "STOP_BG": "stop_bg",
+        "PROG_TRACK": "prog_track",
+        "OK_COLOR": "ok",
+        "ERR_COLOR": "error",
+        "ON_ACCENT": "on_accent",
+    }
 
+
+    def _load_theme(self):
+        """Цвета текущей темы в атрибуты (таблица THEME_ATTRS)."""
+        self.load_theme_attrs()
     def __init__(self, parent, app, settings, width, height):
         super().__init__(parent)
         self.app = app
@@ -97,7 +100,10 @@ class MainPage(WindowDragMixin, QWidget):
         self._build()
         self._layout()
         self._set_state("idle")
-        self.history.rebuild(history.load())      # показать накопленную историю
+        # Историю здесь НЕ собираем: на старте это лишние миллисекунды до
+        # появления иконки в трее, а окна ещё нет. Список наполняется в
+        # on_window_shown — каскадом, чтобы пауза читалась как анимация.
+        self._history_ready = False
 
     def _default_option(self, mode):
         """Формат «по умолчанию» — тот, что стоит ПЕРВЫМ в Format Priority.
@@ -183,13 +189,7 @@ class MainPage(WindowDragMixin, QWidget):
         self.url_edit = QLineEdit(self)
         self.url_edit.setFont(fonts.font(s(13), "Regular"))
         self.url_edit.setPlaceholderText(tr("Paste video link here..."))
-        self.url_edit.setStyleSheet(
-            f"QLineEdit {{ background-color: {self.FIELD_BG}; border: none; "
-            f"border-radius: {s(8)}px; color: {self.TITLE_COLOR}; "
-            f"padding-left: {s(10)}px; padding-right: {s(30)}px; }}")
-        pal = self.url_edit.palette()
-        pal.setColor(QPalette.PlaceholderText, QColor(self.MUTED_COLOR))
-        self.url_edit.setPalette(pal)
+        self._style_url_edit()
         self.url_edit.textChanged.connect(self._on_text_changed)
 
         self.url_text = QTextEdit(self)
@@ -207,8 +207,10 @@ class MainPage(WindowDragMixin, QWidget):
         self.btn_cancel = IconButton(self, ic_cancel, ic_cancel_h, s(16), self._clear_url)
         self.btn_cancel.hide()
 
-        self.cb_multi = CheckBox(self, tr("Multiple Links"), fonts.font(s(12), "Regular"),
-                                 self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        self.cb_multi = self.themed(
+            CheckBox(self, tr("Multiple Links"), fonts.font(s(12), "Regular"),
+                     self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+            text_color="text", off_color="cb_off", on_color="cb_on")
         self.cb_multi.toggled.connect(self._on_multi_toggle)
 
         # Таймкоды (только одиночные ссылки): метка From/To + жёсткий блок 00:00:00.
@@ -232,17 +234,24 @@ class MainPage(WindowDragMixin, QWidget):
         self.tc_start.setEnabled(False)
         self.tc_end.setEnabled(False)
 
-        self.seg_type = SegmentedControl(
-            self, [(tr("Video"), "video"), (tr("Audio"), "audio")], "video",
-            fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9))
+        self.seg_type = self.themed(
+            SegmentedControl(
+                self, [(tr("Video"), "video"), (tr("Audio"), "audio")], "video",
+                fonts.font(s(11), "Medium"),
+                self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+            bg_color="seg_bg", sel_color="seg_sel", text_color="muted",
+            sel_text_color="on_accent")
         self.seg_type.changed.connect(self._on_mode_change)
 
-        self.sel_format = Selector(self, fonts.font(s(11), "Regular"),
-                                   self.FIELD_BG, self.SEL_CHIP, self.TEXT_COLOR,
-                                   self.SEL_CHEVRON, s(7), s(22),
-                                   accent=self.SEG_SEL, border=self._pal["border"],
-                                   on_accent=self.ON_ACCENT)
+        self.sel_format = self.themed(
+            Selector(self, fonts.font(s(11), "Regular"),
+                     self.FIELD_BG, self.SEL_CHIP, self.TEXT_COLOR,
+                     self.SEL_CHEVRON, s(7), s(22),
+                     accent=self.SEG_SEL, border=self._pal["border"],
+                     on_accent=self.ON_ACCENT),
+            field_bg="field_bg", chip_bg="sel_chip", text_color="text",
+            chevron_color="sel_chevron", accent="seg_sel", border="border",
+            on_accent="on_accent")
         self.sel_format.add_item(tr("Best Quality"))
         self.sel_format.set_current(tr("Best Quality"))
         self.sel_format.changed.connect(self._on_format_change)
@@ -270,12 +279,9 @@ class MainPage(WindowDragMixin, QWidget):
         self.lbl_msg.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
         self.lbl_msg.setWordWrap(True)
 
-        # Кнопка «свои cookies» — появляется, когда даже куки браузера не помогли.
-        self.btn_cookies = LinkButton(self, tr("Use cookies file…"),
-                                      fonts.font(s(10), "Semibold"),
-                                      self._pal["link"], self._pal["link_hover"],
-                                      self._on_pick_cookies)
-        self.btn_cookies.hide()
+        # Кнопки «Use cookies file…» здесь нет: куки браузера подключаются сами,
+        # а свой файл при необходимости указывается в Настройках (раздел Cookies).
+        # Всплывать поверх ошибки ей незачем.
 
         # Скроллируемый список (Multiple Links / плейлист).
         self.list = ScrollList(self, self.PROG_TRACK, self.MUTED_COLOR)
@@ -298,12 +304,74 @@ class MainPage(WindowDragMixin, QWidget):
         self._err_pm = themed_pixmap(theme, "red-cancel.png", self.ERR_COLOR, s(13))
         self.status_box.hide()
 
-        self.btn_download = DownloadButton(self, tr("Download"), fonts.font(s(13), "Semibold"),
-                                           self.DL_BG, self.DL_BG_HOVER, s(8),
-                                           fg=self.ON_ACCENT,
-                                           disabled_bg=self._pal["disabled_bg"],
-                                           disabled_text=self._pal["disabled_text"])
+        self.btn_download = self.themed(
+            DownloadButton(self, tr("Download"), fonts.font(s(13), "Semibold"),
+                           self.DL_BG, self.DL_BG_HOVER, s(8),
+                           fg=self.ON_ACCENT,
+                           disabled_bg=self._pal["disabled_bg"],
+                           disabled_text=self._pal["disabled_text"]),
+            fg="on_accent", disabled_bg="disabled_bg", disabled_text="disabled_text")
         self.btn_download.clicked.connect(self._on_download_click)
+
+    def _style_url_edit(self):
+        """Стиль поля ссылки (фон/текст/подсказка — из палитры)."""
+        s = self.app._s
+        self.url_edit.setStyleSheet(
+            f"QLineEdit {{ background-color: {self.FIELD_BG}; border: none; "
+            f"border-radius: {s(8)}px; color: {self.TITLE_COLOR}; "
+            f"padding-left: {s(10)}px; padding-right: {s(30)}px; }}")
+        pal = self.url_edit.palette()
+        pal.setColor(QPalette.PlaceholderText, QColor(self.MUTED_COLOR))
+        self.url_edit.setPalette(pal)
+
+    def _on_theme_applied(self, pal):
+        """Живая смена темы: то, что реестр покрыть не может — подписи, стили,
+        затонированные картинки."""
+        s = self.app._s
+        theme = self.settings.get("theme", themes.DEFAULT_THEME)
+        self._load_theme()                      # свои цветовые атрибуты
+        self._style_url_edit()
+        css = f"color: {self.TITLE_COLOR}; background: transparent;"
+        self.tc_from_lbl.setStyleSheet(css)
+        self.tc_to_lbl.setStyleSheet(css)
+        self.lbl_title.setStyleSheet(css)
+        self.lbl_uploader.setStyleSheet(
+            f"color: {self.TEXT_COLOR}; background: transparent;")
+        for lbl in (self.lbl_duration, self.lbl_msg):
+            lbl.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
+        for tc in (self.tc_start, self.tc_end):
+            tc.set_colors(field_bg=self.FIELD_BG, text_color=self.TITLE_COLOR,
+                          disabled_bg=self._pal["disabled_bg"],
+                          disabled_text=self._pal["disabled_text"])
+        # Иконки и картинки — перетонировать под новую палитру.
+        self.btn_cancel.set_icons(
+            themed_icon(theme, "cancel.png", self._pal["icon"], s(16)),
+            themed_icon(theme, "cancel.png", self._pal["icon_hover"], s(16)))
+        self.spinner.set_pixmap(
+            themed_pixmap(theme, "fetching.png", self.MUTED_COLOR, s(16)))
+        self._ok_pm = themed_pixmap(theme, "green-check.png", self.OK_COLOR, s(13))
+        self._err_pm = themed_pixmap(theme, "red-cancel.png", self.ERR_COLOR, s(13))
+        self.list.set_colors(track_color=self.PROG_TRACK,
+                             handle_color=self.MUTED_COLOR)
+        # Строки плейлиста/мультиссылок создаются динамически, поэтому в реестре
+        # их не держим (он бы рос) — обходим текущие.
+        for row in self.list.rows():
+            if isinstance(row, InfoCardRow):
+                row.set_colors(title_color=self.TITLE_COLOR,
+                               text_color=self.TEXT_COLOR,
+                               muted_color=self.MUTED_COLOR)
+        if getattr(self, "pl_header", None) is not None:
+            try:
+                self.pl_header.set_colors(title_color=self.TITLE_COLOR,
+                                          action_color=self.LINK if hasattr(self, "LINK")
+                                          else self._pal["link"],
+                                          action_hover=self._pal["link_hover"],
+                                          count_color=self.MUTED_COLOR)
+            except RuntimeError:
+                self.pl_header = None
+        self.history.apply_theme()
+        # Цвет кнопки Download зависит от состояния — пересчитываем текущим.
+        self._refresh_download_enabled()
 
     # ------------------------------------------------------------------ #
     def _layout(self):
@@ -398,10 +466,6 @@ class MainPage(WindowDragMixin, QWidget):
         # Спиннер/надпись «Fetching…» держим поверх истории (иначе она их закрывает).
         self.spinner.raise_()
         self.lbl_msg.raise_()
-
-        # «Use cookies file…» — в правом нижнем углу инфо-блока (над статусом).
-        cw = s(130)
-        self.btn_cookies.setGeometry(w - pad - cw, self._status_y - s(26), cw, s(22))
 
         self.status_box.setGeometry(pad, self._status_y, w - 2 * pad, s(18))
         self.status_icon.setGeometry(0, 0, s(15), s(18))
@@ -700,11 +764,21 @@ class MainPage(WindowDragMixin, QWidget):
         tw.finished.connect(tw.deleteLater)   # не копим воркеры — чистим по завершении
         tw.start()
 
+    def fill_history(self, cascade=None):
+        """Наполняет список истории. cascade=None — каскад только при первом
+        наполнении (дальше строки не должны прыгать на каждом открытии окна)."""
+        if cascade is None:
+            cascade = not self._history_ready
+        self._history_ready = True
+        with perflog.measure("history.prune_missing (диск)"):
+            entries = history.prune_missing()
+        self.history.rebuild(entries, cascade=cascade)
+
     def on_window_shown(self):
         """Окно показали: обновляем историю (rebuild сохраняет pending/загрузки)."""
         if self._state not in ("multi_idle", "multi_fetching", "multi_ready",
                                "playlist_fetching", "playlist_ready"):
-            self.history.rebuild(history.prune_missing())
+            self.fill_history()
         self.app.sync_view_mirrors(self)     # подтянуть идущие загрузки из Spotlight
         # Поле ввода при возврате не должно оказываться «выделенным» (Qt по фокусу
         # окна выделяет весь текст) — снимаем выделение, курсор в конец.
@@ -752,27 +826,6 @@ class MainPage(WindowDragMixin, QWidget):
             QTimer.singleShot(2600, lambda r=row: self.history.remove_row(r))
         self.lbl_msg.setText("")
         self._set_state("error")
-        # Куки браузера не помогли/не читаются (бот-чек или Chrome-шифрование) —
-        # предлагаем указать свой файл cookies.
-        if ((downloader.is_auth_error(msg) or downloader.is_cookie_error(msg))
-                and not self.settings.get("cookies_file")):
-            self.btn_cookies.show()
-            self.btn_cookies.raise_()
-
-    def _on_pick_cookies(self):
-        from PySide6.QtWidgets import QFileDialog
-        self.app.suppress_autohide(True)
-        try:
-            path, _ = QFileDialog.getOpenFileName(
-                self, tr("Choose cookies file"), "",
-                "Cookies (*.txt);;All files (*.*)")
-        finally:
-            self.app.suppress_autohide(False)
-        if path:
-            self.settings["cookies_file"] = path
-            self.app.save_settings()
-            self.btn_cookies.hide()
-            self._analyze_timer.start()   # повторный анализ уже с файлом кук
 
     # ------------------------------------------------------------------ #
     #  Multiple Links
@@ -943,7 +996,7 @@ class MainPage(WindowDragMixin, QWidget):
                 opts = [{"label": tr("Best Quality"), "mp3": True,
                          "key": "best", "ember": True, "height": 0}]
             else:
-                opts = ember_dl.format_options(self._info)
+                opts = ember_dl.format_options(self._info, settings=self.settings)
         elif mode == "audio":
             opts = downloader.audio_formats(self._info)
         else:
@@ -980,8 +1033,6 @@ class MainPage(WindowDragMixin, QWidget):
         # Карточки одиночного видео больше нет — вместо неё pending-строка в истории.
         for wdg in (self.thumb, self.lbl_title, self.lbl_uploader, self.lbl_duration):
             wdg.setVisible(False)
-        if state != "error":
-            self.btn_cookies.hide()   # кнопка кук — только в состоянии ошибки
         # Одиночный анализ («fetching») теперь показывается строкой в самой истории
         # (спиннер в блоке), поэтому общий lbl_msg/спиннер для него не нужен.
         self.lbl_msg.setVisible(state in ("error", "libraries",

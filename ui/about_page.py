@@ -1,3 +1,4 @@
+import math
 import os
 import threading
 import webbrowser
@@ -10,22 +11,36 @@ from PySide6.QtWidgets import QWidget, QLabel
 from PIL import Image, ImageDraw
 
 from core.constants import (APP_NAME, APP_VERSION, PROFILE_IMG, DEVELOPER_URL,
-                            DONATE_BUTTONS, ICONS_DIR)
+                            DONATE_BUTTONS, DONATE_ICONS_DIR)
 from core import updater
 from core import fonts
 from core import themes
 from core.i18n import tr
-from ui.widgets import LinkButton, ClickableLabel, WindowDragMixin
+from ui.widgets import (LinkButton, ClickableLabel, WindowDragMixin,
+                        Rethemable, ThemedOwner)
 from ui import anim
 
 
-class DonateButton(QWidget):
+class DonateButton(Rethemable, QWidget):
     """Кнопка поддержки: скруглённая, фирменный цвет фона, текст (+ опц. иконка
-    из assets/icons/<name>.png). Клик открывает url (пустой url — no-op)."""
+    из assets/donate/<name>.png). Клик открывает url (пустой url — no-op).
 
-    def __init__(self, app, label, bg, fg, url, icon_name, parent=None):
+    Виджет чуть больше самой пилюли на PAD с каждой стороны — это запас под
+    перелёт масштаба в анимации нажатия (иначе края обрезались)."""
+
+
+    MAX_SCALE = 1.03            # пик перелёта в _scale_of
+    _COLOR_ATTRS = {"accent": ("_accent", True)}
+
+    @classmethod
+    def pad_for(cls, pill_w, pill_h):
+        """Запас с каждой стороны, чтобы пилюля на пике масштаба не обрезалась."""
+        return int(math.ceil(max(pill_w, pill_h) * (cls.MAX_SCALE - 1) / 2.0)) + 1
+
+    def __init__(self, app, label, bg, fg, url, icon_name, pad=0, parent=None):
         super().__init__(parent)
         self.app = app
+        self.PAD = pad
         self._label = label
         self._bg = QColor(bg)
         self._fg = QColor(fg)
@@ -35,7 +50,7 @@ class DonateButton(QWidget):
         self._font = fonts.font(s(12), "Semibold")
         # Иконка (если PNG есть) — иначе только текст.
         self._icon = None
-        path = os.path.join(ICONS_DIR, (icon_name or "") + ".png")
+        path = os.path.join(DONATE_ICONS_DIR, (icon_name or "") + ".png")
         if icon_name and os.path.isfile(path):
             pm = QPixmap(path)
             if not pm.isNull():
@@ -100,8 +115,11 @@ class DonateButton(QWidget):
             p.scale(k, k)
             p.translate(-w / 2.0, -h / 2.0)
         bg = self._bg.lighter(108) if self._hover else self._bg
-        body = QRectF(0.5, 0.5, w - 1, h - 1)
-        r = h / 2.0
+        # Поля под перелёт масштаба при нажатии (1.03): без них края пилюли
+        # обрезались границами виджета.
+        m = self.PAD
+        body = QRectF(m + 0.5, m + 0.5, w - 2 * m - 1, h - 2 * m - 1)
+        r = body.height() / 2.0
 
         # Содержимое (иконка + текст) центрируем в ОСТАВШЕЙСЯ части пилюли —
         # правее акцентного сегмента, иначе текст уезжает под него.
@@ -122,9 +140,9 @@ class DonateButton(QWidget):
             p.setClipPath(clip)
             acc = self._accent.lighter(112) if self._hover else self._accent
             p.setBrush(acc)
-            p.drawRect(QRectF(0, 0, seg_w, h))
+            p.drawRect(QRectF(body.left(), body.top(), seg_w, body.height()))
             p.restore()
-            p.drawPixmap(int((seg_w - iw) / 2),
+            p.drawPixmap(int(body.left() + (seg_w - iw) / 2),
                          int((h - self._icon.height()) / 2), self._icon)
 
         # Обводка — поверх заливок, иначе сегмент перекрывает её слева.
@@ -135,14 +153,33 @@ class DonateButton(QWidget):
 
         p.setFont(self._font)
         p.setPen(self._fg)
-        text_x = seg_w + (w - seg_w - tw) / 2.0 if seg_w else (w - tw) / 2.0
+        seg_right = body.left() + seg_w
+        text_x = (seg_right + (body.right() - seg_right - tw) / 2.0 if seg_w
+                  else body.left() + (body.width() - tw) / 2.0)
         p.drawText(QRectF(text_x, 0, tw + s(4), h),
                    Qt.AlignLeft | Qt.AlignVCenter, self._label)
         p.end()
 
 
-class AboutPage(WindowDragMixin, QWidget):
+class AboutPage(ThemedOwner, WindowDragMixin, QWidget):
     """Экран «About»: лого, версия, проверка обновлений, иконка трея, тема."""
+
+    THEME_ATTRS = {
+        "TITLE_COLOR": "title",
+        "TEXT_COLOR": "text",
+        "MUTED_COLOR": "muted",
+        "ACCENT": "accent",
+        "ACCENT_HOVER": "accent_hover",
+        "CARD_BG": "card_bg",
+        "BORDER": "border",
+        "LINK": "link",
+        "LINK_HOVER": "link_hover",
+        "SEL_CHIP": "sel_chip",
+        "SEL_CHEVRON": "sel_chevron",
+        "SEP_LINE": "separator",
+        "ICON_COLOR": "icon",
+    }
+
 
     _update_ready = Signal(object)
 
@@ -153,6 +190,8 @@ class AboutPage(WindowDragMixin, QWidget):
         self.width_ = width
         self.height_ = height
         self._icon_map = {}
+        self._themed_labels = []   # (QLabel, ключ палитры)
+        self._donate_btns = []
         self._load_theme()
         self.init_window_drag(app)
         self.resize(width, height)
@@ -160,26 +199,28 @@ class AboutPage(WindowDragMixin, QWidget):
         self._update_ready.connect(self._show_update_result)
         self._build()
 
-    def _load_theme(self):
-        p = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
-        self._pal = p
-        self.TITLE_COLOR  = p["title"]
-        self.TEXT_COLOR   = p["text"]
-        self.MUTED_COLOR  = p["muted"]
-        self.ACCENT       = p["accent"]
-        self.ACCENT_HOVER = p["accent_hover"]
-        self.CARD_BG      = p["card_bg"]
-        self.BORDER       = p["border"]
-        self.LINK         = p["link"]
-        self.LINK_HOVER   = p["link_hover"]
-        self.SEL_CHIP     = p["sel_chip"]
-        self.SEL_CHEVRON  = p["sel_chevron"]
-        self.SEP_LINE     = p["separator"]
-        self.ICON_COLOR   = p["icon"]
+    def apply_theme(self, pal):
+        """Живая смена темы: перечитать палитру и разослать цвета детям."""
+        self._load_theme()
+        for lbl, key in self._themed_labels:
+            try:
+                lbl.setStyleSheet("color: %s; background: transparent;" % self._pal[key])
+            except RuntimeError:
+                pass                   # подпись уже удалена
+        self.btn_update.set_colors(color=self.LINK, hover_color=self.LINK_HOVER)
+        self._dev_link.set_colors(color=self.LINK, hover_color=self.LINK_HOVER)
+        for b in self._donate_btns:
+            b.set_colors(accent=self._pal["accent"])
+        self.update()
 
+    def _load_theme(self):
+        """Цвета текущей темы в атрибуты (таблица THEME_ATTRS)."""
+        self.load_theme_attrs()
     # ------------------------------------------------------------------ #
-    def _center_label(self, text, font, color, y):
+    def _center_label(self, text, font, color, y, key=None):
         lbl = QLabel(text, self)
+        if key:                       # запомнить для живой смены темы
+            self._themed_labels.append((lbl, key))
         lbl.setFont(font)
         lbl.setStyleSheet(f"color: {color}; background: transparent;")
         lbl.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -194,7 +235,7 @@ class AboutPage(WindowDragMixin, QWidget):
 
         # 0. About
         self._center_label(tr("About"), fonts.font(s(16), "Semibold"),
-                            self.TITLE_COLOR, s(16))
+                            self.TITLE_COLOR, s(16), key="title")
 
         # 1. Логотип
         d = s(88)
@@ -209,12 +250,12 @@ class AboutPage(WindowDragMixin, QWidget):
         # 2. Snatchr
         name_y = logo_y + d + s(12)
         self._center_label(APP_NAME, fonts.font(s(17), "Bold"),
-                            self.TITLE_COLOR, name_y)
+                            self.TITLE_COLOR, name_y, key="title")
 
         # 3. Version
         ver_y = logo_y + d + s(42)
         self._center_label(f"{tr('Version')} {APP_VERSION}", fonts.font(s(12), "Regular"),
-                            self.ICON_COLOR, ver_y)
+                            self.ICON_COLOR, ver_y, key="icon")
 
         # 4. Check for Updates (+ статус)
         upd_y = logo_y + d + s(72)
@@ -230,7 +271,7 @@ class AboutPage(WindowDragMixin, QWidget):
 
         st_y = logo_y + d + s(106)
         self.update_status = self._center_label("", fonts.font(s(12), "Regular"),
-                                                self.MUTED_COLOR, st_y)
+                                                self.MUTED_COLOR, st_y, key="muted")
 
         # 5. Кнопки поддержки — по одной на строку, по центру.
         self._build_donate_buttons(cx, st_y + s(30))
@@ -243,9 +284,12 @@ class AboutPage(WindowDragMixin, QWidget):
     def _build_donate_buttons(self, cx, y):
         s = self.app._s
         bw, bh, gap = s(178), s(38), s(10)      # пилюля покороче — меньше «воздуха» по краям
+        pad = DonateButton.pad_for(bw, bh)      # запас под перелёт масштаба
         for key, label, bg, fg, url, icon in DONATE_BUTTONS:
-            btn = DonateButton(self.app, tr(label), bg, fg, url, icon, self)
-            btn.setGeometry(cx - bw // 2, y, bw, bh)
+            btn = DonateButton(self.app, tr(label), bg, fg, url, icon, pad, self)
+            # Виджет больше пилюли на pad с каждой стороны; видимый размер — bw×bh.
+            btn.setGeometry(cx - bw // 2 - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
+            self._donate_btns.append(btn)
             y += bh + gap
         self._donate_bottom = y - gap       # низ последней кнопки
 
@@ -266,12 +310,14 @@ class AboutPage(WindowDragMixin, QWidget):
         prefix = QLabel(prefix_text, self)
         prefix.setFont(font)
         prefix.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
+        self._themed_labels.append((prefix, "muted"))
         prefix.setGeometry(x0, y, wp + s(2), h)
 
         link = ClickableLabel(self, link_text, self.LINK, self.LINK_HOVER)
         link.setFont(font)
         link.setGeometry(x0 + wp, y, wn + s(4), h)
         link.clicked.connect(lambda: webbrowser.open(DEVELOPER_URL))
+        self._dev_link = link
 
     # ------------------------------------------------------------------ #
     def _make_logo_pixmap(self, d):

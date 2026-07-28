@@ -10,7 +10,7 @@ from core.i18n import tr
 from core.icons import themed_icon
 from ui.widgets import (
     IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
-    SmoothScroll
+    SmoothScroll, ThemedOwner,
 )
 
 # Отображаемая подпись -> значение cookies_browser в конфиге.
@@ -44,6 +44,7 @@ class HotkeyEdit(QWidget):
     """Чип-кнопка для смены сочетания: клик -> «Нажмите клавиши…» -> ловит
     следующую комбинацию (хотя бы один модификатор + клавиша). Esc отменяет."""
 
+
     changed = Signal(str)             # combo в формате keyboard ('ctrl+shift+d')
 
     def __init__(self, app, combo, parent, pal):
@@ -58,6 +59,15 @@ class HotkeyEdit(QWidget):
         self._muted = QColor(pal["muted"])
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
+
+    def apply_theme(self, pal):
+        """Живая смена темы."""
+        self._bg = QColor(pal["sel_chip"])
+        self._border = QColor(pal["border"])
+        self._text = QColor(pal["text"])
+        self._accent = QColor(pal["seg_sel"])
+        self._muted = QColor(pal["muted"])
+        self.update()
 
     def mouseReleaseEvent(self, e):
         self._capturing = True
@@ -137,8 +147,30 @@ class HotkeyEdit(QWidget):
         p.end()
 
 
-class SettingsPage(WindowDragMixin, QWidget):
+class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     """Экран настроек: папка загрузок, обработка, куки, режим работы."""
+
+    THEME_ATTRS = {
+        "CARD_BG": "card_bg",
+        "TITLE_COLOR": "title",
+        "SECTION_COLOR": "icon",
+        "TEXT_COLOR": "text",
+        "MUTED_COLOR": "muted",
+        "ACCENT": "accent",
+        "ACCENT_HOVER": "accent_hover",
+        "BORDER": "border",
+        "LINK": "link",
+        "LINK_HOVER": "link_hover",
+        "CHOOSE": "choose",
+        "CHOOSE_BG": "choose_bg",
+        "CHOOSE_BG_H": "choose_bg_h",
+        "CB_OFF": "cb_off",
+        "CB_ON": "cb_on",
+        "SEG_BG": "seg_bg",
+        "SEG_SEL": "seg_sel",
+        "ON_ACCENT": "on_accent",
+    }
+
 
     CONVERT_TIP = ("Re-encode YouTube videos into an editor-friendly format\n"
                    "(SDR → H.264, HDR → HEVC 10-bit, mp4) so they import\n"
@@ -165,6 +197,8 @@ class SettingsPage(WindowDragMixin, QWidget):
         self.width_ = width
         self.height_ = height
         self._checks = {}
+        self._labels = []          # (QLabel, ключ палитры) — для смены темы
+        self._sep_lines = []       # разделительные линии
         self._icon_map = {}        # {отображаемое имя: имя файла иконки трея}
         self._host = self          # родитель строящихся виджетов (self или скролл-контент)
         self._load_theme()
@@ -172,33 +206,55 @@ class SettingsPage(WindowDragMixin, QWidget):
         self.resize(width, height)
         self._build()
 
-    def _load_theme(self):
-        p = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
-        self._pal = p
-        self.CARD_BG       = p["card_bg"]
-        self.TITLE_COLOR   = p["title"]
-        self.SECTION_COLOR = p["icon"]
-        self.TEXT_COLOR    = p["text"]
-        self.MUTED_COLOR   = p["muted"]
-        self.ACCENT        = p["accent"]
-        self.ACCENT_HOVER  = p["accent_hover"]
-        self.BORDER        = p["border"]
-        self.LINK          = p["link"]
-        self.LINK_HOVER    = p["link_hover"]
-        self.CHOOSE        = p["choose"]
-        self.CHOOSE_BG     = p["choose_bg"]
-        self.CHOOSE_BG_H   = p["choose_bg_h"]
-        self.CB_OFF        = p["cb_off"]
-        self.CB_ON         = p["cb_on"]
-        self.SEG_BG        = p["seg_bg"]
-        self.SEG_SEL       = p["seg_sel"]
-        self.ON_ACCENT     = p["on_accent"]
 
+    def _on_theme_applied(self, pal):
+        """Живая смена темы: подписи, разделители, стили и иконки."""
+        self._load_theme()
+        self._themed_labels = self._labels
+        self.recolor_labels(self._pal)
+        self._labels = self._themed_labels
+        for ln in self._sep_lines:
+            try:
+                ln.setStyleSheet("background: %s; border: none;"
+                                 % self._pal["separator"])
+            except RuntimeError:
+                pass
+        if getattr(self, "_scroll_area", None) is not None:
+            self._style_scroll_area(self._scroll_area)
+        for hk in self.findChildren(HotkeyEdit):
+            hk.apply_theme(self._pal)
+        # Превью иконок трея тонируются по СИСТЕМНОЙ теме Windows, а не по теме
+        # приложения, — их при смене темы трогать не нужно.
+
+    def _load_theme(self):
+        """Цвета текущей темы в атрибуты (таблица THEME_ATTRS)."""
+        self.load_theme_attrs()
     # ------------------------------------------------------------------ #
-    def _label(self, text, font, color, x, y, w=None, h=None):
+    def _style_scroll_area(self, area):
+        """Стиль полосы прокрутки (цвет ручки — из палитры)."""
+        area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 7px; margin: 2px; }"
+            f"QScrollBar::handle:vertical {{ background: {self.MUTED_COLOR};"
+            "  border-radius: 3px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+
+    # Обратная карта «атрибут цвета -> ключ палитры»: подписи создаются с
+    # self.TEXT_COLOR и т.п., а для перекраски нужен ключ. Строится из
+    # THEME_ATTRS, поэтому не разъедется при добавлении цвета.
+    def _key_of_attr_value(self, color):
+        for attr, key in self.THEME_ATTRS.items():
+            if getattr(self, attr, None) == color:
+                return key
+        return None
+
+    def _label(self, text, font, color, x, y, w=None, h=None, key=None):
         lbl = QLabel(text, self._host)
         lbl.setFont(font)
         lbl.setStyleSheet(f"color: {color}; background: transparent;")
+        # Ключ палитры: передан явно либо выведен из THEME_ATTRS по атрибуту.
+        self._labels.append((lbl, key or self._key_of_attr_value(color)))
         if w is not None and h is not None:
             lbl.setGeometry(x, y, w, h)
         else:
@@ -241,13 +297,7 @@ class SettingsPage(WindowDragMixin, QWidget):
         area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         area.setFrameShape(QFrame.NoFrame)
         area.viewport().setStyleSheet("background: transparent;")
-        area.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:vertical { background: transparent; width: 7px; margin: 2px; }"
-            f"QScrollBar::handle:vertical {{ background: {self.MUTED_COLOR};"
-            "  border-radius: 3px; min-height: 24px; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+        self._style_scroll_area(area)
         area.setGeometry(0, top, self.width_, self.height_ - top)
         self._scroll_area = area
         self._smooth_scroll = SmoothScroll(area, parent=self)
@@ -348,10 +398,13 @@ class SettingsPage(WindowDragMixin, QWidget):
         self._label("yt-dlp", fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6))
         # Переключатель канала — справа (старое положение).
         seg_w = s(160)
-        seg = SegmentedControl(
+        seg = self.themed(SegmentedControl(
             self._host, [("Stable", "stable"), ("Nightly", "nightly")],
             self.settings.get("ytdlp_channel", "stable"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9))
+            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+                            bg_color="seg_bg", sel_color="seg_sel",
+                            text_color="muted", sel_text_color="on_accent")
+        seg_w = seg.fit_width(seg_w)
         seg.setGeometry(self.width_ - x - seg_w, y, seg_w, rh)
         seg.changed.connect(self.app.set_ytdlp_channel)
         self._ytdlp_seg = seg
@@ -372,17 +425,23 @@ class SettingsPage(WindowDragMixin, QWidget):
         cc_x = self.width_ - x - bw_cc
         ff_x = cc_x - gap - bw_ff
         yt_x = ff_x - gap - bw_yt
-        self.btn_update = LinkButton(
+        self.btn_update = self.themed(LinkButton(
             self._host, t_yt, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ytdlp_update,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
+            color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_update.setGeometry(yt_x, by, bw_yt, bh)
-        self.btn_update_ff = LinkButton(
+        self.btn_update_ff = self.themed(LinkButton(
             self._host, t_ff, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ffmpeg_update,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
+            color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_update_ff.setGeometry(ff_x, by, bw_ff, bh)
-        self.btn_clear_cache = LinkButton(
+        self.btn_clear_cache = self.themed(LinkButton(
             self._host, t_cc, font, self.CHOOSE, self.LINK_HOVER, self._clear_cache,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
+            color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_clear_cache.setGeometry(cc_x, by, bw_cc, bh)
 
     def _build_clipboard_row(self, x, y, card_w):
@@ -390,17 +449,22 @@ class SettingsPage(WindowDragMixin, QWidget):
         rh = s(30)
         seg_w = s(168)
         seg_x = self.width_ - x - seg_w
-        cb = CheckBox(self._host, tr("Watch clipboard for links"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Watch clipboard for links"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("clipboard_watch", False)))
         cb.setGeometry(x, y, seg_x - x - s(8), rh)
         cb.setToolTip(tr(self.CLIPBOARD_TIP))
         cb.toggled.connect(self.app.set_clipboard_watch)
         self._checks["clipboard_watch"] = cb
-        seg = SegmentedControl(
+        seg = self.themed(SegmentedControl(
             self._host, [(tr("Corner"), "corner"), (tr("At cursor"), "cursor")],
             self.settings.get("toast_position", "corner"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9))
+            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+                            bg_color="seg_bg", sel_color="seg_sel",
+                            text_color="muted", sel_text_color="on_accent")
+        seg_w = seg.fit_width(seg_w)
+        seg_x = self.width_ - x - seg_w
         seg.setGeometry(seg_x, y, seg_w, rh)
         seg.changed.connect(self.app.set_toast_position)
         self._toast_seg = seg
@@ -410,18 +474,23 @@ class SettingsPage(WindowDragMixin, QWidget):
         rh = s(30)
         seg_w = s(168)
         seg_x = self.width_ - x - seg_w
-        cb = CheckBox(self._host, tr("Enable Spotlight"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Enable Spotlight"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("spotlight_enabled", True)))
         cb.setGeometry(x, y, seg_x - x - s(8), rh)
         cb.setToolTip(tr(self.SPOTLIGHT_TIP))
         cb.toggled.connect(self.app.set_spotlight_enabled)
         self._checks["spotlight_enabled"] = cb
         # Режим скрытия: Auto-hide (по потере фокуса) | Pinned (пока не нажмёшь снова).
-        seg = SegmentedControl(
+        seg = self.themed(SegmentedControl(
             self._host, [(tr("Auto-hide"), "focus"), (tr("Pinned"), "manual")],
             self.settings.get("spotlight_dismiss", "focus"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9))
+            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+                            bg_color="seg_bg", sel_color="seg_sel",
+                            text_color="muted", sel_text_color="on_accent")
+        seg_w = seg.fit_width(seg_w)
+        seg_x = self.width_ - x - seg_w
         seg.setGeometry(seg_x, y, seg_w, rh)
         seg.changed.connect(self.app.set_spotlight_dismiss)
         self._spotlight_seg = seg
@@ -439,8 +508,9 @@ class SettingsPage(WindowDragMixin, QWidget):
 
     def _build_convert_checkbox(self, x, y, card_w):
         s = self.app._s
-        cb = CheckBox(self._host, tr("Convert Youtube Videos"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Convert Youtube Videos"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("convert_yt", False)))
         cb.setGeometry(x, y, card_w, s(30))
         cb.setToolTip(tr(self.CONVERT_TIP))
@@ -449,8 +519,9 @@ class SettingsPage(WindowDragMixin, QWidget):
 
     def _build_embed_checkbox(self, x, y, card_w):
         s = self.app._s
-        cb = CheckBox(self._host, tr("Embed Thumbnail"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Embed Thumbnail"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("embed_thumbnail", False)))
         cb.setGeometry(x, y, card_w, s(30))
         cb.toggled.connect(lambda v: self._set_flag("embed_thumbnail", v))
@@ -458,8 +529,9 @@ class SettingsPage(WindowDragMixin, QWidget):
 
     def _build_update_checkbox(self, x, y, card_w):
         s = self.app._s
-        cb = CheckBox(self._host, tr("Notify about updates"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Notify about updates"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("update_notify", True)))
         cb.setGeometry(x, y, card_w, s(30))
         cb.toggled.connect(self.app.set_update_notify)
@@ -467,9 +539,10 @@ class SettingsPage(WindowDragMixin, QWidget):
 
     def _build_toast_copy_checkbox(self, x, y, card_w):
         s = self.app._s
-        cb = CheckBox(self._host, tr("Copy downloaded file to clipboard"),
+        cb = self.themed(CheckBox(self._host, tr("Copy downloaded file to clipboard"),
                       fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("toast_copy_file", True)))
         cb.setGeometry(x, y, card_w, s(30))
         cb.toggled.connect(self.app.set_toast_copy_file)
@@ -497,8 +570,9 @@ class SettingsPage(WindowDragMixin, QWidget):
 
     def _build_autostart_checkbox(self, x, y, card_w):
         s = self.app._s
-        cb = CheckBox(self._host, tr("Launch at startup"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Launch at startup"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("autostart", False)))
         cb.setGeometry(x, y, card_w, s(30))
         cb.toggled.connect(self.app.set_autostart)
@@ -514,16 +588,19 @@ class SettingsPage(WindowDragMixin, QWidget):
         bw = (card_w - 3 * gap) // 2
         logs_x = x + gap
         reset_x = x + 2 * gap + bw
-        self.btn_logs = LinkButton(
+        self.btn_logs = self.themed(LinkButton(
             self._host, tr("Open Logs Folder"), font, self.CHOOSE, self.LINK_HOVER,
             self.app.open_logs_folder, hover_bg=self.CHOOSE_BG_H, radius=s(6),
-            base_bg=self.CHOOSE_BG)
+            base_bg=self.CHOOSE_BG), color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_logs.setGeometry(logs_x, y, bw, bh)
         self._reset_armed = False
-        self.btn_reset = LinkButton(
+        self.btn_reset = self.themed(LinkButton(
             self._host, tr("Reset Settings"), font, self._pal["error"], self.LINK_HOVER,
             self._on_reset_click, hover_bg=self.CHOOSE_BG_H, radius=s(6),
-            base_bg=self.CHOOSE_BG)
+            base_bg=self.CHOOSE_BG),
+            color="error", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_reset.setGeometry(reset_x, y, bw, bh)
 
     def _on_reset_click(self):
@@ -558,16 +635,19 @@ class SettingsPage(WindowDragMixin, QWidget):
         from core import downloader
         # Строка: чекбокс включения + кнопка Select/Deselect All справа.
         sd_w = s(96)
-        cb = CheckBox(self._host, tr("Paste link on open"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(self._host, tr("Paste link on open"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("autopaste", False)))
         cb.setGeometry(x, y, card_w - sd_w - s(8), s(30))
         cb.setToolTip(tr(self.AUTOPASTE_TIP))
         cb.toggled.connect(lambda v: self._set_flag("autopaste", v))
         self._checks["autopaste"] = cb
-        sd = LinkButton(self._host, tr("Deselect All"), fonts.font(s(10), "Semibold"),
-                        self.CHOOSE, self.LINK_HOVER, self._toggle_all_sites,
-                        hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+        sd = self.themed(LinkButton(
+            self._host, tr("Deselect All"), fonts.font(s(10), "Semibold"),
+            self.CHOOSE, self.LINK_HOVER, self._toggle_all_sites,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG), color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         sd.setGeometry(x + card_w - sd_w, y + s(2), sd_w, s(26))
         self._sites_toggle_btn = sd
         # Сетка сайтов (2 колонки).
@@ -578,8 +658,10 @@ class SettingsPage(WindowDragMixin, QWidget):
         gy = y + s(34)
         for i, (key, label) in enumerate(self._AUTOPASTE_SITES):
             r, c = divmod(i, cols)
-            scb = CheckBox(self._host, label, fonts.font(s(11), "Regular"),
-                           self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5))
+            scb = self.themed(
+                CheckBox(self._host, label, fonts.font(s(11), "Regular"),
+                         self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5)),
+                text_color="text", off_color="cb_off", on_color="cb_on")
             scb.setChecked(key in enabled)
             scb.setGeometry(x + c * col_w, gy + r * rh, col_w - s(6), s(24))
             scb.toggled.connect(lambda v, k=key: self._on_site_toggle(k, v))
@@ -616,11 +698,15 @@ class SettingsPage(WindowDragMixin, QWidget):
         lbl.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
         lbl.move(x, y + s(5))
         lbl.adjustSize()
-        combo = Selector(self._host, fonts.font(s(11), "Regular"),
+        self._labels.append((lbl, "text"))
+        combo = self.themed(Selector(self._host, fonts.font(s(11), "Regular"),
                          self._pal["card_bg"], self._pal["sel_chip"], self.TEXT_COLOR,
                          self._pal["sel_chevron"], s(7), s(22),
                          accent=self._pal["seg_sel"], border=self._pal["border"],
-                         on_accent=self._pal["on_accent"])
+                         on_accent=self._pal["on_accent"]),
+                            field_bg="card_bg", chip_bg="sel_chip", text_color="text",
+                            chevron_color="sel_chevron", accent="seg_sel", border="border",
+                            on_accent="on_accent")
         for v in values:
             combo.add_item(v, icons.get(v) if icons else None)
         if current in values:
@@ -677,7 +763,9 @@ class SettingsPage(WindowDragMixin, QWidget):
             return
         self.settings["theme"] = choice
         self.app.save_settings()
-        self.app.apply_appearance()
+        # Тему применяем живьём — перекрашиваем существующие виджеты, без
+        # пересборки страниц и без кадра-заглушки поверх окна.
+        self.app.apply_theme_live()
 
     def _on_language_change(self, choice):
         if choice == self.settings.get("language"):
@@ -695,11 +783,14 @@ class SettingsPage(WindowDragMixin, QWidget):
         cur_label = next((lab for lab, v in _COOKIE_CHOICES if v == cur_val), "Auto")
         self._cookie_val = {lab: v for lab, v in _COOKIE_CHOICES}
 
-        sel = Selector(self._host, fonts.font(s(11), "Regular"),
+        sel = self.themed(Selector(self._host, fonts.font(s(11), "Regular"),
                        self._pal["field_bg"], self._pal["sel_chip"], self.TEXT_COLOR,
                        self._pal["sel_chevron"], s(7), s(22),
                        accent=self.SEG_SEL, border=self._pal["border"],
-                       on_accent=self.ON_ACCENT)
+                       on_accent=self.ON_ACCENT),
+                            field_bg="field_bg", chip_bg="sel_chip", text_color="text",
+                            chevron_color="sel_chevron", accent="seg_sel", border="border",
+                            on_accent="on_accent")
         for lab, _ in _COOKIE_CHOICES:
             sel.add_item(lab)
         sel.set_current(cur_label)
@@ -720,6 +811,7 @@ class SettingsPage(WindowDragMixin, QWidget):
         line = QFrame(self._host)
         line.setGeometry(x, y, w, 1)
         line.setStyleSheet("background: %s; border: none;" % self._pal["separator"])
+        self._sep_lines.append(line)
         return line
 
     def _build_format_priority_row(self, x, y, card_w):
@@ -731,10 +823,11 @@ class SettingsPage(WindowDragMixin, QWidget):
         sub_f = fonts.font(s(11), "Regular")
         self._label(tr("Show/Hide and reorder formats"), sub_f, self.TEXT_COLOR, x, sub_y)
         btn_w, btn_h = s(76), s(30)
-        self.btn_formats = LinkButton(
+        self.btn_formats = self.themed(LinkButton(
             self._host, tr("Edit"), fonts.font(s(11), "Semibold"),
             self.CHOOSE, self.LINK_HOVER, self.app.open_formats,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG)
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG), color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_formats.setGeometry(x + card_w - btn_w, y + s(6), btn_w, btn_h)
         return max(s(18) + QFontMetrics(sub_f).height(), s(6) + btn_h)
 
@@ -762,10 +855,13 @@ class SettingsPage(WindowDragMixin, QWidget):
         self.path_lbl.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
         self.path_lbl.setGeometry(s(4), card_h // 2 - s(9), card_w - s(90), s(18))
 
-        browse = LinkButton(card, tr("Choose"), fonts.font(s(10), "Semibold"),
-                            self.CHOOSE, self.CHOOSE, self._choose_folder,
-                            hover_bg=self.CHOOSE_BG_H, radius=s(6),
-                            base_bg=self.CHOOSE_BG, press_pop=True)
+        browse = self.themed(LinkButton(
+            card, tr("Choose"), fonts.font(s(10), "Semibold"),
+            self.CHOOSE, self.CHOOSE, self._choose_folder,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6),
+            base_bg=self.CHOOSE_BG, press_pop=True),
+            color="choose", hover_color="choose",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
         browse.setGeometry(card_w - s(64) - s(8), card_h // 2 - s(12), s(64), s(24))
 
         return card_h
@@ -780,8 +876,9 @@ class SettingsPage(WindowDragMixin, QWidget):
         card_h = cb_h + s(6) + row_h
         card = self._card(x, y, card_w, card_h)
 
-        cb = CheckBox(card, tr("Allow Dragging"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5))
+        cb = self.themed(CheckBox(card, tr("Allow Dragging"), fonts.font(s(12), "Regular"),
+                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                            text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("allow_dragging", False)))
         cb.setGeometry(0, 0, card_w, cb_h)
         cb.setToolTip(tr(self.DRAG_TIP))
@@ -793,14 +890,16 @@ class SettingsPage(WindowDragMixin, QWidget):
                     self.TEXT_COLOR, x, y + row_y + s(8))
 
         seg_w = s(160)                       # компактнее и прижат вправо
-        seg = SegmentedControl(
+        seg = self.themed(SegmentedControl(
             card,
             [(tr("Pinned"), "toggle"), (tr("Auto-hide"), "focus")],
             self.settings.get("usage_mode", "toggle"),
             fonts.font(s(11), "Medium"),
             self.SEG_BG, self.SEG_SEL,
-            self.MUTED_COLOR, self.ON_ACCENT, s(9)
-        )
+            self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+            bg_color="seg_bg", sel_color="seg_sel",
+            text_color="muted", sel_text_color="on_accent")
+        seg_w = seg.fit_width(seg_w)
         seg.setGeometry(card_w - seg_w, row_y, seg_w, s(30))
         seg.setToolTip(tr(self.USAGE_TIP))
         seg.changed.connect(self._on_usage_change)

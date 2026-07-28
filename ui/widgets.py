@@ -18,6 +18,116 @@ from core.i18n import tr
 from ui import anim
 
 
+def _label_color(lbl, color):
+    """Перекрашивает QLabel (цвет подписи живёт в стиле, не в атрибуте)."""
+    if lbl is not None and color:
+        lbl.setStyleSheet("color: %s; background: transparent;" % color)
+
+
+class Rethemable:
+    """
+    Общий сеттер цветов для живой смены темы.
+
+    Виджеты получают цвета аргументами конструктора, а не читают палитру сами,
+    поэтому при смене темы новые значения им проставляет страница-владелец.
+    Наследник перечисляет в _COLOR_ATTRS свои цветовые поля и то, надо ли
+    заворачивать значение в QColor.
+    """
+
+    _COLOR_ATTRS = {}          # {имя_аргумента: (имя_поля, как_QColor)}
+
+    def set_colors(self, **kw):
+        changed = False
+        for key, val in kw.items():
+            if val is None or key not in self._COLOR_ATTRS:
+                continue
+            attr, as_qcolor = self._COLOR_ATTRS[key]
+            setattr(self, attr, QColor(val) if as_qcolor else val)
+            changed = True
+        if changed:
+            self._after_recolor()
+            self.update()
+
+    def _after_recolor(self):
+        """Хук для виджетов, у которых цвет живёт ещё и в стилях/иконках."""
+
+
+class ThemedOwner:
+    """
+    Реестр цветных детей для живой смены темы.
+
+    Страница при создании виджета оборачивает его в themed(...) и указывает, из
+    каких ключей палитры взяты его цвета. Дальше apply_theme() проходит по
+    реестру сам — список не надо поддерживать вручную, и добавленный виджет не
+    может «забыться» и остаться в старой теме.
+
+        self.sel = self.themed(Selector(...), field_bg="card_bg", text_color="text")
+    """
+
+    # Свои цветовые атрибуты страницы: {ИМЯ_АТРИБУТА: ключ палитры}.
+    # Раньше у каждой страницы был свой _load_theme() из полутора десятков
+    # одинаковых строк «self.X = p["y"]» — теперь это одна таблица.
+    THEME_ATTRS = {}
+
+    def load_theme_attrs(self, settings=None):
+        """Заполняет атрибуты из THEME_ATTRS по текущей теме."""
+        pal = themes.palette((settings or self.settings).get(
+            "theme", themes.DEFAULT_THEME))
+        self._pal = pal
+        for attr, key in self.THEME_ATTRS.items():
+            setattr(self, attr, pal[key])
+        return pal
+
+    def themed_label(self, lbl, key):
+        """Регистрирует QLabel с ЯВНЫМ ключом палитры (цвет живёт в стиле)."""
+        if not hasattr(self, "_themed_labels"):
+            self._themed_labels = []
+        self._themed_labels.append((lbl, key))
+        return lbl
+
+    def recolor_labels(self, pal):
+        """Перекрашивает зарегистрированные подписи; мёртвые выкидывает."""
+        alive = []
+        for lbl, key in getattr(self, "_themed_labels", []):
+            if key not in pal:
+                alive.append((lbl, key)); continue
+            try:
+                lbl.setStyleSheet(
+                    "color: %s; background: transparent;" % pal[key])
+                alive.append((lbl, key))
+            except RuntimeError:
+                pass
+        self._themed_labels = alive
+
+    def themed(self, widget, **key_map):
+        """Регистрирует виджет. key_map: {аргумент set_colors: ключ палитры}."""
+        if not hasattr(self, "_themed_widgets"):
+            self._themed_widgets = []
+        self._themed_widgets.append((widget, key_map))
+        return widget
+
+    def apply_theme(self, pal):
+        """Раздаёт детям цвета новой палитры и обновляет свои собственные."""
+        alive = []
+        for widget, key_map in list(getattr(self, "_themed_widgets", [])):
+            colors = {arg: pal[key] for arg, key in key_map.items() if key in pal}
+            try:
+                if colors:
+                    widget.set_colors(**colors)
+                alive.append((widget, key_map))
+            except RuntimeError:
+                pass                       # виджет удалён — выкидываем из реестра
+        self._themed_widgets = alive
+        self._on_theme_applied(pal)
+        try:
+            self.update()
+        except RuntimeError:
+            pass
+
+    def _on_theme_applied(self, pal):
+        """Хук страницы: перечитать собственные цвета, иконки, стили."""
+
+
 class FloatingHint(QLabel):
     """
     Короткая всплывающая подпись над виджетом («Copied»): появляется с подъёмом
@@ -277,11 +387,17 @@ class IconButton(QPushButton):
         super().leaveEvent(event)
 
 
-class LinkButton(QPushButton):
+class LinkButton(Rethemable, QPushButton):
     """
     Текстовая кнопка-«ссылка»: без фона, при наведении меняется цвет текста.
     Опционально при наведении подсвечивается еле заметная скруглённая подложка.
     """
+
+    _COLOR_ATTRS = {"color": ("_color", False), "hover_color": ("_hover", False),
+                    "hover_bg": ("_hover_bg", False), "base_bg": ("_base_bg", False)}
+
+    def _after_recolor(self):
+        self._apply(self._color, self._base_bg)
 
     def __init__(self, parent, text, font, color, hover_color, on_click=None,
                  hover_bg=None, radius=6, base_bg=None, press_pop=False):
@@ -343,11 +459,23 @@ class TimeCodeEdit(QLineEdit):
         self.setInputMask("00:00:00;0")     # шаблон, правится по сегментам
         self.setText("00:00:00")
         self.setAlignment(Qt.AlignCenter)
+        self._radius = radius
+        self.set_colors(field_bg=field_bg, text_color=text_color,
+                        disabled_bg=disabled_bg, disabled_text=disabled_text)
+
+    def set_colors(self, field_bg=None, text_color=None,
+                   disabled_bg=None, disabled_text=None):
+        """Перекраска для живой смены темы."""
+        for name, val in (("_field_bg", field_bg), ("_text_color", text_color),
+                          ("_disabled_bg", disabled_bg),
+                          ("_disabled_text", disabled_text)):
+            if val is not None:
+                setattr(self, name, val)
         self.setStyleSheet(
-            f"QLineEdit {{ background-color: {field_bg}; border: none; "
-            f"border-radius: {radius}px; color: {text_color}; }}"
-            f"QLineEdit:disabled {{ background-color: {disabled_bg}; "
-            f"color: {disabled_text}; }}")
+            f"QLineEdit {{ background-color: {self._field_bg}; border: none; "
+            f"border-radius: {self._radius}px; color: {self._text_color}; }}"
+            f"QLineEdit:disabled {{ background-color: {self._disabled_bg}; "
+            f"color: {self._disabled_text}; }}")
 
     def clear_code(self):
         self.setText("00:00:00")
@@ -368,13 +496,30 @@ class TimeCodeEdit(QLineEdit):
         return h * 3600 + m * 60 + s
 
 
-class SegmentedControl(QWidget):
+class SegmentedControl(Rethemable, QWidget):
     """
     Сегментированный переключатель из нескольких вариантов (как iOS/macOS).
     options — список (label, value). Выбранный сегмент заливается пилюлей.
     """
 
     changed = Signal(str)
+
+    _COLOR_ATTRS = {"bg_color": ("_bg", True), "sel_color": ("_sel", True),
+                    "text_color": ("_text", True), "sel_text_color": ("_sel_text", True)}
+
+    def fit_width(self, minimum=0, pad=None):
+        """Минимальная ширина, при которой влезают ВСЕ подписи.
+
+        Ширина переключателей была зашита числами, и в русском длинные варианты
+        («Автоскрытие») не помещались. Считаем по самой длинной подписи.
+        """
+        fm = QFontMetrics(self._font)
+        longest = max((fm.horizontalAdvance(lbl) for lbl, _ in self._options),
+                      default=0)
+        if pad is None:
+            pad = fm.height()          # поля вокруг текста внутри «пилюли»
+        need = (longest + pad) * len(self._options) + 4
+        return max(int(minimum), int(need))
 
     def __init__(self, parent, options, current, font,
                  bg_color, sel_color, text_color, sel_text_color, radius):
@@ -476,10 +621,15 @@ class SegmentedControl(QWidget):
         p.end()
 
 
-class ClickableLabel(QLabel):
+class ClickableLabel(Rethemable, QLabel):
     """Лейбл-«ссылка»: смена цвета при наведении + сигнал clicked по клику."""
 
     clicked = Signal()
+
+    _COLOR_ATTRS = {"color": ("_color", False), "hover_color": ("_hover", False)}
+
+    def _after_recolor(self):
+        self._apply(self._color)
 
     def __init__(self, parent, text, color, hover_color):
         super().__init__(text, parent)
@@ -505,11 +655,14 @@ class ClickableLabel(QLabel):
         super().mousePressEvent(event)
 
 
-class CheckBox(QAbstractButton):
+class CheckBox(Rethemable, QAbstractButton):
     """
     Чекбокс с залитым квадратом: неактивный — цвет off, активный — цвет on
     с белой галочкой. Текст рисуется справа от квадрата.
     """
+
+    _COLOR_ATTRS = {"text_color": ("_text_color", True), "off_color": ("_off", True),
+                    "on_color": ("_on", True)}
 
     def __init__(self, parent, text, font, text_color,
                  off_color, on_color, box_size, radius):
@@ -640,7 +793,7 @@ def _draw_chevrons(p, cx, h, chip_w, color):
     ]))
 
 
-class Selector(QWidget):
+class Selector(Rethemable, QWidget):
     """
     Выпадающий список в стиле macOS: тёмное скруглённое поле + «чип» с двойным
     шевроном. При открытии всплывающий список появляется уже спозиционированным
@@ -649,6 +802,11 @@ class Selector(QWidget):
     """
 
     changed = Signal(str)
+
+    _COLOR_ATTRS = {"field_bg": ("_field_bg", True), "chip_bg": ("_chip_bg", True),
+                    "text_color": ("_text_color", True), "chevron_color": ("_chevron", True),
+                    "accent": ("_popup_accent", True), "border": ("_popup_border", True),
+                    "on_accent": ("_popup_on_accent", True)}
 
     def __init__(self, parent, font, field_bg, chip_bg, text_color,
                  chevron_color, radius, chip_w,
@@ -715,7 +873,10 @@ class Selector(QWidget):
     def _on_pick(self, index):
         if index != self._current:
             self._current = index
-            self.update()
+            # repaint, а не update: обработчик changed может тут же снять кадр
+            # окна (смена темы/языка), и отложенная перерисовка не успела бы —
+            # в снимок попадало старое значение и висело весь переход.
+            self.repaint()
             self.changed.emit(self._items[index][0])
 
     def paintEvent(self, event):
@@ -911,13 +1072,17 @@ class _SelectorPopup(QWidget):
         p.end()
 
 
-class DownloadButton(QWidget):
+class DownloadButton(Rethemable, QWidget):
     """
     Кнопка Download/Stop с собственной отрисовкой: плавная смена ширины (снаружи
     через geometry), цвета (animate_bg) и текста через fade (fade_text).
     """
 
     clicked = Signal()
+
+    _COLOR_ATTRS = {"bg": ("_bg", True), "hover": ("_hover", True), "fg": ("_fg", True),
+                    "disabled_bg": ("DISABLED_BG", True),
+                    "disabled_text": ("DISABLED_TEXT", True)}
 
     def __init__(self, parent, text, font, bg, hover, radius,
                  fg="#ffffff", disabled_bg="#34425c", disabled_text="#7d93ad"):
@@ -1129,6 +1294,11 @@ class Spinner(QWidget):
         self._timer.setInterval(28)
         self._timer.timeout.connect(self._tick)
 
+    def set_pixmap(self, pm):
+        """Новая (перетонированная) картинка — для живой смены темы."""
+        self._pm = pm
+        self.update()
+
     def start(self):
         if self._pm is not None:
             self._timer.start()
@@ -1154,8 +1324,18 @@ class Spinner(QWidget):
         p.end()
 
 
-class ListRow(QWidget):
+class ListRow(Rethemable, QWidget):
     """Строка списка: [чекбокс] заголовок ... деталь (длительность/статус)."""
+
+    # Цвета подписей живут в стилях — держим их и перевыставляем при смене темы.
+    _COLOR_ATTRS = {"title_color": ("_title_color", False),
+                    "detail_color": ("_detail_color", False)}
+
+    def _after_recolor(self):
+        _label_color(self.title_lbl, self._title_color)
+        _label_color(self.detail_lbl, getattr(self, "_detail_color", None))
+        if self.cb is not None:
+            self.cb.set_colors(text_color=self._title_color)
 
     def __init__(self, parent, title, detail, font, detail_font,
                  title_color, detail_color, height, with_check=False, cb_colors=None):
@@ -1163,6 +1343,7 @@ class ListRow(QWidget):
         from PySide6.QtWidgets import QHBoxLayout, QLabel
         self.setFixedHeight(height)
         self._title_color = title_color
+        self._detail_color = detail_color
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 8, 0)
         lay.setSpacing(8)
@@ -1212,14 +1393,9 @@ class ScrollList(QWidget):
         self._area.setWidgetResizable(True)
         self._area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._area.setFrameShape(QFrame.NoFrame)
-        self._area.setStyleSheet(f"""
-        QScrollArea {{ background: transparent; border: none; }}
-        QScrollBar:vertical {{ background: transparent; width: 7px; margin: 2px; }}
-        QScrollBar::handle:vertical {{ background: {handle_color};
-            border-radius: 3px; min-height: 24px; }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        """)
+        self._track_color = track_color
+        self._handle_color = handle_color
+        self._style_area()
         self._content = QWidget()
         self._content.setStyleSheet("background: transparent;")
         self._lay = QVBoxLayout(self._content)
@@ -1229,6 +1405,26 @@ class ScrollList(QWidget):
         self._area.setWidget(self._content)
         outer.addWidget(self._area)
         self._rows = []
+
+    def _style_area(self):
+        """Стиль полосы прокрутки (вынесен — нужен и при смене темы)."""
+        self._area.setStyleSheet(f"""
+        QScrollArea {{ background: transparent; border: none; }}
+        QScrollBar:vertical {{ background: transparent; width: 7px; margin: 2px; }}
+        QScrollBar::handle:vertical {{ background: {self._handle_color};
+            border-radius: 3px; min-height: 24px; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        """)
+
+    def set_colors(self, track_color=None, handle_color=None):
+        """Перекраска для живой смены темы."""
+        if track_color is not None:
+            self._track_color = track_color
+        if handle_color is not None:
+            self._handle_color = handle_color
+        self._style_area()
+        self.update()
 
     def clear(self):
         for r in self._rows:
@@ -1244,8 +1440,19 @@ class ScrollList(QWidget):
         return list(self._rows)
 
 
-class InfoCardRow(QWidget):
+class InfoCardRow(Rethemable, QWidget):
     """Карточка видео в списке: обложка слева, текст справа (как одиночная)."""
+
+    _COLOR_ATTRS = {"title_color": ("_title_color", False),
+                    "text_color": ("_text_color", False),
+                    "muted_color": ("_muted_color", False)}
+
+    def _after_recolor(self):
+        _label_color(self.title, self._title_color)
+        _label_color(self.uploader, self._text_color)
+        _label_color(self.duration, self._muted_color)
+        if self.cb is not None:
+            self.cb.set_colors(text_color=self._title_color)
 
     def __init__(self, parent, title, uploader, duration,
                  title_font, sub_font, mono_font,
@@ -1256,6 +1463,9 @@ class InfoCardRow(QWidget):
         super().__init__(parent)
         self.setFixedHeight(height)
         self._tw, self._th, self._r = thumb_w, thumb_h, radius
+        self._title_color = title_color
+        self._text_color = text_color
+        self._muted_color = muted_color
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1322,11 +1532,22 @@ class InfoCardRow(QWidget):
             self.duration.setStyleSheet(f"color: {color}; background: transparent;")
 
 
-class PlaylistHeader(QWidget):
+class PlaylistHeader(Rethemable, QWidget):
     """Шапка плейлиста: слева — название, справа — «Deselect All / Select All»
     и счётчик «выбрано / всего». Кнопка кликабельна (сигнал toggled)."""
 
     toggled = Signal()
+
+    _COLOR_ATTRS = {"title_color": ("_title_color", False),
+                    "action_color": ("_action_color", False),
+                    "action_hover": ("_action_hover", False),
+                    "count_color": ("_count_color", False)}
+
+    def _after_recolor(self):
+        _label_color(self.title, self._title_color)
+        _label_color(self.count, self._count_color)
+        self.action.set_colors(color=self._action_color,
+                               hover_color=self._action_hover)
 
     def __init__(self, parent, title, total,
                  title_font, action_font, count_font,
@@ -1335,6 +1556,10 @@ class PlaylistHeader(QWidget):
         super().__init__(parent)
         self.setFixedHeight(height)
         self._total = total
+        self._title_color = title_color
+        self._action_color = action_color
+        self._action_hover = action_hover
+        self._count_color = count_color
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 8, 0)

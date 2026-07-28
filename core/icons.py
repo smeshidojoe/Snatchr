@@ -9,7 +9,6 @@ from core import themes
 # Цвет иконок нижней панели / инфо (обычный и при наведении).
 # Берём из палитры темы по умолчанию (UI постепенно переводится на palette()).
 ICON_COLOR = themes.color(DEFAULT_THEME, "icon")
-ICON_HOVER = themes.color(DEFAULT_THEME, "icon_hover")
 
 
 def _resolve_path(theme, filename):
@@ -24,7 +23,7 @@ def _resolve_path(theme, filename):
     return None
 
 
-def themed_pixmap(theme, filename, color, size):
+def _themed_pixmap_uncached(theme, filename, color, size):
     """
     Загружает чёрную глиф-иконку из assets/<theme>/<filename> и
     перекрашивает её в указанный цвет (через альфа-канал).
@@ -65,7 +64,7 @@ def raw_pixmap(path, size):
     return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
-def tint_pixmap(path, color, size):
+def _tint_pixmap_uncached(path, color, size):
     """Перекрашивает любой глиф-PNG (по альфа-каналу) в указанный цвет.
     Используется для иконок трея — они белые, но на светлой панели задач
     Windows должны становиться чёрными (см. tools.windows_uses_light_theme)."""
@@ -84,9 +83,40 @@ def tint_pixmap(path, color, size):
     return QPixmap.fromImage(out)
 
 
+# --- кеш перекрашенных иконок ------------------------------------------- #
+# Тонирование — это загрузка PNG, масштабирование и попиксельная перекраска.
+# При живой смене темы такие вызовы идут десятками за раз, а набор ключей
+# невелик (темы × файлы × цвета × размеры), поэтому просто держим готовые.
+_PM_CACHE = {}
+_ICON_CACHE = {}
+
+
+def themed_pixmap(theme, filename, color, size):
+    """Глиф-иконка темы нужного цвета и размера (кешируется)."""
+    key = (theme, filename, str(color), int(size))
+    if key not in _PM_CACHE:
+        _PM_CACHE[key] = _themed_pixmap_uncached(theme, filename, color, size)
+    return _PM_CACHE[key]
+
+
+def tint_pixmap(path, color, size):
+    """Перекрашенный PNG по пути (кешируется)."""
+    key = (path, str(color), int(size))
+    if key not in _PM_CACHE:
+        _PM_CACHE[key] = _tint_pixmap_uncached(path, color, size)
+    return _PM_CACHE[key]
+
+
 def themed_icon(theme, filename, color, size):
     """То же, что themed_pixmap, но как QIcon (для QPushButton)."""
-    pm = themed_pixmap(theme, filename, color, size)
-    if pm is None:
-        return None
-    return QIcon(pm)
+    key = (theme, filename, str(color), int(size))
+    if key not in _ICON_CACHE:
+        pm = themed_pixmap(theme, filename, color, size)
+        _ICON_CACHE[key] = QIcon(pm) if pm is not None else None
+    return _ICON_CACHE[key]
+
+
+def clear_cache():
+    """Сброс кеша (на случай подмены файлов иконок на диске)."""
+    _PM_CACHE.clear()
+    _ICON_CACHE.clear()

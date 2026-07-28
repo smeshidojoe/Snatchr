@@ -262,8 +262,11 @@ def _probe_with_cookies(url, settings):
                    or not downloader.is_auth_error(msg)):
             try:
                 return downloader.probe(url, cookies=None)
-            except Exception as exc2:
-                exc = exc2
+            except Exception:
+                # Не удалось и без кук — показываем ПЕРВУЮ ошибку (с куками).
+                # Она информативнее: сообщает, что дело в доступе к аккаунту, а
+                # не «видео только для подписчиков» из анонимного запроса.
+                pass
         info = _probe_ember(url, settings)      # последний шанс — Ember
         if info is not None:
             return info
@@ -459,51 +462,6 @@ class _Hooks:
         self.on_status = on_status
         self.set_proc = set_proc
         self.is_stopped = is_stopped
-
-
-class MultiDownloadWorker(QThread):
-    """Последовательное скачивание набора заданий (url, option)."""
-    item_progress = Signal(int, dict)
-    item_status = Signal(int, str)        # «Converting…», «Trying streamlink…»
-    item_done = Signal(int, bool, str)
-    all_done = Signal()
-
-    def __init__(self, jobs, settings, parent=None):
-        super().__init__(parent)
-        self._jobs = jobs
-        self._settings = settings
-        self._proc = None
-        self._stopped = False
-
-    def _set_proc(self, p):
-        self._proc = p
-
-    def run(self):
-        for i, job in enumerate(self._jobs):
-            if self._stopped:
-                break
-            url, opt = job[0], job[1]
-            title = job[2] if len(job) > 2 else None
-            hooks = _Hooks(
-                lambda p, i=i: self.item_progress.emit(i, p),
-                lambda s, i=i: self.item_status.emit(i, s),
-                self._set_proc, lambda: self._stopped)
-            try:
-                ok, dest, log = downloader.run_job(opt, url, self._settings, hooks, title)
-                if self._stopped:
-                    self.item_done.emit(i, False, "Stopped")
-                elif ok:
-                    self.item_done.emit(i, True, dest)
-                else:
-                    log.save_error()
-                    self.item_done.emit(i, False, downloader.friendly_error(log.text()))
-            except Exception as exc:
-                self.item_done.emit(i, False, str(exc))
-        self.all_done.emit()
-
-    def stop(self):
-        self._stopped = True
-        tools.kill_tree(self._proc)
 
 
 class DownloadWorker(QThread):

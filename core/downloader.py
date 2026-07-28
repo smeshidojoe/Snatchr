@@ -46,7 +46,6 @@ PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
 DEST_TAG = "@@DEST@@"      # префикс строки с итоговым путём файла
 
 
-COOKIE_BROWSERS = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"]
 
 
 def file_cookie_args(settings):
@@ -84,33 +83,42 @@ def browser_cookie_args(settings):
     return ["--cookies-from-browser", b] if b else []
 
 
-# Хост ссылки -> домен, под которым лежат куки сервиса.
+# Хост ссылки -> домены, под которыми лежат куки сервиса.
+#
+# Доменов может быть несколько: браузер хранит куки отдельно на каждом, а
+# сервер получает только те, что совпадают с доменом запроса. Из-за этого
+# vkvideo.ru не открывался: мы брали куки .vk.com, а на vkvideo.ru они не
+# отправляются — VK видел неавторизованный запрос. Забираем все домены
+# сервиса и отдаём одним файлом.
 _COOKIE_DOMAINS = {
-    "youtube.com": "youtube.com", "youtu.be": "youtube.com",
-    "vk.com": "vk.com", "vkvideo.ru": "vk.com",
-    "instagram.com": "instagram.com", "tiktok.com": "tiktok.com",
-    "twitter.com": "twitter.com", "x.com": "x.com",
-    "reddit.com": "reddit.com", "redd.it": "reddit.com",
-    "twitch.tv": "twitch.tv", "vimeo.com": "vimeo.com",
-    "soundcloud.com": "soundcloud.com", "facebook.com": "facebook.com",
-    "fb.watch": "facebook.com", "ok.ru": "ok.ru", "rutube.ru": "rutube.ru",
-    "pornhub.com": "pornhub.com",
+    "youtube.com": ("youtube.com",), "youtu.be": ("youtube.com",),
+    "vk.com":     ("vk.com", "vk.ru", "vkvideo.ru"),
+    "vk.ru":      ("vk.com", "vk.ru", "vkvideo.ru"),
+    "vkvideo.ru": ("vkvideo.ru", "vk.com", "vk.ru"),
+    "instagram.com": ("instagram.com",), "tiktok.com": ("tiktok.com",),
+    "twitter.com": ("twitter.com", "x.com"), "x.com": ("x.com", "twitter.com"),
+    "reddit.com": ("reddit.com",), "redd.it": ("reddit.com",),
+    "twitch.tv": ("twitch.tv",), "vimeo.com": ("vimeo.com",),
+    "soundcloud.com": ("soundcloud.com",), "facebook.com": ("facebook.com",),
+    "fb.watch": ("facebook.com",), "ok.ru": ("ok.ru",),
+    "rutube.ru": ("rutube.ru",), "pornhub.com": ("pornhub.com",),
 }
 
 
-def _cookie_domain(url):
-    """Домен кук для ссылки ('www.youtube.com/...' -> 'youtube.com') или ''."""
+def _cookie_domains(url):
+    """Домены кук для ссылки ('vkvideo.ru/...' -> ('vkvideo.ru','vk.com','vk.ru'))
+    или пустой кортеж, если сервис не в списке."""
     try:
         from urllib.parse import urlparse
         host = (urlparse(url or "").netloc or "").split("@")[-1].split(":")[0].lower()
     except Exception:
-        return ""
+        return ()
     if host.startswith("www."):
         host = host[4:]
-    for h, dom in _COOKIE_DOMAINS.items():
+    for h, doms in _COOKIE_DOMAINS.items():
         if host == h or host.endswith("." + h):
-            return dom
-    return ""
+            return doms
+    return ()
 
 
 def fast_cookie_args(settings, url):
@@ -123,8 +131,8 @@ def fast_cookie_args(settings, url):
 
     Файл одноразовый: имя начинается с 'use_', и _del_cookie_copy стирает его
     сразу после запуска процесса (куки не остаются лежать на диске)."""
-    dom = _cookie_domain(url)
-    if not dom:
+    doms = _cookie_domains(url)
+    if not doms:
         return []
     browser = (settings or {}).get("cookies_browser") or "auto"
     if browser == "auto":
@@ -136,7 +144,20 @@ def fast_cookie_args(settings, url):
         reader = getattr(browser_cookie3, browser, None)
         if reader is None:
             return []
-        jar = list(reader(domain_name=dom))
+        # Собираем куки со всех доменов сервиса; дубли (одно имя на одном
+        # домене и пути) отбрасываем — иначе yt-dlp получит противоречивые пары.
+        jar, seen = [], set()
+        for dom in doms:
+            try:
+                got = list(reader(domain_name=dom))
+            except Exception:
+                continue                 # один домен не прочитался — берём прочие
+            for c in got:
+                key = (c.domain, c.path or "/", c.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                jar.append(c)
         if not jar:
             return []                    # для этого сервиса кук нет — не мешаем
         import tempfile
@@ -151,6 +172,18 @@ def fast_cookie_args(settings, url):
         return ["--cookies", path]
     except Exception:
         return []                        # любая осечка -> обычный путь
+
+
+def _probe_error(r):
+    """Понятный текст ошибки анализа.
+
+    При отказе yt-dlp печатает в stdout литерал 'null', а причину — в stderr.
+    Раньше stdout брался первым, и до пользователя доходило слово «null»."""
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    if out.lower() in ("", "null"):
+        return err or "yt-dlp failed"
+    return out
 
 
 def _del_cookie_copy(args):
@@ -205,7 +238,7 @@ def probe(url, no_playlist=True, timeout=60, cookies=None):
     finally:
         _del_cookie_copy(args)          # одноразовую копию кук — сразу убрать
     if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError((r.stdout or r.stderr or "yt-dlp failed").strip())
+        raise RuntimeError(_probe_error(r))
     return json.loads(r.stdout)
 
 
@@ -545,6 +578,7 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
 
 
 TRIM_TMP_TTL = 24 * 3600        # сколько живёт фрагмент, скопированный в буфер
+PEAKS_TMP_TTL = 7 * 24 * 3600   # временные волны файлов вне истории
 
 
 def cleanup_temp():
@@ -583,6 +617,16 @@ def cleanup_temp():
         for p in glob.glob(os.path.join(tmp, "snatchr_trim_*")):
             try:
                 if now - os.path.getmtime(p) > TRIM_TMP_TTL:
+                    os.remove(p)
+            except OSError:
+                pass
+        # Волны для обрезки раньше кэшировались сюда по хешу пути и не чистились
+        # никогда. Теперь волна записи истории живёт в waveforms/<id>.peaks и
+        # удаляется вместе с записью; здесь остаются только файлы вне истории —
+        # их убираем по сроку, заодно подчищая накопленное старыми версиями.
+        for p in glob.glob(os.path.join(tmp, "snatchr_pk_*.peaks")):
+            try:
+                if now - os.path.getmtime(p) > PEAKS_TMP_TTL:
                     os.remove(p)
             except OSError:
                 pass
@@ -747,6 +791,10 @@ def is_auth_error(text):
         # приватность / ограниченный доступ
         "private video", "is private", "protected", "members-only",
         "subscribers", "premium",
+        # ВНИМАНИЕ: сюда НЕЛЬЗЯ добавлять формулировки VK вроде «only available
+        # for registered users». От этой функции зависит повтор БЕЗ кук, а на VK
+        # он как раз и спасает: с чужими/неподходящими куками VK отвечает
+        # «registered users», а без них отдаёт видео.
         # возрастные ограничения
         "confirm your age", "age-restricted", "age restricted",
         # антифлуд: куки часто снимают лимит, без них повтор бесполезен
@@ -935,7 +983,7 @@ def probe_flat(url, timeout=90):
     args = [tools.YTDLP_EXE, "-J", "--flat-playlist", "--no-warnings", url]
     r = tools.run(args, timeout=timeout)
     if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError((r.stdout or r.stderr or "yt-dlp failed").strip())
+        raise RuntimeError(_probe_error(r))
     return json.loads(r.stdout)
 
 

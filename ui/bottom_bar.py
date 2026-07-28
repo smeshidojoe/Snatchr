@@ -80,6 +80,20 @@ class BottomBar(QWidget):
             b.show()
         self.btn_folder.hide()          # оригинал спрятан (см. выше)
 
+    def apply_theme(self, pal):
+        """Живая смена темы: перетонировать иконки и обновить цвета кнопок."""
+        self._load_icons()               # перечитывает палитру и тонирует заново
+        # Шестерёнка/стрелка зависит от текущей страницы — ставим ту же пару.
+        if self._mode == "main":
+            self.btn_settings.set_icons(self.ic_settings, self.ic_settings_h)
+        else:
+            self.btn_settings.set_icons(self.ic_back, self.ic_back_h)
+        self.btn_folder.set_icons(self.ic_folder, self.ic_folder_h)
+        self.btn_folder2.set_icons(self.ic_folder, self.ic_folder_h)
+        self.btn_about.set_icons(self.ic_about, self.ic_about_h)
+        self.btn_exit.set_colors(color=self._icon, hover_color=self._icon_hover)
+        self.update()
+
     def teardown(self):
         """Удаляет кнопки панели (они привязаны к окну, а не к самой панели,
         поэтому при пересоздании панели их нужно убрать вручную)."""
@@ -163,7 +177,7 @@ class BottomBar(QWidget):
             self.btn_about.raise_()
             self.btn_exit.raise_()
 
-    def set_page_mode(self, page, target_h=None):
+    def set_page_mode(self, page, target_h=None, animate=None):
         """
         main     — шестерёнка + папка(в ряду) + about + Exit
         settings — стрелка + папка(едет в центр) + Exit (about уезжает вниз)
@@ -173,12 +187,17 @@ class BottomBar(QWidget):
         target_h — целевая высота окна (окно анимируется параллельно). Нужна,
         чтобы папка/about ехали к ФИНАЛЬНОМУ Y по прямой (одна OutCubic с окном),
         а не ломаной траекторией из-за динамического Y во время роста окна.
+
+        animate=False — расставить мгновенно. Нужно после пересборки панели
+        (смена темы/языка): новая панель рождается в режиме main, и без этого
+        папка каждый раз заново ехала из ряда в центр.
         """
         prev, self._mode = self._mode, page
         self.btn_settings.set_icons(*(
             (self.ic_settings, self.ic_settings_h) if page == "main"
             else (self.ic_back, self.ic_back_h)))
-        animate = self.app.isVisible() and {prev, page} <= {"main", "settings"}
+        if animate is None:
+            animate = self.app.isVisible() and {prev, page} <= {"main", "settings"}
         h = target_h if target_h is not None else self.app.WIN_H
 
         if page == "about":

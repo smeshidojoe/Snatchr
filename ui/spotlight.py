@@ -246,12 +246,16 @@ class Spotlight(QWidget):
             self.show_spotlight()
 
     def show_spotlight(self):
+        from core import perflog
+        perflog.note("Spotlight: show_spotlight вход")
         self._closing = False
         self.setWindowOpacity(1.0)
         self._close_trim(animate=False)
         self._close_playlist(animate=False)
         self._relayout()                        # сначала размеры (ширина списка), потом строки
-        self.history.rebuild(history.prune_missing())   # выкинуть удалённые с диска
+        with perflog.measure("Spotlight: prune_missing (диск)"):
+            entries = history.prune_missing()   # выкинуть удалённые с диска
+        self.history.rebuild(entries)
         self.app.sync_view_mirrors(self)        # подтянуть идущие загрузки из окна
         cur = QCursor.pos()
         screen = QGuiApplication.screenAt(cur) or QGuiApplication.primaryScreen()
@@ -275,6 +279,8 @@ class Spotlight(QWidget):
         self.search.edit().setFocus()
         self.search.edit().selectAll()
         self._prune_timer.start()
+        from core import perflog
+        perflog.note("Spotlight: показ начат")
         a = QPropertyAnimation(self, b"windowOpacity", self)
         a.setDuration(170)
         a.setStartValue(0.0)
@@ -333,7 +339,9 @@ class Spotlight(QWidget):
         """Убирает из истории строки, чьи файлы удалили с диска (окно открыто)."""
         if not self.isVisible():
             return
-        ids = self.history.drop_missing()
+        from core import perflog
+        with perflog.measure("Spotlight: периодическая чистка (диск)"):
+            ids = self.history.drop_missing()
         if ids:
             for entry_id in ids:
                 history.remove(entry_id)
@@ -699,7 +707,8 @@ class Spotlight(QWidget):
             self.search.flash(QColor("#e05a5a"))
             return
         self._trim_url = entry.get("url", "")     # для истории обрезанного фрагмента
-        wf = entry.get("waveform") or ""          # готовая заготовка волны (аудио)
+        wf = entry.get("waveform") or ""          # готовая заготовка волны
+        eid = entry.get("id") or ""               # к ней же привяжем волну видео
         if self._trim_open:
             same = (os.path.normpath(path)
                     == os.path.normpath(self.trim.current_path() or ""))
@@ -708,9 +717,9 @@ class Spotlight(QWidget):
             if self.trim.is_dirty():
                 # ползунки двигали — просим подтвердить смену файла
                 self.trim.confirm_switch(tr("Discard current trim?"),
-                                         lambda p=path, w=wf: self._load_trim(p, w))
+                                         lambda p=path, w=wf, i=eid: self._load_trim(p, w, i))
             else:
-                self._load_trim(path, wf)  # изменений не было — переключаемся сразу
+                self._load_trim(path, wf, eid)  # изменений не было — переключаемся сразу
             return
         # первое открытие — с анимацией раскрытия. Файл грузим сразу (filmstrip и
         # первый кадр начинают готовиться без задержки).
@@ -718,7 +727,7 @@ class Spotlight(QWidget):
         self._trim_h = 0
         target = self.trim.target_height()
         self.trim.begin_anim()       # нативное видео прячем на время раскрытия
-        self._load_trim(path, wf)
+        self._load_trim(path, wf, eid)
         self._relayout()             # геометрия ДО show — иначе панель успевала
         self.trim.show()             # мелькнуть в старом месте/размере
         self._fit_for_extra(target + self.GAP)
@@ -727,9 +736,9 @@ class Spotlight(QWidget):
                      easing=QEasingCurve.OutCubic,
                      on_finished=self.trim.end_anim, attr="_trim_anim")
 
-    def _load_trim(self, path, waveform=None):
+    def _load_trim(self, path, waveform=None, entry_id=""):
         """Загрузить файл в панель обрезки и отметить его строку активной."""
-        self.trim.open_for(path, waveform)
+        self.trim.open_for(path, waveform, entry_id=entry_id)
         self.history.set_active_path(path)
 
     def _set_trim_h(self, h):

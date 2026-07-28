@@ -23,11 +23,16 @@ class HotkeyManager(QObject):
             import keyboard
             self._kb = keyboard
             # emit из фонового потока -> слот в UI-потоке (авто-queued).
-            self._handle = keyboard.add_hotkey(self._combo,
-                                               lambda: self.triggered.emit())
+            self._handle = keyboard.add_hotkey(self._combo, self._fired)
             return True
         except Exception:
             return False
+
+    def _fired(self):
+        """Колбэк библиотеки (её поток): отмечаем момент и уходим в UI-поток."""
+        from core import perflog
+        perflog.note("хоткей пойман (поток keyboard)")
+        self.triggered.emit()
 
     def stop(self):
         try:

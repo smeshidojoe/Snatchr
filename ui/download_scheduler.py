@@ -57,9 +57,6 @@ class DownloadScheduler(QObject):
                 pass
         self._pump()                  # освободился слот — тянем следующий
 
-    def has_work(self):
-        return bool(self._active) or bool(self._queue)
-
     def stop_all(self):
         self._queue.clear()
         for w in list(self._active.values()):
