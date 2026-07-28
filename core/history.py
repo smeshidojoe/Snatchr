@@ -133,6 +133,10 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
     Обложка: приоритет — постер сайта из yt-dlp (готовые байты thumb_bytes или
     thumb_url), т.к. это официальная картинка, а не случайный кадр. Если её нет —
     запасной вариант: кадр из самого файла через ffmpeg."""
+    # Галерея (карусель фото/видео) приезжает ПАПКОЙ: обложек несколько,
+    # длительности и разрешения нет, копирование и обрезка не применимы.
+    if path and os.path.isdir(path):
+        return _add_gallery(path, url, title, uploader)
     if not path or not os.path.isfile(path):
         return None
     entry_id = uuid.uuid4().hex[:12]
@@ -188,6 +192,92 @@ def add(path, url, title=None, thumb_bytes=None, thumb_url=None, uploader=None):
     return entry
 
 
+# Что считаем картинкой/видео при разборе содержимого папки поста.
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_VID_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
+GALLERY_THUMBS = 3               # столько слоёв в стопке обложек
+
+
+def gallery_files(folder):
+    """Файлы поста по порядку имени (картинки и видео)."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        p = os.path.join(folder, n)
+        if os.path.isfile(p) and os.path.splitext(n)[1].lower() in (_IMG_EXT + _VID_EXT):
+            out.append(p)
+    return out
+
+
+def _add_gallery(folder, url, title, uploader):
+    """Запись о посте-галерее: путь = ПАПКА, обложек до трёх."""
+    files = gallery_files(folder)
+    if not files:
+        return None
+    entry_id = uuid.uuid4().hex[:12]
+    thumbs = []
+    try:
+        os.makedirs(THUMBS_DIR, exist_ok=True)
+        for i, f in enumerate(files[:GALLERY_THUMBS]):
+            tp = os.path.join(THUMBS_DIR, "%s_%d.jpg" % (entry_id, i))
+            if os.path.splitext(f)[1].lower() in _IMG_EXT:
+                made = trimmer.thumbnail_from_image(f, tp, width=320)                     if hasattr(trimmer, "thumbnail_from_image") else None
+                if not made:                     # без хелпера — кладём как есть
+                    import shutil as _sh
+                    try:
+                        _sh.copyfile(f, tp)
+                        made = tp
+                    except OSError:
+                        made = None
+            else:
+                made = trimmer.thumbnail(f, tp, width=320)   # кадр из видео
+            if made:
+                thumbs.append(made)
+    except Exception:
+        pass
+
+    entry = {
+        "id": entry_id,
+        "url": (url or "").strip(),
+        "host": host_label(url),
+        # Заголовок в стиле самой площадки («Video by …» у роликов Instagram).
+        # У поста «title» — это ПОДПИСЬ (произвольный текст автора, часто
+        # упоминание другого аккаунта), поэтому имя берём из автора, а не из неё.
+        "title": (("Post by %s" % uploader) if uploader
+                  else (title or os.path.basename(folder))),
+        "uploader": uploader or "",
+        "path": folder,
+        "is_gallery": True,
+        "media_count": len(files),
+        "thumbs": thumbs,                 # до трёх — для стопки в строке истории
+        "thumb": thumbs[0] if thumbs else "",
+        "height": 0,
+        "duration": 0,
+        "is_image": False,
+        "is_audio": False,
+        "waveform": "",
+        "ts": int(time.time()),
+    }
+    with _LOCK:
+        items = load()
+        items.insert(0, entry)
+        for old_it in items[MAX_ITEMS:]:
+            _remove_thumb(old_it.get("thumb"))
+            _remove_gallery_thumbs(old_it)
+            _remove_waveform(old_it.get("waveform"))
+        items = items[:MAX_ITEMS]
+        _save(items)
+    return entry
+
+
+def _remove_gallery_thumbs(entry):
+    for t in (entry or {}).get("thumbs") or []:
+        _remove_thumb(t)
+
+
 def _remove_waveform(wpath):
     try:
         if wpath and os.path.isfile(wpath):
@@ -212,6 +302,7 @@ def remove(entry_id):
         for it in items:
             if it.get("id") == entry_id:
                 _remove_thumb(it.get("thumb"))
+                _remove_gallery_thumbs(it)
                 _remove_waveform(it.get("waveform"))
             else:
                 kept.append(it)
@@ -230,6 +321,10 @@ def file_gone(path):
     if not path:
         return True
     try:
+        # Пост-галерея: путь указывает на папку. Она на месте — запись живая,
+        # даже если внутри часть файлов удалили вручную.
+        if os.path.isdir(path):
+            return False
         if os.path.isfile(path):
             return False
         drive = os.path.splitdrive(os.path.abspath(path))[0]

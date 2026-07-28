@@ -711,11 +711,20 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self._populate_selector()
         # Вместо карточки — pending-строка в истории (подсвечена; ждёт Download).
         url = self._analyzing_url
+        from core import ember_dl
+        gal = ember_dl.is_gallery(info)
+        uploader = info.get("uploader") or info.get("channel") or ""
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
-                 "host": history.host_label(url), "title": info.get("title") or "",
-                 "uploader": info.get("uploader") or info.get("channel") or "",
+                 "host": history.host_label(url),
+                 # У поста «title» — подпись автора, заголовком её не берём.
+                 "title": (("Post by %s" % uploader) if (gal and uploader)
+                           else (info.get("title") or "")),
+                 "uploader": uploader,
                  "duration": info.get("duration") or 0,
                  "height": info.get("height") or 0, "fps": info.get("fps") or 0,
+                 # Пост показываем стопкой слоёв уже на этапе ожидания.
+                 "is_gallery": gal,
+                 "media_count": ember_dl.media_count(info) if gal else 0,
                  "path": None, "thumb": "", "ts": 0, "_thumb_url": info.get("thumbnail")}
         if self._fetching_row is not None:
             entry["id"] = self._fetching_row.entry.get("id", entry["id"])
@@ -852,6 +861,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             self.btn_download.animate_bg(self.ANALYZE_BG)
             self._set_state("multi_idle")
         else:
+            self._reset_format_selector()     # убрать пункты режима нескольких ссылок
             self.btn_download.fade_text(tr("Download"))
             self.btn_download.animate_bg(self.DL_BG)
             self._collapsing = True           # держим большое поле, пока окно ужимается
@@ -1103,6 +1113,20 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                   and cur == self._analyzing_url)
         self.btn_download.setEnabled(en)
 
+    def _reset_format_selector(self):
+        """Возвращает селектор к дефолту — первому по Format Priority.
+
+        Нужен и при сбросе разбора, и при выходе из режима нескольких ссылок:
+        там селектор наполняется своими тремя пунктами, и без сброса они
+        оставались висеть в одиночном режиме, где ссылка ещё не разобрана.
+        """
+        opt = self._default_option(self.seg_type.value())
+        self.sel_format.clear()
+        self._opt_by_label = {opt["label"]: opt}
+        self.sel_format.add_item(opt["label"])
+        self.sel_format.set_current(opt["label"])
+        self._selected = opt
+
     def _reset_info(self, keep_format=False):
         """Сброс состояния разбора. keep_format=True — оставить селектор как есть
         (загрузка уже запущена, и он показывает выбранный формат)."""
@@ -1114,13 +1138,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.list.clear()
         if keep_format:
             return
-        # Селектор возвращаем в дефолт — первый по Format Priority (если там
-        # первой стоит «Best Compatibility», визуально ничего не сменится).
-        opt = self._default_option(self.seg_type.value())
-        self.sel_format.clear()
-        self.sel_format.add_item(opt["label"])
-        self.sel_format.set_current(opt["label"])
-        self._selected = opt
+        self._reset_format_selector()
 
     # ------------------------------------------------------------------ #
     #  Скачивание
@@ -1349,9 +1367,8 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.app.remove_history_entry(entry.get("id", ""))
 
     def _delete_entry(self, entry):
-        if self.app.delete_file(entry):
-            self.app.refresh_histories()
-        else:
+        # Файл с диска + строка уезжает с анимацией (не мгновенным обрывом).
+        if not self.app.delete_history_entry(entry):
             self.history.flash_error(entry.get("id", ""),
                                      tr("Couldn't delete — file in use"))
 

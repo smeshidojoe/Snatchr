@@ -932,9 +932,8 @@ class Spotlight(QWidget):
         self.app.remove_history_entry(entry.get("id", ""))   # мгновенно + фон
 
     def _delete_entry(self, entry):
-        if self.app.delete_file(entry):      # файл с диска + запись из истории
-            self.app.refresh_histories()
-        else:
+        # Файл с диска + строка уезжает с анимацией (не мгновенным обрывом).
+        if not self.app.delete_history_entry(entry):
             # Не удалось (файл занят/заблокирован) — краснеем строку с пояснением.
             self.history.flash_error(entry.get("id", ""),
                                      tr("Couldn't delete — file in use"))

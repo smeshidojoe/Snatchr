@@ -103,22 +103,39 @@ def extract(url, settings=None, timeout=25.0):
     return _call(ember.extract, url, settings, timeout=timeout)
 
 
+def _is_cookie_problem(exc):
+    """Ошибка ЧТЕНИЯ кук, а не самой ссылки.
+
+    Ember сообщает про заблокированную базу браузера тем же EmberError, что и
+    про недоступный пост. Раньше любой EmberError на этапе кук прерывал всю
+    цепочку, и до анонимной попытки дело не доходило."""
+    low = str(exc or "").lower()
+    return any(k in low for k in (
+        "cookie", "locks its cookie", "could not read", "database is locked",
+        "keyring", "decrypt"))
+
+
 def _call(fn, url, settings, **kwargs):
-    """Вызов ember-функции с куками (файл -> браузер -> без кук)."""
+    """Вызов ember-функции с куками (файл -> браузер -> без кук).
+
+    Возвращает результат первой удачной попытки. Ошибку доступа к посту
+    пробрасываем сразу — перебирать источники кук после неё бессмысленно."""
     jar = _cookies_from_file(settings, url)
     if jar:
         try:
             return fn(url, cookies=jar, **kwargs)
-        except ember.EmberError:
-            raise                      # ошибка самой ссылки — пробрасываем
+        except ember.EmberError as exc:
+            if not _is_cookie_problem(exc):
+                raise                  # ошибка самой ссылки — пробрасываем
         except Exception:
             pass
     br = _browser(settings)
     if br:
         try:
             return fn(url, cookies_from_browser=br, **kwargs)
-        except ember.EmberError:
-            raise
+        except ember.EmberError as exc:
+            if not _is_cookie_problem(exc):
+                raise
         except Exception:
             pass                       # не смогли с куками -> пробуем без них
     return fn(url, **kwargs)
@@ -223,8 +240,33 @@ def to_info(result):
         "_ember": True,                       # метка движка (см. модуль-docstring)
         "_ember_heights": heights,
         "_ember_kind": result.kind,
+        # Галерея (карусель фото/видео): элементов больше одного, качаем ВСЕ в
+        # подпапку. Число нужно селектору («Media (N)») и строке истории.
+        "_ember_count": len(getattr(result, "media", None) or []),
+        "_ember_media_kinds": [getattr(m, "kind", "") for m in
+                               (getattr(result, "media", None) or [])],
         "formats": [],                        # селектор строим из _ember_heights
     }
+
+
+def is_gallery(info):
+    """Пост, который качаем целиком в подпапку и показываем стопкой.
+
+    Это карусель (несколько файлов) ИЛИ пост из одних картинок — даже
+    единственное фото идёт тем же путём: выбирать качество не из чего, а блок
+    в истории выглядит одинаково.
+    """
+    i = info or {}
+    if i.get("_ember_kind") == "gallery":
+        return True
+    if int(i.get("_ember_count") or 0) > 1:
+        return True
+    kinds = [str(k or "").lower() for k in (i.get("_ember_media_kinds") or [])]
+    return bool(kinds) and all(k in ("photo", "image", "gif") for k in kinds)
+
+
+def media_count(info):
+    return int((info or {}).get("_ember_count") or 0)
 
 
 def format_options(info, settings=None):
@@ -238,6 +280,12 @@ def format_options(info, settings=None):
     прячется всё ровно как у yt-dlp. Без settings список отдаётся как есть."""
     from core import formats
     from core.trimmer import res_label
+    # Галерея: качество выбирать не из чего — берём весь пост целиком.
+    if is_gallery(info):
+        n = media_count(info)
+        return [{"label": "%s (%d)" % (tr("Media"), n), "mp3": False,
+                 "key": "gallery", "ember": True, "gallery": True,
+                 "height": 0, "count": n}]
     opts = [{"label": tr("Best Quality"), "mp3": False, "key": "best",
              "ember": True, "height": 0}]
     for h in (info or {}).get("_ember_heights") or []:
@@ -298,6 +346,67 @@ def _progress_cb(hooks, started):
         info["size"] = _fmt_size(p.total)
         hooks.on_progress(info)
     return cb
+
+
+def download_all(result, out_dir, hooks=None):
+    """Скачивает ВСЕ файлы поста в out_dir. Возвращает список путей."""
+    if not HAVE:
+        return []
+    started = [time.time()]
+    total = max(1, len(getattr(result, "media", None) or []))
+    paths = ember.download(result, out_dir=out_dir,
+                           on_progress=_progress_cb_multi(hooks, started, total),
+                           concurrency=6)
+    return [p for p in (paths or []) if p and os.path.isfile(p)]
+
+
+def _progress_cb_multi(hooks, started, total):
+    """Прогресс по ВСЕМУ посту, а не по каждому файлу отдельно.
+
+    Ember сообщает долю для текущего файла и каждый раз начинает с нуля —
+    полоса дёргалась бы назад на каждом элементе. Считаем сквозную долю:
+    завершённые файлы плюс доля текущего, поделённые на общее число.
+    """
+    inner = _progress_cb(hooks, started)
+    seen = []                      # пути в порядке появления — это и есть индекс
+
+    def cb(p):
+        path = getattr(p, "path", None)
+        if path and path not in seen:
+            seen.append(path)
+        done = max(0, len(seen) - 1)          # сколько файлов уже позади
+        frac = getattr(p, "fraction", None)
+        if frac is None:
+            segs = getattr(p, "segments_total", 0) or 0
+            frac = (getattr(p, "segments_done", 0) / float(segs)) if segs else 0.0
+        overall = min(1.0, (done + max(0.0, min(1.0, frac))) / float(total))
+
+        class _P:                              # подменяем долю на сквозную
+            pass
+        q = _P()
+        for a in ("stage", "downloaded", "total", "segments_done",
+                  "segments_total", "path", "eta", "speed", "elapsed"):
+            setattr(q, a, getattr(p, a, None))
+        q.fraction = overall
+        q.total = None                         # ETA по одному файлу тут врала бы
+        inner(q)
+
+    return cb
+
+
+def post_folder_name(result, url):
+    """Имя подпапки поста: «<автор> - <id поста>»."""
+    author = _safe_name(getattr(result, "author", None) or "") or "post"
+    pid = ""
+    try:
+        from urllib.parse import urlparse
+        parts = [s for s in (urlparse(str(url or "")).path or "").split("/") if s]
+        if parts:
+            pid = parts[-1]
+    except Exception:
+        pid = ""
+    pid = _safe_name(pid) if pid else ""
+    return ("%s - %s" % (author, pid)) if pid else author
 
 
 def download(result, out_dir, option=None, hooks=None, title=None):

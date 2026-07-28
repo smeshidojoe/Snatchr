@@ -226,14 +226,19 @@ class AppUpdateWorker(QThread):
             self.done.emit(False, str(exc))
 
 
-def _probe_ember(url, settings):
-    """Анализ через Ember -> info в нашем формате. None, если не вышло."""
+def _probe_ember(url, settings, errors=None):
+    """Анализ через Ember -> info в нашем формате. None, если не вышло.
+
+    errors — список, куда кладём текст ошибки: он часто информативнее ответа
+    yt-dlp (например, «нужны куки авторизации» вместо «HTTP Error 400»)."""
     from core import ember_dl
     if not ember_dl.can_handle(url):
         return None
     try:
         return ember_dl.to_info(ember_dl.extract(url, settings))
-    except Exception:
+    except Exception as exc:
+        if errors is not None:
+            errors.append(str(exc))
         return None
 
 
@@ -267,9 +272,22 @@ def _probe_with_cookies(url, settings):
                 # Она информативнее: сообщает, что дело в доступе к аккаунту, а
                 # не «видео только для подписчиков» из анонимного запроса.
                 pass
-        info = _probe_ember(url, settings)      # последний шанс — Ember
+        # Vimeo: часть роликов открывается только через плеерную форму ссылки.
+        alt = downloader.vimeo_player_url(url)
+        if alt:
+            try:
+                return downloader.probe(alt, cookies=ck)
+            except Exception:
+                pass
+        ember_errors = []
+        info = _probe_ember(url, settings, ember_errors)   # последний шанс — Ember
         if info is not None:
             return info
+        # Ember про доступ обычно объясняет понятнее — показываем его текст.
+        for e in ember_errors:
+            if any(k in e.lower() for k in ("cookie", "logged-in", "log in",
+                                            "login", "private", "auth")):
+                raise RuntimeError(e)
         raise exc
 
 

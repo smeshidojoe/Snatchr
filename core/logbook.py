@@ -16,6 +16,7 @@ LOG_DIR = os.path.join(APP_DIR, "logs")
 class Log:
     def __init__(self, url=""):
         self._lines = []
+        self._path = None            # файл на диске (после begin())
         self.event("Snatchr download log")
         if url:
             self.info(f"URL: {url}")
@@ -23,17 +24,58 @@ class Log:
     def _stamp(self):
         return time.strftime("%H:%M:%S")
 
+    def begin(self, prefix="download"):
+        """Начинает писать лог НА ДИСК сразу.
+
+        Раньше файл появлялся только в конце — и если загрузка падала посреди
+        (например, из-за ошибки в самом коде), от неё не оставалось следа.
+        Теперь строки уходят в файл по мере появления, а при успехе он
+        удаляется (discard) — на диске остаются только проблемные."""
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            self._path = os.path.join(
+                LOG_DIR, "%s-%s.log" % (prefix, time.strftime("%Y%m%d-%H%M%S")))
+            with open(self._path, "w", encoding="utf-8") as f:
+                f.write(self.text() + chr(10))
+        except OSError:
+            self._path = None
+        return self._path
+
+    def discard(self):
+        """Успешное задание — лог не нужен."""
+        try:
+            if self._path and os.path.isfile(self._path):
+                os.remove(self._path)
+        except OSError:
+            pass
+        self._path = None
+
+    def _append(self, line):
+        """Дописывает строку в уже открытый файл (если begin() был вызван)."""
+        if not self._path:
+            return
+        try:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(line + chr(10))
+        except OSError:
+            pass
+
     def event(self, key):
         """Ключевое событие (переводится)."""
-        self._lines.append(f"[{self._stamp()}] {i18n.tr(key)}")
+        line = f"[{self._stamp()}] {i18n.tr(key)}"
+        self._lines.append(line)
+        self._append(line)
 
     def info(self, text):
-        self._lines.append(f"[{self._stamp()}] {text}")
+        line = f"[{self._stamp()}] {text}"
+        self._lines.append(line)
+        self._append(line)
 
     def raw(self, text):
         """Сырая строка вывода утилиты (без перевода)."""
         if text:
             self._lines.append(text)
+            self._append(text)
 
     def text(self):
         return "\n".join(self._lines)
@@ -50,6 +92,9 @@ class Log:
     def _save(self, prefix):
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
+            # Файл уже пишется с начала задания — просто оставляем его.
+            if self._path and os.path.isfile(self._path):
+                return self._path
             path = os.path.join(
                 LOG_DIR, "%s-%s.log" % (prefix, time.strftime("%Y%m%d-%H%M%S")))
             with open(path, "w", encoding="utf-8") as f:

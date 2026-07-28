@@ -1244,6 +1244,27 @@ class App(QWidget):
         from core import history
         QTimer.singleShot(0, lambda: history.remove(entry_id))
 
+    def delete_history_entry(self, entry):
+        """«Удалить»: файл с диска + запись, строка уезжает С АНИМАЦИЕЙ.
+
+        Раньше здесь дёргалась полная пересборка списка (refresh_histories) —
+        строка исчезала мгновенным обрывом, а соседние подпрыгивали вверх без
+        анимации. Убираем ровно одну строку тем же путём, что и «Убрать из
+        списка»: затухание + плавный сдвиг остальных.
+
+        Возвращает False, если файл занят — тогда список не трогаем, вызывающий
+        покажет ошибку на строке.
+        """
+        if not self.delete_file(entry):
+            return False
+        entry_id = (entry or {}).get("id", "")
+        for v in self._views():
+            try:
+                v.history.remove_by_id(entry_id)
+            except Exception:
+                pass
+        return True
+
     def refresh_histories(self):
         """Немедленно пересобирает историю в окне и Spotlight из файла (после
         удаления/переименования ролика в одном из мест — отражается в обоих)."""
@@ -1350,10 +1371,22 @@ class App(QWidget):
             pass
 
     def play_file(self, path):
-        """Открыть видео системным плеером по умолчанию (двойной клик Проводника)."""
+        """Пункт «Открыть» в меню строки истории.
+
+        Открывает ПАПКУ с файлом и выделяет его — так удобнее, чем запускать
+        плеер: файл сразу можно перетащить, переименовать или скопировать.
+        Для поста-галереи путь указывает на саму папку — открываем её.
+        """
+        import subprocess
         try:
-            if path and os.path.isfile(path):
-                os.startfile(path)          # noqa: запуск ассоциированного приложения
+            if not path or not os.path.exists(path):
+                return
+            if os.path.isdir(path):
+                subprocess.Popen(['explorer', os.path.normpath(path)])
+                return
+            # /select — открыть папку и выделить файл. Проводник требует
+            # ИМЕННО такую форму записи (запятая без пробела).
+            subprocess.Popen('explorer /select,"%s"' % os.path.normpath(path))
         except Exception:
             pass
 
@@ -1380,6 +1413,17 @@ class App(QWidget):
         if not os.path.exists(path):
             return True                      # уже удалён — считаем успехом
         import time
+        # Пост-галерея хранится папкой — удаляем её целиком со всем содержимым.
+        if os.path.isdir(path):
+            import shutil
+            for _ in range(3):
+                try:
+                    shutil.rmtree(path)
+                    return True
+                except OSError:
+                    QApplication.processEvents()
+                    time.sleep(0.07)
+            return not os.path.exists(path)
         for _ in range(5):
             try:
                 os.remove(path)

@@ -309,6 +309,11 @@ class HistoryRow(QWidget):
         primary = self.entry.get("uploader") or self.entry.get("host", "")
         if primary:
             parts.append(primary)
+        if self.entry.get("is_gallery"):
+            n = int(self.entry.get("media_count") or 0)
+            if n:
+                parts.append("%d %s" % (n, tr("media")))
+            return "  ·  ".join(parts)
         h = self.entry.get("height") or 0
         dur = self.entry.get("duration")
         # Готовый ролик — показываем разрешение; до скачивания (pending) — длину.
@@ -476,6 +481,8 @@ class HistoryRow(QWidget):
         """Раннее превью (обложка из yt-dlp) для pending/идущей строки."""
         if pm is not None and not pm.isNull() and self._state in ("downloading", "pending"):
             self._pm = pm
+            if self.is_gallery():        # пост: обложка = верхний слой стопки
+                self._gallery_pms = [pm]
             self.update()
 
     def finish(self, entry, pulse=True):
@@ -530,12 +537,16 @@ class HistoryRow(QWidget):
     def _apply_state(self):
         dl = self._state == "downloading"
         no_btn = self._state in ("pending", "fetching", "error")
-        for b in (self._btn_more, self._btn_copy):
-            if b is not None:
-                b.setVisible(not dl and not no_btn)    # у pending/fetching кнопок нет
-        if self._btn_trim is not None:                 # обложку не режем
+        gal = self.is_gallery()
+        if self._btn_more is not None:
+            self._btn_more.setVisible(not dl and not no_btn)
+        if self._btn_copy is not None:
+            # У поста файлов много — копировать в буфер нечего.
+            self._btn_copy.setVisible(not dl and not no_btn and not gal)
+        if self._btn_trim is not None:                 # обложку и пост не режем
             self._btn_trim.setVisible(not dl and not no_btn
-                                      and not self.entry.get("is_image"))
+                                      and not self.entry.get("is_image")
+                                      and not gal)
         self._btn_stop.setVisible(dl)     # стоп — только пока идёт загрузка
 
     def is_pending(self):
@@ -703,13 +714,77 @@ class HistoryRow(QWidget):
         else:
             self._text_right = copy_x - s(10)
 
+    def is_gallery(self):
+        return bool(self.entry.get("is_gallery"))
+
+    def _load_gallery_thumbs(self):
+        """До трёх обложек поста для стопки (первая — верхний слой)."""
+        out = []
+        for t in (self.entry.get("thumbs") or [])[:3]:
+            if t and os.path.isfile(t):
+                pm = QPixmap(t)
+                if not pm.isNull():
+                    out.append(pm)
+        return out
+
     def _load_thumb(self):
+        if self.is_gallery():
+            self._gallery_pms = self._load_gallery_thumbs()
+            return self._gallery_pms[0] if self._gallery_pms else None
         thumb = self.entry.get("thumb") or ""
         if thumb and os.path.isfile(thumb):
             pm = QPixmap(thumb)
             if not pm.isNull():
                 return pm
         return None
+
+    def _paint_gallery_stack(self, p, tx, ty, tw, th):
+        """Стопка из трёх слоёв — пост из нескольких файлов.
+
+        Слоёв ВСЕГДА три, даже если файл один: нижние два тогда просто
+        полупрозрачное затемнение, чтобы блок читался как «тут несколько».
+        Картинки вписываются с заполнением и обрезкой.
+        """
+        s = self.app._s
+        pms = getattr(self, "_gallery_pms", None) or []
+        step = s(5)                       # сдвиг каждого следующего слоя
+        # Верхний слой занимает основную площадь; нижние выглядывают справа-снизу.
+        base_w, base_h = tw - 2 * step, th - 2 * step
+        for i in (2, 1, 0):               # рисуем от дальнего к ближнему
+            off = i * step
+            r = QRectF(tx + off, ty + off, base_w, base_h)
+            path = QPainterPath()
+            path.addRoundedRect(r, s(5), s(5))
+            p.save()
+            p.setClipPath(path)
+            pm = pms[i] if i < len(pms) else None
+            if pm is not None and not pm.isNull():
+                src_pm = self._blurred(pm) if self._err_t > 0.0 else pm
+                sc = src_pm.scaled(int(base_w), int(base_h),
+                                   Qt.KeepAspectRatioByExpanding,
+                                   Qt.SmoothTransformation)
+                p.drawPixmap(int(r.left()), int(r.top()), sc)
+                if i:                     # нижние слои притемняем — они «позади»
+                    p.fillRect(r, QColor(0, 0, 0, 90 if i == 1 else 140))
+            else:
+                # Своей картинки у слоя нет (в посте меньше трёх файлов). Рисуем
+                # ПЛОТНУЮ карточку, а не полупрозрачную рамку: слой должен
+                # читаться как лист под верхним, иначе выглядит пустым контуром.
+                base_pm = pms[0] if pms else None
+                if base_pm is not None and not base_pm.isNull():
+                    sc = base_pm.scaled(int(base_w), int(base_h),
+                                        Qt.KeepAspectRatioByExpanding,
+                                        Qt.SmoothTransformation)
+                    p.drawPixmap(int(r.left()), int(r.top()), sc)
+                    p.fillRect(r, QColor(0, 0, 0, 120 if i == 1 else 175))
+                else:
+                    solid = QColor(self._chip)
+                    solid.setAlpha(255)
+                    p.fillRect(r, solid.darker(115 if i == 1 else 135))
+            p.restore()
+            p.setPen(QPen(QColor(0, 0, 0, 70), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r, s(5), s(5))
 
     def enterEvent(self, e):
         self._hover = True
@@ -805,21 +880,26 @@ class HistoryRow(QWidget):
         tw, th = s(self.THUMB_W), s(self.THUMB_H)
         tx, ty = s(12), (self._h - th) // 2
         rect = QRectF(tx, ty, tw, th)
+        if self.is_gallery():
+            self._paint_gallery_stack(p, tx, ty, tw, th)
+            rect = None
         path = QPainterPath()
-        path.addRoundedRect(rect, s(6), s(6))
+        if rect is not None:
+            path.addRoundedRect(rect, s(6), s(6))
         p.save()
-        p.setClipPath(path)
-        if self._pm is not None:
+        if rect is not None:
+            p.setClipPath(path)
+        if rect is not None and self._pm is not None:
             src = self._pm
             if self._err_t > 0.0:            # ошибка — размываем обложку
                 src = self._blurred(src)
             scaled = src.scaled(int(tw), int(th), Qt.KeepAspectRatioByExpanding,
                                 Qt.SmoothTransformation)
             p.drawPixmap(int(tx), int(ty), scaled)
-        else:
+        elif rect is not None:
             p.fillRect(rect, QColor("#26262a"))
         p.restore()
-        if self.entry.get("is_image"):     # скачанная картинка — янтарная рамка обложки
+        if rect is not None and self.entry.get("is_image"):   # картинка — янтарная рамка
             p.setPen(QPen(QColor("#ffb020"), max(1.5, s(2.0))))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rect, s(6), s(6))

@@ -549,7 +549,9 @@ def build_download_args(option, url, settings, title=None, out_dir=None,
     if loc:
         args += ["--ffmpeg-location", loc]
 
-    args += ["-f", option["fmt"]]
+    fmt = (option or {}).get("fmt")
+    if fmt:
+        args += ["-f", fmt]
     if option.get("sort"):
         args += ["-S", option["sort"]]
     if option.get("mp3"):
@@ -861,6 +863,36 @@ def is_playlist_url(url):
     return ember_dl.is_collection(u)
 
 
+def vimeo_player_url(url):
+    """Плеерная форма ссылки Vimeo или "" (если это не Vimeo / id не найден).
+
+    Часть роликов доступна ТОЛЬКО через player.vimeo.com — на самом vimeo.com
+    экстрактор получает 404 (встраиваемые/непубличные видео). Поэтому при
+    неудаче повторяем через плеер. Безусловно подставлять нельзя: у скрытых
+    видео в ссылке есть хеш доступа (vimeo.com/<id>/<hash>), и его надо
+    перенести в параметр ?h=, иначе сломаются работающие ссылки.
+    """
+    import re
+    from urllib.parse import urlparse, parse_qs
+    try:
+        u = urlparse(str(url or ""))
+    except Exception:
+        return ""
+    host = (u.netloc or "").lower().split("@")[-1].split(":")[0]
+    if not (host == "vimeo.com" or host.endswith(".vimeo.com")):
+        return ""
+    if host.startswith("player."):
+        return ""                      # уже плеерная форма — повторять нечем
+    m = re.search(r"/(?:video/)?(\d+)(?:/([0-9a-zA-Z]+))?", u.path or "")
+    if not m:
+        return ""
+    vid, vhash = m.group(1), m.group(2)
+    if not vhash:                      # хеш мог прийти параметром ?h=
+        vhash = (parse_qs(u.query or "").get("h") or [""])[0]
+    out = "https://player.vimeo.com/video/%s" % vid
+    return out + ("?h=%s" % vhash if vhash else "")
+
+
 def is_channel_url(url):
     """Ссылка на КАНАЛ/ПРОФИЛЬ (а не на одно видео): yt-dlp по такой начинает
     перечислять все видео канала. Ловим YouTube (@handle, /channel/, /c/, /user/)
@@ -1094,6 +1126,17 @@ def _move_to_dest(src, download_dir):
     именем; возвращает путь. Чистка здесь ловит и режимы, где имя задавал сам
     yt-dlp (напр., фоновый Paste), а не наш шаблон."""
     os.makedirs(download_dir, exist_ok=True)
+    # Галерея приезжает ПАПКОЙ — у неё нет расширения, и уникальность считаем
+    # по имени каталога.
+    if os.path.isdir(src):
+        base = _sanitize_name(os.path.basename(src.rstrip("\\/"))) or "post"
+        cand, n = base, 1
+        while os.path.exists(os.path.join(download_dir, cand)):
+            cand = "%s (%d)" % (base, n)
+            n += 1
+        final = os.path.join(download_dir, cand)
+        shutil.move(src, final)
+        return final
     base, ext = os.path.splitext(os.path.basename(src))
     base = _sanitize_name(base)
     final_base = _unique_base(download_dir, base, ext.lstrip(".") or "mp4")
@@ -1379,6 +1422,7 @@ def _run_thumbnail_job(url, settings, hooks, title):
     yt-dlp и в макс. качестве; имя файла берём из уже известного title).
     Fallback и не-YouTube — yt-dlp (--skip-download --write-thumbnail)."""
     log = logbook.Log(url)
+    log.begin("thumbnail")
     log.event("Downloading thumbnail")
     job_dir = _new_job_dir()
     dest = ""
@@ -1419,7 +1463,9 @@ def _run_thumbnail_job(url, settings, hooks, title):
     _rm_dir(job_dir)
     if final:
         log.event("Done")
-        log.save("thumbnail")
+        log.discard()
+    else:
+        log.save_error()
     return bool(final), final, log
 
 
@@ -1434,6 +1480,18 @@ def _try_ember(url, option, settings, hooks, log, job_dir, title):
     try:
         log.event("Trying Ember")
         result = ember_dl.extract(url, settings)
+        # Галерея (карусель фото/видео): качаем ВЕСЬ пост в подпапку
+        # «<автор> - <id поста>». Результат — папка, а не файл.
+        if (option or {}).get("gallery"):
+            folder = os.path.join(job_dir, ember_dl.post_folder_name(result, url))
+            os.makedirs(folder, exist_ok=True)
+            paths = ember_dl.download_all(result, folder, hooks=hooks)
+            if paths:
+                log.info("Ember: downloaded %d file(s) to %s"
+                         % (len(paths), os.path.basename(folder)))
+                return True, folder
+            log.info("Ember: nothing downloaded")
+            return False, ""
         dest = ember_dl.download(result, job_dir, option=option,
                                  hooks=hooks, title=title)
         if dest and os.path.isfile(dest):
@@ -1457,6 +1515,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     if (option or {}).get("thumbnail") and not (option or {}).get("ember"):
         return _run_thumbnail_job(url, settings, hooks, title)
     log = logbook.Log(url)
+    log.begin()                 # пишем на диск сразу: при падении след останется
     log.event("Starting download (yt-dlp)")
     download_dir = _out_dir(settings)
     # Качаем в отдельную временную папку; готовый файл переносим в папку загрузок.
@@ -1480,6 +1539,26 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     ok, dest = False, ""
     ember_used = False
     hls_used = False
+
+    # Пост-галерея качается ТОЛЬКО через Ember: у её опции нет строки формата,
+    # и yt-dlp здесь всё равно бессилен (он и не отдал ссылку на анализе).
+    if (option or {}).get("gallery"):
+        ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
+        final = ""
+        if ok and dest and os.path.exists(dest):
+            try:
+                final = _move_to_dest(dest, download_dir)
+            except Exception as exc:
+                log.info("Move failed: " + str(exc))
+                ok = False
+        _rm_dir(job_dir)
+        if ok and final:
+            log.event("Done")
+            log.discard()               # успех — лог не храним
+            return True, final, log
+        log.event("Download failed")
+        log.save_error()
+        return False, "", log
 
     # Секция из HLS-потока (Twitch VOD и т.п.): yt-dlp отдал бы её ffmpeg, а тот
     # перебирает сегменты ОТ НАЧАЛА — на 8-часовом VOD это выглядит зависанием.
@@ -1621,6 +1700,15 @@ def run_job(option, url, settings, hooks, title=None, info=None):
                 log.info("Section cut failed: " + str(exc))
                 ok = False
 
+    # Vimeo: ролик может быть доступен только через плеерную форму ссылки.
+    if not ok and not hooks.is_stopped():
+        alt = vimeo_player_url(url)
+        if alt:
+            log.event("Retrying via Vimeo player URL")
+            _args = build_download_args(alt, option, settings, job_dir, title,
+                                        cookies=use_cookies)
+            ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
+
     # yt-dlp исчерпал повторы — пробуем Ember как запасной движок (для сервисов,
     # которые он поддерживает). Для Twitter он уже отработал выше как основной.
     if (not ok and not hooks.is_stopped() and not ember_used
@@ -1676,5 +1764,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         return False, final, log
     if ok:
         log.event("Done")
-        log.save()          # лог удачной операции тоже сохраняем (см. logbook)
+        log.discard()       # успех — лог не нужен, остаются только проблемные
+    else:
+        log.save_error()
     return ok, final, log
