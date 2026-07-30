@@ -19,7 +19,6 @@ import sys
 import shutil
 import zipfile
 import subprocess
-import urllib.request
 
 from core.constants import APP_VERSION, GITHUB_REPO, APP_NAME
 
@@ -66,6 +65,7 @@ def check_update(timeout=8):
       {"status": "available"|"current"|"error",
        "version": <tag>, "download_url": <zip|None>, "notes": <str>, "error": <str>}
     """
+    import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
     req = urllib.request.Request(
         API_URL,
         headers={"User-Agent": APP_NAME, "Accept": "application/vnd.github+json"})
@@ -95,6 +95,7 @@ def check_update(timeout=8):
 
 def download_update(url, on_progress=None, timeout=60):
     """Скачивает zip обновления в UPDATE_ZIP. on_progress(frac 0..1). Бросает при сбое."""
+    import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
     if not url:
         raise RuntimeError("no download url")
     os.makedirs(UPDATE_DIR, exist_ok=True)

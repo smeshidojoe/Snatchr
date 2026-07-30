@@ -15,6 +15,7 @@ import win32api
 import win32process
 
 from core import config
+from core import perflog
 from core import fonts
 from core import i18n
 from core import themes
@@ -22,8 +23,6 @@ from ui import anim
 from ui.bottom_bar import BottomBar
 from ui.main_page import MainPage
 from ui.settings_page import SettingsPage
-from ui.about_page import AboutPage
-from ui.format_page import FormatPage
 
 
 class App(QWidget):
@@ -101,6 +100,7 @@ class App(QWidget):
         QApplication.instance().installEventFilter(self)
 
         # Страницы создаются заранее и прячутся (показывается только активная).
+        perflog.watch_loop(self)      # сторож задержек (только при SNATCHR_PERF=1)
         self._build_pages()
 
         # Бинарники докачиваем НЕ при старте, а после первого открытия окна
@@ -170,29 +170,6 @@ class App(QWidget):
         self.content_h = self.WIN_H_SETTINGS - self.BAR_H - self.BORDER_W
         self.about_content_h = self.WIN_H_ABOUT - self.BAR_H - self.BORDER_W
 
-    def _cover_with_snapshot(self, snap):
-        """Накрывает окно снимком текущего вида (непрозрачно) и отдаёт наложение.
-
-        Ставится ДО перестройки страниц: под ним прячется и сама пересборка, и
-        первый кадр новой темы. Иначе получалось моргание — новый вид успевал
-        мелькнуть, затем сверху ложился снимок старого и гас."""
-        from PySide6.QtWidgets import QLabel
-        ov = QLabel(self)
-        ov.setPixmap(snap)
-        ov.setGeometry(0, 0, snap.width(), snap.height())
-        ov.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        ov.raise_()
-        ov.show()
-        return ov
-
-    def _crossfade(self, ov):
-        """Гасит наложение, открывая новый вид."""
-        if ov is None:
-            return
-        ov.raise_()          # новые страницы создавались поверх — поднимаем снимок
-        anim.fade(ov, 1.0, 0.0, 420, easing=QEasingCurve.InOutCubic,
-                  on_finished=ov.deleteLater)
-
     def _load_window_colors(self):
         """Цвета фона/рамки окна из палитры текущей темы."""
         pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
@@ -225,6 +202,7 @@ class App(QWidget):
     @property
     def about_page(self):
         if self._about_page is None:
+            from ui.about_page import AboutPage    # модуль нужен только здесь
             self._about_page = AboutPage(self, self, self.settings,
                                          self.content_w, self.about_content_h)
             self._about_page.setGeometry(self.content_x, self.content_y,
@@ -237,6 +215,7 @@ class App(QWidget):
     def format_page(self):
         if self._format_page is None:
             # Format Priority — размер окна тот же, что у Settings.
+            from ui.format_page import FormatPage
             self._format_page = FormatPage(self, self, self.settings,
                                            self.content_w, self.content_h)
             self._format_page.setGeometry(self.content_x, self.content_y,
@@ -251,8 +230,7 @@ class App(QWidget):
                             self._format_page) if p is not None]
 
     def _build_pages(self):
-        """Создаёт главную страницу и нижнюю панель (вызывается при старте и при
-        смене темы/языка — тогда старые виджеты предварительно удаляются).
+        """Создаёт главную страницу и нижнюю панель (только при старте).
         Остальные страницы создаются лениво (см. свойства выше)."""
         self._settings_page = None
         self._about_page = None
@@ -270,25 +248,48 @@ class App(QWidget):
 
         self.main_page.ensurePolished()
 
-        # Историю обычно наполняет on_window_shown, но при пересборке (смена
-        # темы/языка) окно УЖЕ открыто и этого сигнала не будет — список остался
-        # бы пустым до перезапуска. Наполняем сразу и без каскада: во время
-        # кросс-фейда темы бегущие строки выглядели бы дёрганием.
-        if self.isVisible():
-            self.main_page.fill_history(cascade=False)
 
-    def apply_appearance(self):
-        """Применяет тему/язык немедленно. Вызывается из настроек при смене
-        темы/языка. Работу откладываем на следующий тик событий — нельзя
-        трогать страницу прямо внутри сигнала её же селектора."""
-        QTimer.singleShot(0, self._apply_appearance_now)
+    def apply_language_live(self):
+        """
+        Смена ТОЛЬКО языка без пересборки окна и без кадра-заглушки.
+
+        Главную страницу пересоздавать нельзя — на ней живут строки идущих
+        загрузок со связями на воркеры, поэтому у неё честный retranslate().
+        Настройки состояния не держат: их проще пересобрать на месте.
+        Остальные страницы в момент смены не видны — выбрасываем, ленивые
+        свойства создадут их заново уже на новом языке.
+        """
+        i18n.set_language(self.settings.get("language", "English"))
+
+        self.main_page.retranslate()
+        self.bottom_bar.retranslate()
+
+        if self._settings_page is not None:
+            self._settings_page.rebuild()
+
+        for attr in ("_about_page", "_format_page"):
+            page = getattr(self, attr, None)
+            if page is None:
+                continue
+            page.setParent(None)
+            page.deleteLater()
+            setattr(self, attr, None)
+
+        # Spotlight кэширует надписи при создании — пересоздадим при показе.
+        if self.spotlight is not None:
+            self.spotlight.hide_spotlight()
+            self.spotlight.deleteLater()
+            self.spotlight = None
+
+        # Меню трея строится заново при каждом показе — трогать его не нужно.
+        self.update()
 
     def apply_theme_live(self):
         """
         Смена ТОЛЬКО темы: перекрашиваем существующие виджеты вместо пересборки.
 
-        Язык так не сделать — от него зависит ширина надписей, а раскладка у нас
-        считается при построении; для него остаётся путь через _apply_appearance_now.
+        Язык идёт своим путём (apply_language_live): от него зависит ширина
+        надписей, поэтому одной перекраской не обойтись.
         """
         pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
         self._load_window_colors()
@@ -302,70 +303,6 @@ class App(QWidget):
         for page in self._built_pages():        # только уже созданные
             page.apply_theme(pal)
         self.update()
-
-    def _apply_appearance_now(self):
-        if self._updating or self.main_page.is_busy():
-            return
-        # Селектор темы/языка после выбора звал update() — это лишь планирует
-        # перерисовку, и в снимок попадало ЕЩЁ СТАРОЕ значение, которое потом
-        # висело весь фейд. Дорисовываем окно до снимка.
-        self.repaint()
-        # Накрываем окно снимком СРАЗУ: вся пересборка идёт под ним, наружу
-        # выходит уже готовый новый вид.
-        overlay = self._cover_with_snapshot(self.grab())
-        i18n.set_language(self.settings.get("language", "English"))
-        self._load_window_colors()
-
-        # Spotlight кэширует палитру при создании — пересоздадим при смене темы/языка.
-        if self.spotlight is not None:
-            self.spotlight.hide_spotlight()
-            self.spotlight.deleteLater()
-            self.spotlight = None
-
-        # Запоминаем позицию прокрутки настроек, чтобы после пересборки (смена
-        # темы/языка из блока Usage) остаться на том же месте, а не улететь наверх.
-        scroll_pos = 0
-        if self._settings_page is not None:      # не строим её ради прокрутки
-            try:
-                scroll_pos = self._settings_page._scroll_area.verticalScrollBar().value()
-            except Exception:
-                pass
-
-        # Удаляем старые страницы и панель. Кнопки нижней панели привязаны к окну,
-        # поэтому их убираем отдельно (иначе остаются «фантомные» кнопки).
-        # Непостроенные страницы просто пропускаем — создавать их, чтобы тут же
-        # удалить, бессмысленно.
-        self.bottom_bar.teardown()
-        for w in self._built_pages() + [self.main_page, self.bottom_bar]:
-            w.setParent(None)
-            w.deleteLater()
-
-        self._build_pages()
-
-        # Тему/язык меняют на странице настроек — на ней и остаёмся.
-        self.current_page = "settings"
-        self.set_window_height(self.WIN_H_SETTINGS)
-        # Без анимации: панель только что создана заново в режиме main, и иначе
-        # папка при каждой смене темы заново ехала бы из ряда в центр.
-        self.bottom_bar.set_page_mode("settings", animate=False)
-        self.settings_page.setGeometry(self.content_x, self.content_y,
-                                       self.content_w, self.content_h)
-        self.settings_page.show()
-        self.settings_page.raise_()
-        # Восстанавливаем позицию прокрутки на новой (пересобранной) странице.
-        try:
-            self.settings_page._scroll_area.verticalScrollBar().setValue(scroll_pos)
-        except Exception:
-            pass
-        # ВАЖНО: поднять снимок обратно наверх ДО перерисовки. Новые страницы
-        # созданы позже него и по порядку наложения оказались выше, а
-        # settings_page.raise_() подняла их ещё выше — без этого repaint ниже
-        # рисовал новый вид ПОВЕРХ снимка, и он вспыхивал перед фейдом.
-        overlay.raise_()
-        # Новый вид дорисовываем, пока он скрыт снимком, и только потом гасим
-        # снимок — значение селектора сразу видно новым, без «залипания».
-        self.repaint()
-        self._crossfade(overlay)                # плавный переход к новому виду
 
     # ------------------------------------------------------------------ #
     #  Отрисовка фона: скруглённый прямоугольник + радиальный градиент + рамка

@@ -1113,6 +1113,44 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                   and cur == self._analyzing_url)
         self.btn_download.setEnabled(en)
 
+    def retranslate(self):
+        """Смена языка БЕЗ пересборки страницы.
+
+        Пересоздавать главную нельзя: на ней живут строки идущих загрузок со
+        связями на воркеры и проанализированная (pending) строка. Поэтому
+        переставляем подписи на месте и пересчитываем раскладку — вся геометрия
+        главной уже живёт в _layout().
+        """
+        self.url_edit.setPlaceholderText(tr("Paste video link here..."))
+        self.url_text.setPlaceholderText(tr("Paste video links (one per line)…"))
+        self.cb_multi.set_text(tr("Multiple Links"))
+        self.tc_from_lbl.setText(tr("From"))
+        self.tc_to_lbl.setText(tr("To"))
+        self.seg_type.set_labels([tr("Video"), tr("Audio")])
+
+        # Кнопка и селектор зависят от состояния — восстанавливаем по нему.
+        if self._state == "libraries":
+            self.btn_download.set_text(tr("Downloading Libraries…"))
+        else:
+            self.btn_download.set_text(tr("Analyze") if self._is_multi()
+                                       else tr("Download"))
+        if self._is_multi():
+            self._populate_multi_selector()
+        elif self._info is not None:
+            self._populate_selector()          # заголовки форматов заново
+        else:
+            self._reset_format_selector()
+
+        # Шапка плейлиста: set_state сам перевыставит «Выбрать/Снять все».
+        ph = getattr(self, "pl_header", None)
+        if ph is not None:
+            rows = getattr(self, "_pl_rows", [])
+            ph.set_state(sum(1 for r in rows if r.is_checked()), len(rows))
+
+        self.history.retranslate()
+        self._layout()
+        self.update()
+
     def _reset_format_selector(self):
         """Возвращает селектор к дефолту — первому по Format Priority.
 

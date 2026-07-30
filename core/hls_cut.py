@@ -16,7 +16,6 @@ Twitch-VOD это 700+ сегментов ради 10 секунд — выгл�
 import os
 import re
 import time
-import urllib.request
 from urllib.parse import urljoin
 
 from core import tools
@@ -61,6 +60,7 @@ def _fetch(url, headers=None, timeout=30, retries=0):
     единственная сетевая осечка иначе роняет всю работу — а дальше управление
     уходило к yt-dlp, который на длинной секции отдавал обрезанный файл с
     неверной длительностью."""
+    import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
     last = None
     for attempt in range(retries + 1):
         try:

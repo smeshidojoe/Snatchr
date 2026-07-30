@@ -537,6 +537,16 @@ class SegmentedControl(Rethemable, QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
 
+    def set_labels(self, labels):
+        """Меняет ПОДПИСИ вариантов, сохраняя значения и выбор.
+
+        Нужно для смены языка: значения ('video'/'audio') остаются, меняется
+        только видимый текст. Ширину пересчитывать вызывающему (fit_width)."""
+        opts = list(self._options)
+        n = min(len(opts), len(labels))
+        self._options = [(labels[i], opts[i][1]) for i in range(n)] + opts[n:]
+        self.update()
+
     def value(self):
         return self._value
 
@@ -682,6 +692,11 @@ class CheckBox(Rethemable, QAbstractButton):
         self._from_on = self.isChecked()
         self._to_on = self.isChecked()
         self.clicked.connect(self._animate_toggle)
+
+    def set_text(self, text):
+        """Новая подпись (смена языка на лету)."""
+        self._text = text
+        self.update()
 
     def setChecked(self, on):
         super().setChecked(on)
@@ -1461,6 +1476,10 @@ class InfoCardRow(Rethemable, QWidget):
                  with_check=False, cb_colors=None):
         from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
         super().__init__(parent)
+        # Пиктограммы из заголовков/ников режем: их нет в нашем шрифте, а первая
+        # подстановка эмодзи-шрифта стоит ~600 мс на главном потоке (fonts.plain).
+        title = fonts.plain(title)
+        uploader = fonts.plain(uploader)
         self.setFixedHeight(height)
         self._tw, self._th, self._r = thumb_w, thumb_h, radius
         self._title_color = title_color
@@ -1493,7 +1512,7 @@ class InfoCardRow(Rethemable, QWidget):
         # Ignored по горизонтали: длинный заголовок НЕ раздувает ширину строки
         # (иначе список становится шире вьюпорта, гориз. скролл выключен и правый
         # край — напр. счётчик/Select-All в шапке — уезжает за границу и не виден).
-        self.title = QLabel(title, self)
+        self.title = QLabel(fonts.plain(title), self)
         self.title.setFont(title_font)
         self.title.setStyleSheet(f"color: {title_color}; background: transparent;")
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)

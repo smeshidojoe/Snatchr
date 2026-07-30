@@ -615,7 +615,7 @@ class _ConfirmOverlay(QWidget):
         p.setPen(self._title_col)
         p.drawText(QRectF(self._card.left(), self._card.top() + s(24),
                           self._card.width(), s(44)),
-                   Qt.AlignHCenter | Qt.AlignTop, self._title)
+                   Qt.AlignHCenter | Qt.AlignTop, fonts.plain(self._title))
         p.end()
 
 

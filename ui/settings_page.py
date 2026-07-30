@@ -1,6 +1,6 @@
 import os
 
-from PySide6.QtCore import Qt, QRectF, Signal
+from PySide6.QtCore import Qt, QRectF, Signal, QTimer
 from PySide6.QtGui import QFontMetrics, QColor, QPainter, QPen, QKeySequence
 from PySide6.QtWidgets import QWidget, QLabel, QFrame, QFileDialog, QScrollArea
 
@@ -206,6 +206,54 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self.resize(width, height)
         self._build()
 
+
+    def rebuild(self):
+        """Пересобирает страницу НА МЕСТЕ (смена языка).
+
+        Раскладка настроек считается прямо в _build_* и заново не проигрывается,
+        поэтому после смены языка виджеты надо создать заново. Страницу при этом
+        не удаляем и не пересоздаём: сохраняются геометрия, родитель и порядок
+        наложения, а окно не мигает — всё идёт под setUpdatesEnabled(False) на окне.
+
+        Пересобираем ОБЯЗАТЕЛЬНО у скрытой страницы: виджет, созданный у уже
+        видимого родителя, получает от Qt флаг WA_WState_Hidden, и снять его
+        может только явный show() — показ родителя такого ребёнка не покажет.
+        При старте страница строится скрытой, здесь это повторяем.
+        """
+        try:
+            scroll_pos = self._scroll_area.verticalScrollBar().value()
+        except (AttributeError, RuntimeError):
+            scroll_pos = 0
+        win = self.window()
+        was_shown = not self.isHidden()
+        win.setUpdatesEnabled(False)
+        try:
+            if was_shown:
+                self.hide()
+            for ch in list(self.children()):
+                if isinstance(ch, QWidget):
+                    ch.setParent(None)
+                    ch.deleteLater()
+            self._checks = {}
+            self._labels = []
+            self._sep_lines = []
+            self._icon_map = {}
+            self._themed_labels = []
+            self._themed_widgets = []
+            self._scroll_area = None
+            self._host = self
+            self._load_theme()
+            self._build()
+            try:
+                self._scroll_area.verticalScrollBar().setValue(scroll_pos)
+            except (AttributeError, RuntimeError):
+                pass
+            if was_shown:
+                self.show()
+                self.raise_()
+        finally:
+            win.setUpdatesEnabled(True)
+        self.update()
 
     def _on_theme_applied(self, pal):
         """Живая смена темы: подписи, разделители, стили и иконки."""
@@ -606,7 +654,6 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _on_reset_click(self):
         # Двухступенчатое подтверждение, как в спотлайте: первый клик взводит
         # («Confirm»), второй в течение пары секунд — выполняет сброс.
-        from PySide6.QtCore import QTimer
         if not self._reset_armed:
             self._reset_armed = True
             self.btn_reset.setText(tr("Confirm"))
@@ -773,7 +820,10 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self.settings["language"] = choice
         i18n.set_language(choice)
         self.app.save_settings()
-        self.app.apply_appearance()
+        # Как и у темы — живьём, без пересборки окна и кадра-заглушки.
+        # Отложено на следующий тик: нельзя пересобирать страницу прямо внутри
+        # сигнала её же селектора.
+        QTimer.singleShot(0, self.app.apply_language_live)
 
     def _build_cookies_card(self, x, y, card_w):
         s = self.app._s

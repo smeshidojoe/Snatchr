@@ -7,7 +7,6 @@
 """
 
 import os
-import urllib.request
 
 from PySide6.QtCore import QThread, QThreadPool, QRunnable, QObject, Signal
 
@@ -359,6 +358,7 @@ class ThumbWorker(PooledWorker):
         self._url = url
 
     def work(self):
+        import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
         try:
             req = urllib.request.Request(self._url, headers={"User-Agent": "Snatchr"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -406,6 +406,7 @@ class SpotlightThumbWorker(PooledWorker):
         self._url = url
 
     def work(self):
+        import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
         try:
             # --print пишет в stdout в системной кодировке (frozen yt-dlp игнорирует
             # PYTHONUTF8) -> кириллица приходит как «крякозябры». --print-to-file

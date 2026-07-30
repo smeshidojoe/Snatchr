@@ -8,6 +8,7 @@
 
 import os
 import math
+import time as _time
 
 from PySide6.QtCore import (
     Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer
@@ -171,10 +172,22 @@ class GlyphButton(QWidget):
             return 0.88 + (1.10 - 0.88) * ((p - 0.30) / 0.40)
         return 1.10 + (1.0 - 1.10) * ((p - 0.70) / 0.30)
 
+    def _row_alpha(self):
+        """Прозрачность строки-родителя: кнопки — отдельные виджеты, и общая
+        прозрачность художника строки на них не распространяется."""
+        return getattr(self.parent(), "_alpha", 1.0)
+
+    def _op(self, p, v):
+        p.setOpacity(v * self._row_alpha())
+
     def paintEvent(self, event):
+        alpha = self._row_alpha()
+        if alpha <= 0.0:
+            return                        # строка ещё не проявилась
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setOpacity(alpha)               # дальше всё идёт через _op
         s = self.app._s
         w, h = self.width(), self.height()
         t = self._hover_t
@@ -221,12 +234,12 @@ class GlyphButton(QWidget):
         if self._pm is not None and not self._pm.isNull():
             # плавный кроссфейд между обычной и «наведённой» иконкой
             x0, y0 = int((w - self._pm.width()) / 2), int((h - self._pm.height()) / 2)
-            p.setOpacity(1.0 - t)
+            self._op(p, 1.0 - t)
             p.drawPixmap(x0, y0, self._pm)
             if self._pm_h is not None and not self._pm_h.isNull():
-                p.setOpacity(t)
+                self._op(p, t)
                 p.drawPixmap(x0, y0, self._pm_h)
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
         elif self._glyph == "more":
             p.setBrush(col)
             for dx in (-s(6), 0, s(6)):
@@ -280,6 +293,8 @@ class HistoryRow(QWidget):
         self._reload_theme()
         self._hover = False
         self._pm = self._load_thumb()
+        self._alpha = 1.0                # общая прозрачность строки (см. _op)
+        self._fit_cache = {}             # масштабированные обложки (см. _fit)
         self._sub = self._make_sub()     # площадка + разрешение (Instagram · 1080p)
         # плавное заполнение полосы прогресса
         self._prog_timer = QTimer(self)
@@ -302,11 +317,23 @@ class HistoryRow(QWidget):
         if self._state == "downloading":     # строка создана сразу как загрузка —
             self._animate_dl(1.0)            # пилюли всё равно появляются анимацией
 
+    def _plain_title(self):
+        """Заголовок без пиктограмм (см. fonts.plain). Считается один раз на
+        запись: отрисовка идёт десятки раз в секунду."""
+        raw = self.entry.get("title") or self.entry.get("url", "")
+        if raw != getattr(self, "_title_raw", None):
+            self._title_raw = raw
+            self._title_plain = fonts.plain(raw)
+        return self._title_plain
+
     def _make_sub(self):
         """Подпись под заголовком: автор (если известен) ИНАЧЕ площадка, затем
         длина (для проанализированной ссылки) или разрешение (для готового файла)."""
         parts = []
-        primary = self.entry.get("uploader") or self.entry.get("host", "")
+        # Пиктограммы режем: их нет в нашем шрифте, а подстановка эмодзи-шрифта
+        # стоит ~600 мс на главном потоке (см. fonts.plain).
+        primary = fonts.plain(self.entry.get("uploader")
+                              or self.entry.get("host", ""))
         if primary:
             parts.append(primary)
         if self.entry.get("is_gallery"):
@@ -420,7 +447,7 @@ class HistoryRow(QWidget):
         """Нижний ряд загрузки: ФИКСИРОВАННЫЕ колонки (зарезервированная ширина по
         максимуму) -> цифры не «прыгают». Что не влезло (узкое окно) — не рисуем."""
         t = self._dl_t
-        p.setOpacity(t)
+        self._op(p, t)
         bot_c = s(47) + (1.0 - t) * s(12)
         fstat = fonts.font(s(9), "Regular")
         p.setFont(fstat)
@@ -428,7 +455,7 @@ class HistoryRow(QWidget):
             self._draw_text_split(p, QRectF(text_x, bot_c - s(8),
                                             right - text_x, s(16)),
                                   tr("Processing…"), self._muted)
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
             return
         if self._dl.get("stage") == "convert":
             # Конвертация: пилюля скорости (1.31x) + текст сразу за ней на всю
@@ -440,7 +467,7 @@ class HistoryRow(QWidget):
             self._draw_text_split(p, QRectF(x, bot_c - s(8), right - x, s(16)),
                                   self._dl.get("percent_str") or tr("Converting…"),
                                   self._muted)
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
             return
         fm = QFontMetrics(fstat)
         dl = self._dl.get("downloaded") or ""
@@ -467,7 +494,7 @@ class HistoryRow(QWidget):
                 self._draw_text_split(p, QRectF(x, bot_c - s(8), cw, s(16)),
                                       val, self._muted)
             x += cw + gap
-        p.setOpacity(1.0)
+        self._op(p, 1.0)
 
     def _prog_tick(self):
         self._draw_frac += (self._frac - self._draw_frac) * 0.14
@@ -677,6 +704,14 @@ class HistoryRow(QWidget):
                 b.apply_theme()
         self.update()
 
+    def retranslate(self):
+        """Смена языка: пересобрать кэшированную подпись строки.
+
+        Остальные надписи («Fetching…», «Converting…») вычисляются прямо при
+        отрисовке, поэтому подхватываются сами."""
+        self._sub = self._make_sub()
+        self.update()
+
     def sync_hover(self):
         """Сверяет свою подсветку и подсветку кнопок с положением курсора."""
         from PySide6.QtGui import QCursor
@@ -758,11 +793,8 @@ class HistoryRow(QWidget):
             p.save()
             p.setClipPath(path)
             pm = pms[i] if i < len(pms) else None
-            if pm is not None and not pm.isNull():
-                src_pm = self._blurred(pm) if self._err_t > 0.0 else pm
-                sc = src_pm.scaled(int(base_w), int(base_h),
-                                   Qt.KeepAspectRatioByExpanding,
-                                   Qt.SmoothTransformation)
+            sc = self._fit(pm, base_w, base_h, blur=self._err_t > 0.0)
+            if sc is not None:
                 p.drawPixmap(int(r.left()), int(r.top()), sc)
                 if i:                     # нижние слои притемняем — они «позади»
                     p.fillRect(r, QColor(0, 0, 0, 90 if i == 1 else 140))
@@ -770,11 +802,8 @@ class HistoryRow(QWidget):
                 # Своей картинки у слоя нет (в посте меньше трёх файлов). Рисуем
                 # ПЛОТНУЮ карточку, а не полупрозрачную рамку: слой должен
                 # читаться как лист под верхним, иначе выглядит пустым контуром.
-                base_pm = pms[0] if pms else None
-                if base_pm is not None and not base_pm.isNull():
-                    sc = base_pm.scaled(int(base_w), int(base_h),
-                                        Qt.KeepAspectRatioByExpanding,
-                                        Qt.SmoothTransformation)
+                sc = self._fit(pms[0] if pms else None, base_w, base_h)
+                if sc is not None:
                     p.drawPixmap(int(r.left()), int(r.top()), sc)
                     p.fillRect(r, QColor(0, 0, 0, 120 if i == 1 else 175))
                 else:
@@ -806,10 +835,44 @@ class HistoryRow(QWidget):
         self._hover_t = v
         self.update()
 
+    SLOW_PAINT_MS = 100.0           # порог разбора медленной отрисовки
+
     def paintEvent(self, event):
+        if not perflog.ENABLED:
+            return self._paint_row()
+        t0 = _time.perf_counter()
+        self._marks = []
+        try:
+            return self._paint_row()
+        finally:
+            ms = (_time.perf_counter() - t0) * 1000.0
+            perflog.tally("строка", ms)
+            if ms >= self.SLOW_PAINT_MS:
+                prev, parts = t0, []
+                for label, t in self._marks:
+                    parts.append("%s %.1f" % (label, (t - prev) * 1000.0))
+                    prev = t
+                parts.append("хвост %.1f" % ((_time.perf_counter() - prev) * 1000.0))
+                perflog.note("%7.1f мс  МЕДЛЕННАЯ отрисовка (state=%s alpha=%.2f "
+                             "gallery=%s pm=%s) | %s"
+                             % (ms, self._state, self._alpha, self.is_gallery(),
+                                "нет" if self._pm is None else "%dx%d"
+                                % (self._pm.width(), self._pm.height()),
+                                ", ".join(parts)))
+
+    def _ck(self, label):
+        """Контрольная точка отрисовки (разбирается только у медленных)."""
+        if perflog.ENABLED:
+            self._marks.append((label, _time.perf_counter()))
+
+    def _paint_row(self):
+        if self._alpha <= 0.0:
+            return                        # строка ещё не проявилась — рисовать нечего
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setOpacity(self._alpha)         # дальше всё идёт через _op
+        self._ck("художник")
         s = self.app._s
         w = self.width()
         block = QRectF(s(4), s(4), w - s(8), self._h - s(8))
@@ -846,7 +909,7 @@ class HistoryRow(QWidget):
         # поверх — «Fetching…» уезжает вниз и гаснет.
         trans = self._transition_t
         if trans > 0.0:
-            p.setOpacity(1.0 - trans)
+            self._op(p, 1.0 - trans)
 
         if self._dl_t > 0.001:
             # весь блок — полоса прогресса (трек + заливка акцентом); при завершении
@@ -876,12 +939,15 @@ class HistoryRow(QWidget):
             p.setBrush(bg)
             p.drawRoundedRect(block, s(10), s(10))
 
+        self._ck("фон блока")
         # обложка (скруглённая, кроп по центру; заглушка, пока файла нет)
         tw, th = s(self.THUMB_W), s(self.THUMB_H)
         tx, ty = s(12), (self._h - th) // 2
         rect = QRectF(tx, ty, tw, th)
         if self.is_gallery():
+            t0 = _time.perf_counter()
             self._paint_gallery_stack(p, tx, ty, tw, th)
+            perflog.tally("стопка", (_time.perf_counter() - t0) * 1000.0)
             rect = None
         path = QPainterPath()
         if rect is not None:
@@ -889,12 +955,9 @@ class HistoryRow(QWidget):
         p.save()
         if rect is not None:
             p.setClipPath(path)
-        if rect is not None and self._pm is not None:
-            src = self._pm
-            if self._err_t > 0.0:            # ошибка — размываем обложку
-                src = self._blurred(src)
-            scaled = src.scaled(int(tw), int(th), Qt.KeepAspectRatioByExpanding,
-                                Qt.SmoothTransformation)
+        scaled = (self._fit(self._pm, tw, th, blur=self._err_t > 0.0)
+                  if rect is not None else None)
+        if scaled is not None:
             p.drawPixmap(int(tx), int(ty), scaled)
         elif rect is not None:
             p.fillRect(rect, QColor("#26262a"))
@@ -904,12 +967,13 @@ class HistoryRow(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rect, s(6), s(6))
 
+        self._ck("обложка")
         # текст. ЗАГОЛОВОК рисуем ОДИН раз (не переанимируется): при старте плавно
         # съезжает вправо под пилюлю. Пилюля и нижний ряд кроссфейдятся по _dl_t.
         text_x = tx + tw + s(14)
         right_dl = (w - s(12) - s(34)) - s(10)       # до кнопки стоп
         right_norm = self._text_right
-        title = self.entry.get("title") or self.entry.get("url", "")
+        title = self._plain_title()
         t = self._dl_t
 
         res = self._res_fps_label()
@@ -922,25 +986,29 @@ class HistoryRow(QWidget):
         p.setFont(f_url)
         elide = Qt.ElideRight if self.entry.get("title") else Qt.ElideMiddle
         elided = QFontMetrics(f_url).elidedText(title, elide, int(avail))
+        t0 = _time.perf_counter()
         self._draw_text_split(p, QRectF(title_x, s(14), avail, s(22)), elided,
                               self._text_col)
+        perflog.tally("заголовок", (_time.perf_counter() - t0) * 1000.0)
+        self._ck("заголовок")
 
         # res·fps пилюля — появляется (opacity + slide сверху).
         if t > 0.001 and res:
-            p.setOpacity(t)
+            self._op(p, t)
             self._draw_pill(p, text_x, s(25) + (1.0 - t) * (-s(12)), res, self._accent)
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
 
         # нижний ряд: обычный (автор·длина) <-> статы загрузки (кроссфейд).
         if t < 0.999:
-            p.setOpacity(1.0 - t)
+            self._op(p, 1.0 - t)
             p.setFont(fonts.font(s(10), "Regular"))
             p.setPen(self._muted)
             p.drawText(QRectF(text_x, s(38), max(s(40), right_norm - text_x), s(18)),
                        Qt.AlignVCenter | Qt.AlignLeft, self._sub)
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
         if t > 0.001:
             self._draw_dl_stats(p, s, text_x, right_dl)
+        self._ck("подпись")
 
         # зелёная пульсация после завершения
         if self._pulse_t >= 0.0:
@@ -953,9 +1021,9 @@ class HistoryRow(QWidget):
 
         # уезжающий вниз и гаснущий «Fetching…» поверх проявляющегося содержимого
         if trans > 0.0:
-            p.setOpacity(trans)
+            self._op(p, trans)
             self._draw_fetching_content(p, block, s, dy=(1.0 - trans) * s(24))
-            p.setOpacity(1.0)
+            self._op(p, 1.0)
 
         # ошибка действия (не удалось удалить и т.п.): блок «мутнеет» (матовый
         # скрим + размытая обложка выше) + красная заливка/рамка, поверх — резкий
@@ -973,12 +1041,56 @@ class HistoryRow(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(block, s(10), s(10))
             if self._err_text:
-                p.setOpacity(min(1.0, self._err_t * 1.4))
+                self._op(p, min(1.0, self._err_t * 1.4))
                 p.setFont(fonts.font(s(11), "Semibold"))
                 p.setPen(self._text_col)
                 p.drawText(block, Qt.AlignCenter, self._err_text)
-                p.setOpacity(1.0)
+                self._op(p, 1.0)
+        self._ck("наложения")
         p.end()
+        self._ck("end")
+
+    def _op(self, p, v):
+        """Ставит прозрачность художнику с учётом общей прозрачности строки.
+
+        Внутренние переходы (пилюли, спиннер) задают свою прозрачность, а
+        появление строки — общую; их надо перемножать. Через _alpha строка
+        проявляется БЕЗ QGraphicsOpacityEffect: эффект заставляет Qt рисовать
+        виджет в отдельный буфер на каждой перерисовке, а пока окно въезжает,
+        перерисовываются все строки подряд — именно это и подвешивало каскад.
+        """
+        p.setOpacity(v * self._alpha)
+
+    def set_alpha(self, v):
+        self._alpha = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def _fit(self, pm, w, h, blur=False):
+        """Обложка, вписанная в площадку, с кэшем по (картинка, размер, блюр).
+
+        Раньше масштабирование со SmoothTransformation считалось на КАЖДОЙ
+        отрисовке. При обычной прокрутке это незаметно: Qt перебрасывает уже
+        нарисованное и перерисовывает лишь открывшуюся полосу. Но пока идёт
+        анимация появления, окно двигается и полупрозрачно — переброс невозможен,
+        и на каждом кадре перерисовываются ВСЕ строки. Прокрутка в этот момент
+        добавляла свои кадры, пересчёт масштаба шёл десятками раз в секунду на
+        каждую строку, и список подвисал.
+        """
+        if pm is None or pm.isNull() or w <= 0 or h <= 0:
+            return None
+        key = (pm.cacheKey(), int(w), int(h), bool(blur))
+        hit = self._fit_cache.get(key)
+        if hit is not None:
+            return hit
+        t0 = _time.perf_counter()
+        src = self._blurred(pm) if blur else pm
+        out = src.scaled(int(w), int(h), Qt.KeepAspectRatioByExpanding,
+                         Qt.SmoothTransformation)
+        perflog.tally("масштаб обложки", (_time.perf_counter() - t0) * 1000.0)
+        if len(self._fit_cache) > 12:        # строка живёт долго — не копим
+            self._fit_cache.clear()
+        self._fit_cache[key] = out
+        return out
 
     @staticmethod
     def _blurred(pm):
@@ -1104,6 +1216,9 @@ class HistoryList(QWidget):
     def _rebuild_now(self, entries, cascade=False):
         """Пересобирает список. cascade=True — строки появляются по очереди
         сверху вниз (fade + наезд), начиная с самой свежей."""
+        # Идущий каскад добиваем: часть его строк сейчас будет удалена, и ссылки
+        # на них остались бы висеть в _cascade_rows.
+        self.finish_cascade()
         # Строки активных загрузок не хранятся в json — сохраняем их объекты
         # (их worker->row связи должны жить) и держим сверху.
         keep = [r for r in self._rows if r.is_downloading() or r.is_pending()
@@ -1142,7 +1257,6 @@ class HistoryList(QWidget):
 
     def _cascade_in(self, rows):
         """Появление пачки строк по очереди: каждая выезжает снизу и проявляется."""
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
         s = self.app._s
         shift = s(14)
         # Пока каскад идёт, список «занят»: восемь строк со сдвигом 90 мс плюс
@@ -1157,16 +1271,14 @@ class HistoryList(QWidget):
             self._cascade_pending.append((r, base_y))
             self._cascade_rows.append((r, base_y))
             r.move(0, base_y + shift)
-            # Прячем до своей очереди СТАТИЧЕСКИМ эффектом. Раньше здесь стоял
-            # anim.fade(r, 0, 0, 1) — но fade по завершении снимает эффект с
-            # виджета, и через миллисекунду строка снова становилась видимой:
-            # вся пачка вспыхивала разом, а потом дёргалась по очереди.
-            eff = QGraphicsOpacityEffect(r)
-            eff.setOpacity(0.0)
-            r.setGraphicsEffect(eff)
+            # Прячем до своей очереди собственной прозрачностью строки. Раньше
+            # тут висел QGraphicsOpacityEffect — он рисует виджет в отдельный
+            # буфер на каждой перерисовке, а во время въезда окна перерисовка
+            # идёт по всем строкам каждый кадр.
+            r.set_alpha(0.0)
+        for i, (r, base_y) in enumerate(list(self._cascade_pending)):
             QTimer.singleShot(i * self.CASCADE_STEP_MS,
                               lambda rr=r, y=base_y: self._cascade_step(rr, y, shift))
-
 
     def finish_cascade(self):
         """Мгновенно завершает каскад: строки на местах, эффекты сняты.
@@ -1183,20 +1295,42 @@ class HistoryList(QWidget):
                 anim.stop(row, "_cascade_anim")
                 anim.stop(row, "_fade_anim")
                 row.setGraphicsEffect(None)
+                row.set_alpha(1.0)
                 row.move(0, base_y)
             except RuntimeError:
                 pass
 
+    def _cascade_drop(self, row):
+        """Убирает строку из очереди каскада (и из списка участников)."""
+        self._cascade_pending = [(r, y) for r, y in
+                                 getattr(self, "_cascade_pending", []) if r is not row]
+        self._cascade_rows = [(r, y) for r, y in
+                              getattr(self, "_cascade_rows", []) if r is not row]
+
     def _cascade_step(self, row, base_y, shift):
+        with perflog.measure("шаг каскада"):
+            self._cascade_step_now(row, base_y, shift)
+
+    def _cascade_step_now(self, row, base_y, shift):
         # Каскад мог быть оборван (пользователь начал прокрутку) — тогда строка
         # уже на месте и трогать её не нужно.
         if not any(r is row for r, _ in getattr(self, "_cascade_pending", [])):
             return
         try:
-            if not row.isVisible():
-                return
+            visible = row.isVisible()
         except RuntimeError:
+            self._cascade_drop(row)
             return                              # строку успели убрать
+        if not visible:
+            # Свой тик строка получила раньше, чем окно успели показать.
+            # Анимировать нечего, но и просто выйти нельзя: на строке висит
+            # эффект прозрачности 0, и она осталась бы невидимой навсегда —
+            # это и был «блок в истории не прогрузился». Ставим на место.
+            row.setGraphicsEffect(None)
+            row.set_alpha(1.0)
+            row.move(0, int(base_y))
+            self._cascade_drop(row)
+            return
         # Позицию задаём здесь же: между постановкой в очередь и своим тиком
         # мог пройти пересчёт раскладки и вернуть строку на место.
         row.move(0, int(base_y + shift))
@@ -1206,11 +1340,13 @@ class HistoryList(QWidget):
             self._cascade_rows = [(r, y) for r, y in
                                   getattr(self, "_cascade_rows", []) if r is not rr]
 
-        anim.animate(row, 1.0, 0.0, 240,
-                     lambda t, rr=row, y=base_y: rr.move(0, int(y + shift * t)),
+        def tick(t, rr=row, y=base_y):
+            rr.move(0, int(y + shift * t))
+            rr.set_alpha(1.0 - t)          # 1 -> 0 по t, значит 0 -> 1 прозрачности
+
+        anim.animate(row, 1.0, 0.0, 240, tick,
                      easing=QEasingCurve.OutCubic, on_finished=done,
                      attr="_cascade_anim")
-        anim.fade(row, 0.0, 1.0, 240)
 
     def insert_new(self, entry):
         """Добавляет готовую запись сверху с анимацией наезда."""
@@ -1327,6 +1463,14 @@ class HistoryList(QWidget):
     def _scroll_settled(self):
         self._scroll_busy = False
         self.sync_hover()
+
+    def retranslate(self):
+        """Смена языка: обновить подписи всех строк."""
+        for r in list(self._rows):
+            try:
+                r.retranslate()
+            except RuntimeError:
+                pass
 
     def sync_hover(self):
         """Сверяет подсветку всех строк с положением курсора."""

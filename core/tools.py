@@ -14,7 +14,6 @@ import io
 import shutil
 import zipfile
 import subprocess
-import urllib.request
 
 from core.config import APP_DIR
 from core.constants import BASE_DIR
@@ -182,6 +181,7 @@ def kill_tree(proc):
 # ------------------------------------------------------------------ #
 def _download(url, dest, progress=None):
     ensure_dir()
+    import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(url, headers={"User-Agent": "Snatchr"})
     tmp = dest + ".part"
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -242,6 +242,7 @@ def _ffmpeg_url():
     резолвим через GitHub API. Фолбэк — master (тег latest)."""
     import json as _json
     try:
+        import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
         req = urllib.request.Request(
             FFMPEG_API,
             headers={"User-Agent": "Snatchr", "Accept": "application/vnd.github+json"})
@@ -265,6 +266,7 @@ def download_ffmpeg(progress=None):
     progress(frac) — ход скачивания zip (0..1); распаковка быстрая.
     """
     ensure_dir()
+    import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(_ffmpeg_url(), headers={"User-Agent": "Snatchr"})
     buf = io.BytesIO()
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -302,6 +304,7 @@ def download_deno(progress=None):
     """Скачать deno.exe (zip с GitHub) в tools/. progress(frac) — ход загрузки.
     Ошибки пробрасываются наверх (вызывающий делает best-effort)."""
     ensure_dir()
+    import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(DENO_URL, headers={"User-Agent": "Snatchr"})
     buf = io.BytesIO()
     with urllib.request.urlopen(req, timeout=120) as resp:

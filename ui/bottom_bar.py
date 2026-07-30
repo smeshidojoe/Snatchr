@@ -74,8 +74,8 @@ class BottomBar(QWidget):
                                    self._icon, self._icon_hover, self._exit_app)
         self.btn_exit.resize(s(48), s(32))
 
-        # Кнопки привязаны к окну: при пересоздании панели (смена темы/языка)
-        # новые виджеты надо показать явно — set_page_mode дальше скроет лишние.
+        # Кнопки привязаны к окну, а не к панели, поэтому показываем их явно —
+        # set_page_mode дальше скроет лишние.
         for b in (self.btn_settings, self.btn_folder2, self.btn_about, self.btn_exit):
             b.show()
         self.btn_folder.hide()          # оригинал спрятан (см. выше)
@@ -94,13 +94,10 @@ class BottomBar(QWidget):
         self.btn_exit.set_colors(color=self._icon, hover_color=self._icon_hover)
         self.update()
 
-    def teardown(self):
-        """Удаляет кнопки панели (они привязаны к окну, а не к самой панели,
-        поэтому при пересоздании панели их нужно убрать вручную)."""
-        for w in (self.btn_settings, self.btn_folder, self.btn_folder2,
-                  self.btn_about, self.btn_exit):
-            w.setParent(None)
-            w.deleteLater()
+    def retranslate(self):
+        """Смена языка: единственная надпись панели — «Выход»."""
+        self.btn_exit.setText(tr("Exit"))
+        self.reposition()
 
     def _on_left(self):
         self.app.on_left_button()

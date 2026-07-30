@@ -47,6 +47,90 @@ def note(text):
         pass
 
 
+# --- сторож цикла событий -------------------------------------------- #
+# Таймер тикает каждые 4 мс. Если между тиками прошло заметно больше, значит
+# поток UI был чем-то занят. Если пропусков нет, а картинка всё равно дёргается,
+# виновата не наша логика, а отрисовка/композиция окна.
+_watch = None
+STALL_MS = float(os.environ.get("SNATCHR_STALL_MS", "20"))
+
+
+def watch_loop(parent=None):
+    """Запускает сторож задержек цикла событий (только при SNATCHR_PERF=1)."""
+    global _watch
+    if not ENABLED or _watch is not None:
+        return
+    from PySide6.QtCore import QTimer, Qt
+    last = [time.perf_counter()]
+
+    def tick():
+        now = time.perf_counter()
+        gap = (now - last[0]) * 1000.0
+        last[0] = now
+        if gap >= STALL_MS:
+            note("%7.1f мс  ПРОПУСК цикла событий%s" % (gap, _tally_tail()))
+
+    _watch = QTimer(parent)
+    _watch.setTimerType(Qt.PreciseTimer)
+    _watch.setInterval(4)
+    _watch.timeout.connect(tick)
+    _watch.start()
+    _start_watchdog(last)
+
+
+HANG_MS = float(os.environ.get("SNATCHR_HANG_MS", "300"))
+
+
+def _start_watchdog(last):
+    """Отдельный поток: если главный не тикал дольше HANG_MS — пишет его стек.
+
+    Пропуск цикла событий говорит ЧТО поток встал, но не ГДЕ. Дамп из соседнего
+    потока показывает точную строку, на которой главный стоит прямо сейчас.
+    """
+    import threading
+    import faulthandler
+
+    def run():
+        while True:
+            time.sleep(0.05)
+            if (time.perf_counter() - last[0]) * 1000.0 < HANG_MS:
+                continue
+            try:
+                with open(_file(), "a", encoding="utf-8") as f:
+                    f.write("[%8.3f] === главный поток стоит, стек: ===\n"
+                            % (time.perf_counter() - _t0))
+                    faulthandler.dump_traceback(file=f, all_threads=True)
+                    f.write("=== конец стека ===\n")
+            except (OSError, RuntimeError):
+                pass
+            while (time.perf_counter() - last[0]) * 1000.0 >= HANG_MS:
+                time.sleep(0.05)          # ждём, пока отвиснет — без спама
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# --- накопительный учёт частых операций ------------------------------- #
+# Отрисовку строки мерить по одной бессмысленно (доли миллисекунды), но за кадр
+# их десятки. Копим счёт и время, и выводим вместе с ближайшим пропуском.
+_tally = {}
+
+
+def tally(key, ms):
+    if not ENABLED:
+        return
+    n, total, peak = _tally.get(key, (0, 0.0, 0.0))
+    _tally[key] = (n + 1, total + ms, max(peak, ms))
+
+
+def _tally_tail():
+    if not _tally:
+        return ""
+    parts = ["%s: %d шт / %.1f мс / макс %.1f" % (k, n, t, pk)
+             for k, (n, t, pk) in _tally.items()]
+    _tally.clear()
+    return "  [" + ", ".join(parts) + "]"
+
+
 class measure:
     """Контекст: пишет строку, если операция заняла больше порога."""
 

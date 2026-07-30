@@ -8,8 +8,6 @@ from PySide6.QtGui import (QFontMetrics, QImage, QPixmap, QPainter, QColor, QPen
                            QPainterPath)
 from PySide6.QtWidgets import QWidget, QLabel
 
-from PIL import Image, ImageDraw
-
 from core.constants import (APP_NAME, APP_VERSION, PROFILE_IMG, DEVELOPER_URL,
                             DONATE_BUTTONS, DONATE_ICONS_DIR)
 from core import updater
@@ -329,6 +327,8 @@ class AboutPage(ThemedOwner, WindowDragMixin, QWidget):
 
     def _make_logo(self, d):
         radius = int(d * 0.24)
+        from PIL import Image, ImageDraw   # Pillow тяжёлый (~60 мс) и нужен
+                                          # только здесь — не тянем его на старте
         bg = Image.new("RGBA", (d, d), (0, 0, 0, 0))
         ImageDraw.Draw(bg).rounded_rectangle([0, 0, d - 1, d - 1], radius=radius,
                                              fill=(51, 68, 93, 255))
