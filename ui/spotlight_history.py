@@ -866,6 +866,14 @@ class HistoryRow(QWidget):
             self._marks.append((label, _time.perf_counter()))
 
     def _paint_row(self):
+        """Порядок отрисовки строки. Сами куски — в методах ниже.
+
+        ВАЖНО про прозрачность: при переходе fetching->pending она ставится
+        ОДИН раз (1 - trans) и держится через фон, обложку и заголовок, а
+        снимают её `_op(p, 1.0)` внутри нижнего ряда. Наложения после него
+        рисуются уже в полную силу. Поэтому куски НЕ обёрнуты в save/restore:
+        это изменило бы момент сброса и вид промежуточных кадров.
+        """
         if self._alpha <= 0.0:
             return                        # строка ещё не проявилась — рисовать нечего
         p = QPainter(self)
@@ -877,40 +885,73 @@ class HistoryRow(QWidget):
         w = self.width()
         block = QRectF(s(4), s(4), w - s(8), self._h - s(8))
 
+        # Состояния разбора рисуются целиком и выходят: ни обложки, ни текста,
+        # ни наложений у них нет.
         if self._state == "fetching":
-            # подсвеченный блок + по центру вращающийся спиннер и «Fetching…»
-            bg = QColor(self._accent)
-            bg.setAlpha(28)
-            p.setPen(QPen(self._accent, max(1.5, s(1.6))))
-            p.setBrush(bg)
-            p.drawRoundedRect(block, s(10), s(10))
-            self._draw_fetching_content(p, block, s)
+            self._paint_fetching_state(p, block, s)
             p.end()
             return
-
         if self._state == "error":
-            # анализ не удался — красный блок и крестик по центру
-            bg = QColor(self._err)
-            bg.setAlpha(28)
-            p.setPen(QPen(self._err, max(1.5, s(1.6))))
-            p.setBrush(bg)
-            p.drawRoundedRect(block, s(10), s(10))
-            d = s(9)
-            cx, cy = block.center().x(), block.center().y()
-            pen = QPen(self._err, max(2.0, s(2.4)))
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawLine(int(cx - d), int(cy - d), int(cx + d), int(cy + d))
-            p.drawLine(int(cx + d), int(cy - d), int(cx - d), int(cy + d))
+            self._paint_error_state(p, block, s)
             p.end()
             return
 
         # Переход fetching->pending: обычное содержимое проявляется (opacity),
-        # поверх — «Fetching…» уезжает вниз и гаснет.
+        # поверх — «Fetching…» уезжает вниз и гаснет (см. _paint_overlays).
         trans = self._transition_t
         if trans > 0.0:
             self._op(p, 1.0 - trans)
 
+        self._paint_block_bg(p, block, s)
+        self._ck("фон блока")
+
+        tw, th = s(self.THUMB_W), s(self.THUMB_H)
+        tx, ty = s(12), (self._h - th) // 2
+        self._paint_thumb(p, s, tx, ty, tw, th)
+        self._ck("обложка")
+
+        text_x = tx + tw + s(14)
+        right_dl = (w - s(12) - s(34)) - s(10)       # до кнопки стоп
+        right_norm = self._text_right
+        t = self._dl_t
+        res = self._res_fps_label()
+        self._paint_title(p, s, text_x, right_norm, right_dl, res, t)
+        self._ck("заголовок")
+
+        self._paint_pill_and_bottom(p, s, text_x, right_norm, right_dl, res, t)
+        self._ck("подпись")
+
+        self._paint_overlays(p, block, s, trans)
+        self._ck("наложения")
+        p.end()
+
+    # --- куски отрисовки ------------------------------------------------ #
+    def _paint_fetching_state(self, p, block, s):
+        """Ссылку разбирают: подсвеченный блок + спиннер и «Fetching…» по центру."""
+        bg = QColor(self._accent)
+        bg.setAlpha(28)
+        p.setPen(QPen(self._accent, max(1.5, s(1.6))))
+        p.setBrush(bg)
+        p.drawRoundedRect(block, s(10), s(10))
+        self._draw_fetching_content(p, block, s)
+
+    def _paint_error_state(self, p, block, s):
+        """Анализ не удался — красный блок и крестик по центру."""
+        bg = QColor(self._err)
+        bg.setAlpha(28)
+        p.setPen(QPen(self._err, max(1.5, s(1.6))))
+        p.setBrush(bg)
+        p.drawRoundedRect(block, s(10), s(10))
+        d = s(9)
+        cx, cy = block.center().x(), block.center().y()
+        pen = QPen(self._err, max(2.0, s(2.4)))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawLine(int(cx - d), int(cy - d), int(cx + d), int(cy + d))
+        p.drawLine(int(cx + d), int(cy - d), int(cx - d), int(cy + d))
+
+    def _paint_block_bg(self, p, block, s):
+        """Подложка блока: полоса прогресса, заливка pending или подсветка."""
         if self._dl_t > 0.001:
             # весь блок — полоса прогресса (трек + заливка акцентом); при завершении
             # плавно затухает (alpha *= _dl_t).
@@ -939,10 +980,9 @@ class HistoryRow(QWidget):
             p.setBrush(bg)
             p.drawRoundedRect(block, s(10), s(10))
 
-        self._ck("фон блока")
-        # обложка (скруглённая, кроп по центру; заглушка, пока файла нет)
-        tw, th = s(self.THUMB_W), s(self.THUMB_H)
-        tx, ty = s(12), (self._h - th) // 2
+    def _paint_thumb(self, p, s, tx, ty, tw, th):
+        """Обложка: скруглённая, кроп по центру; у поста — стопка слоёв;
+        заглушка, пока файла нет."""
         rect = QRectF(tx, ty, tw, th)
         if self.is_gallery():
             t0 = _time.perf_counter()
@@ -967,18 +1007,11 @@ class HistoryRow(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rect, s(6), s(6))
 
-        self._ck("обложка")
-        # текст. ЗАГОЛОВОК рисуем ОДИН раз (не переанимируется): при старте плавно
-        # съезжает вправо под пилюлю. Пилюля и нижний ряд кроссфейдятся по _dl_t.
-        text_x = tx + tw + s(14)
-        right_dl = (w - s(12) - s(34)) - s(10)       # до кнопки стоп
-        right_norm = self._text_right
+    def _paint_title(self, p, s, text_x, right_norm, right_dl, res, t):
+        """Заголовок. Рисуется ОДИН раз (не переанимируется): при старте загрузки
+        плавно съезжает вправо, освобождая место под пилюлю разрешения."""
         title = self._plain_title()
-        t = self._dl_t
-
-        res = self._res_fps_label()
         pill_off = (self._pill_w(res) + s(9)) if res else 0
-
         title_x = text_x + t * pill_off
         right_i = right_norm + (right_dl - right_norm) * t
         avail = max(s(30), right_i - title_x)
@@ -990,8 +1023,10 @@ class HistoryRow(QWidget):
         self._draw_text_split(p, QRectF(title_x, s(14), avail, s(22)), elided,
                               self._text_col)
         perflog.tally("заголовок", (_time.perf_counter() - t0) * 1000.0)
-        self._ck("заголовок")
 
+    def _paint_pill_and_bottom(self, p, s, text_x, right_norm, right_dl, res, t):
+        """Пилюля res·fps и нижний ряд: «автор · разрешение» и статистика
+        загрузки кроссфейдятся между собой по _dl_t."""
         # res·fps пилюля — появляется (opacity + slide сверху).
         if t > 0.001 and res:
             self._op(p, t)
@@ -1008,8 +1043,10 @@ class HistoryRow(QWidget):
             self._op(p, 1.0)
         if t > 0.001:
             self._draw_dl_stats(p, s, text_x, right_dl)
-        self._ck("подпись")
 
+    def _paint_overlays(self, p, block, s, trans):
+        """Поверх содержимого: пульсация после завершения, уезжающий «Fetching…»
+        и скрим ошибки действия."""
         # зелёная пульсация после завершения
         if self._pulse_t >= 0.0:
             intensity = abs(math.sin(self._pulse_t * math.pi * 2))
@@ -1046,8 +1083,6 @@ class HistoryRow(QWidget):
                 p.setPen(self._text_col)
                 p.drawText(block, Qt.AlignCenter, self._err_text)
                 self._op(p, 1.0)
-        self._ck("наложения")
-        p.end()
         self._ck("end")
 
     def _op(self, p, v):
