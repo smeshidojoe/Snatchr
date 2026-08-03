@@ -13,6 +13,8 @@
   thumbnail   — обложка
 """
 
+import re
+
 from core.i18n import tr
 
 # Порядок по умолчанию = порядок показа в селекторе (сверху вниз).
@@ -81,17 +83,52 @@ def hidden(settings):
     return set((settings or {}).get("format_hidden") or [])
 
 
+_RES_KEY_RE = re.compile(r"^(\d+)_")
+
+
+def _res_height(key):
+    """Высота из ключа строки разрешения («1080_H.264» -> 1080), иначе None."""
+    m = _RES_KEY_RE.match(str(key or ""))
+    return int(m.group(1)) if m else None
+
+
+def _rank(key, idx, res_ranks):
+    """Место ключа в порядке селектора.
+
+    Знакомый ключ — свой номер. Незнакомая строка РАЗРЕШЕНИЯ встаёт дробным
+    местом рядом со своими по высоте. Это не редкость: канонический набор
+    заканчивается на 360p и не знает промежуточных высот, а Ember штатно отдаёт
+    640p/320p — раньше такие строки уезжали в самый хвост, ниже обложки, потому
+    что у обложки номер есть, а у них не было.
+
+    Всё остальное (действительно экзотика, не разрешение) остаётся в конце,
+    как и раньше.
+    """
+    if key in idx:
+        return float(idx[key])
+    h = _res_height(key)
+    if h is None or not res_ranks:
+        return float(len(idx))
+    lower = [r for r, kh in res_ranks if kh < h]
+    if lower:
+        return min(lower) - 0.5          # прямо перед первой строкой пониже
+    # Мельче всех знакомых разрешений — под ними, но выше обложки.
+    return max(r for r, _ in res_ranks) + 0.5
+
+
 def apply(options, settings):
     """Фильтрует по видимости и сортирует опции селектора по настроенному порядку.
 
-    Ключи вне канонического набора (HEVC, 8K, экзотика прочих сайтов) не трогаем:
-    их не скрываем и оставляем в хвосте, сохраняя исходный порядок. Если настройки
-    скрыли вообще всё — возвращаем исходный список (пустой селектор бесполезен)."""
+    Ключи вне канонического набора не скрываем: настройками их не отключить, а
+    прятать то, чем пользователь не управляет, нечестно. Если настройки скрыли
+    вообще всё — возвращаем исходный список (пустой селектор бесполезен)."""
     idx = {k: i for i, k in enumerate(order(settings))}
+    res_ranks = [(r, _res_height(k)) for k, r in idx.items()
+                 if _res_height(k) is not None]
     hid = hidden(settings)
     kept = [o for o in options if o.get("key") not in hid]
     if not kept:
         return list(options)
-    # sort стабилен -> неизвестные ключи (idx по умолчанию в конце) держат порядок.
-    kept.sort(key=lambda o: idx.get(o.get("key"), len(idx)))
+    # sort стабилен -> строки с одинаковым местом держат исходный порядок.
+    kept.sort(key=lambda o: _rank(o.get("key"), idx, res_ranks))
     return kept

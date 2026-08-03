@@ -274,6 +274,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.spinner = Spinner(self, themed_pixmap(theme, "fetching.png",
                                                    self.MUTED_COLOR, s(16)), s(16))
         self.spinner.hide()
+        self._msg_key = None       # ключ текущего сообщения (см. _set_msg)
         self.lbl_msg = QLabel(self)
         self.lbl_msg.setFont(fonts.font(s(11), "Regular"))
         self.lbl_msg.setStyleSheet(f"color: {self.MUTED_COLOR}; background: transparent;")
@@ -535,7 +536,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         # не анализируем, показываем понятную ошибку.
         if downloader.is_channel_url(url):
             self._reset_info()
-            self.lbl_msg.setText(tr("Channel links aren't supported — paste a video link."))
+            self._set_msg("Channel links aren't supported — paste a video link.")
             self._set_state("error")
             return
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
@@ -552,7 +553,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         # Плейлист -> список с выбором; иначе одиночный разбор форматов.
         if downloader.is_playlist_url(url):
             self._set_state("playlist_fetching")
-            self.lbl_msg.setText(tr("Fetching playlist…"))
+            self._set_msg("Fetching playlist…")
             self._pl = PlaylistProbeWorker(url, self.settings, self)
             self._active_worker = self._pl
             self._pl.done.connect(self._on_playlist_done)
@@ -582,7 +583,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         if not entries:
             # Не плейлист (или пусто) — пробуем как одиночное видео.
             self._set_state("fetching")
-            self.lbl_msg.setText(tr("Fetching info…"))
+            self._set_msg("Fetching info…")
             url = (self.url_edit.text() or "").strip()
             self._probe = ProbeWorker(url, self.settings, self)
             self._active_worker = self._probe
@@ -682,11 +683,11 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     def _ensure_tools(self, then_analyze=False):
         self._tools_ready = False
         self._set_state("libraries")
-        self.lbl_msg.setText(tr("Downloading required libraries…"))
+        self._set_msg("Downloading required libraries…")
         self.btn_download.set_text(tr("Downloading Libraries…"))
         self.btn_download.setEnabled(False)
         self._setup = SetupWorker(self)
-        self._setup.status.connect(lambda t: self.lbl_msg.setText(t))
+        self._setup.status.connect(self._set_msg_raw)
 
         def done(ok, err):
             self._tools_ready = ok
@@ -695,7 +696,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                 self._analyze_timer.start()
             elif not ok:
                 self._set_state("error")
-                self.lbl_msg.setText(tr("Failed to download libraries."))
+                self._set_msg("Failed to download libraries.")
             self._refresh_download_enabled()
         self._setup.done.connect(done)
         self._setup.start()
@@ -758,11 +759,13 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             return
         tw = ThumbWorker(thumb_url, self)
 
-        def on_done(data, r=row):
+        def on_done(data, r=row, src=thumb_url):
             if not data:
-                return
+                return                      # причина уже в perf-логе (ThumbWorker)
             pm = QPixmap()
             if not pm.loadFromData(data):
+                perflog.note("обложка не разобралась (%d байт): %s"
+                             % (len(data), (src or "")[:120]))
                 return
             try:
                 r._thumb_bytes = data
@@ -833,7 +836,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         if row is not None:
             row.to_error()
             QTimer.singleShot(2600, lambda r=row: self.history.remove_row(r))
-        self.lbl_msg.setText("")
+        self._set_msg(None)
         self._set_state("error")
 
     # ------------------------------------------------------------------ #
@@ -929,7 +932,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             return
         # Один общий Fetching — без построчного списка во время анализа.
         self._set_state("multi_fetching")
-        self.lbl_msg.setText(tr("Fetching info…"))
+        self._set_msg("Fetching info…")
         self.list.clear()
         self._multi_url_list = urls
         self._multi_infos = [None] * len(urls)
@@ -945,7 +948,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     def _on_multi_analyze_done(self):
         ok = [i for i, info in enumerate(self._multi_infos) if info]
         if not ok:
-            self.lbl_msg.setText(tr("Could not read any of the links."))
+            self._set_msg("Could not read any of the links.")
             self._set_state("error")
             return
         # Строим карточки (как одиночная) для каждой успешной ссылки.
@@ -1147,6 +1150,9 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             rows = getattr(self, "_pl_rows", [])
             ph.set_state(sum(1 for r in rows if r.is_checked()), len(rows))
 
+        if self._msg_key:                  # статусная строка под полем ссылки
+            self.lbl_msg.setText(tr(self._msg_key))
+
         self.history.retranslate()
         self._layout()
         self.update()
@@ -1172,7 +1178,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self._active_worker = None
         self._remove_pending()             # проанализированная строка уезжает обратно
         self._clear_pl_header()            # убрать закреплённую шапку плейлиста
-        self.lbl_msg.setText("")
+        self._set_msg(None)
         self.list.clear()
         if keep_format:
             return
@@ -1465,6 +1471,21 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     # ------------------------------------------------------------------ #
     #  Статус
     # ------------------------------------------------------------------ #
+    def _set_msg(self, key):
+        """Статусная строка под полем ссылки.
+
+        Храним КЛЮЧ, а не готовый текст: иначе при живой смене языка перевести
+        уже нечего — на строке лежит готовая фраза, и по ней не понять, какой
+        она была изначально.
+        """
+        self._msg_key = key
+        self.lbl_msg.setText(tr(key) if key else "")
+
+    def _set_msg_raw(self, text):
+        """Текст не из словаря (прогресс докачки бинарников) — переводить нечего."""
+        self._msg_key = None
+        self.lbl_msg.setText(text)
+
     def _show_status(self, text, color, icon_pm):
         s = self.app._s
         if icon_pm is not None:

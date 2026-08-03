@@ -35,13 +35,22 @@ MIN_HEIGHT = 480     # ниже 480p не показываем
 # Раньше стоял "bv*[vcodec~='vp0?9']+ba" первым: он брал ЛУЧШИЙ VP9 ЛЮБОГО
 # разрешения — и когда YouTube (обычно с куками) отдаёт VP9 только в 360p, а
 # H.264 в 1080p, скачивалось 360p. AV1 исключаем — тяжело декодируется.
-BEST_VIDEO_FMT = "bv*[vcodec!^=av01]+ba/b"
+# Звук: сначала m4a (AAC), и только если его нет — любой. Раньше стояло голое
+# `ba`, и YouTube отдавал opus, который вместе с готовым H.264 попадал в mp4 —
+# конвертация в этом случае не запускается (видео уже монтажное), и на выходе
+# был mp4 с opus внутри. Формально это допустимо, но Premiere, Vegas и часть
+# плееров такой звук не открывают. AAC приходит с площадки готовым: ни лишнего
+# сжатия, ни перекодирования (замерено: перегнать opus в AAC — ~18x реального
+# времени, полторы минуты на получасовой ролик).
+BEST_VIDEO_FMT = ("bv*[vcodec!^=av01]+ba[ext=m4a]/"
+                  "bv*[vcodec!^=av01]+ba/b")
 # Best Quality: сначала максимальное разрешение, а среди равных — предпочесть
 # H.264. Без этой сортировки yt-dlp брал VP9 по битрейту даже там, где AVC есть
 # (напр. ролик с потолком 720p), и запускалась ненужная конвертация.
 BEST_VIDEO_SORT = "res,vcodec:h264"
 # Совместимость: максимальное разрешение с кодеком AVC (обычно до 1080p).
-AVC_VIDEO_FMT = "bv*[vcodec^=avc]+ba/b"
+AVC_VIDEO_FMT = ("bv*[vcodec^=avc]+ba[ext=m4a]/"
+                 "bv*[vcodec^=avc]+ba/b")
 PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
 DEST_TAG = "@@DEST@@"      # префикс строки с итоговым путём файла
 
@@ -313,7 +322,8 @@ def _fmt_for(f):
     """Селектор -f для конкретного формата."""
     if f.get("acodec") not in (None, "none"):
         return f["format_id"]            # прогрессивный — уже со звуком
-    return f"{f['format_id']}+ba/b"      # video-only — добиваем bestaudio
+    # video-only — добиваем звуком, предпочитая m4a (см. BEST_VIDEO_FMT)
+    return f"{f['format_id']}+ba[ext=m4a]/{f['format_id']}+ba/b"
 
 
 def video_formats(info, youtube=True, settings=None):
@@ -1503,6 +1513,116 @@ def _try_ember(url, option, settings, hooks, log, job_dir, title):
     return False, ""
 
 
+def _run_gallery_job(url, option, settings, hooks, log, job_dir, title, download_dir):
+    """Пост-галерея: качается ТОЛЬКО через Ember.
+
+    У её опции нет строки формата, и yt-dlp здесь всё равно бессилен (он и не
+    отдал ссылку на анализе), поэтому ни повторов, ни фолбэков — один заход.
+    """
+    ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
+    final = ""
+    if ok and dest and os.path.exists(dest):
+        try:
+            final = _move_to_dest(dest, download_dir)
+        except Exception as exc:
+            log.info("Move failed: " + str(exc))
+            ok = False
+    _rm_dir(job_dir)
+    if ok and final:
+        log.event("Done")
+        log.discard()               # успех — лог не храним
+        return True, final, log
+    log.event("Download failed")
+    log.save_error()
+    return False, "", log
+
+
+def _try_hls_section(url, option, settings, hooks, log, job_dir, title, info, sect):
+    """Секция из HLS-потока (Twitch VOD и т.п.) — качаем нужные сегменты сами.
+
+    yt-dlp отдал бы её ffmpeg, а тот перебирает сегменты ОТ НАЧАЛА: на 8-часовом
+    VOD это выглядит зависанием.
+
+    Возвращает (ok, dest, fatal): fatal=True — откатываться на yt-dlp НЕЛЬЗЯ,
+    он на длинной HLS-секции отдаёт обрезанный файл с неверной длительностью, и
+    загрузка выглядит успешной.
+    """
+    from core import hls_cut
+    hinfo = info
+    # В кэше URL форматов нет (они протухают) — для резки нужна свежая info.
+    if not hinfo or not any((f.get("url") or "")
+                            for f in (hinfo.get("formats") or [])):
+        try:
+            hinfo = probe(url, cookies=cookie_args(settings, url), timeout=90)
+        except Exception:
+            hinfo = info
+    out = os.path.join(job_dir, (_sanitize_name(title) or "video") + ".mp4")
+    try:
+        got = hls_cut.cut(hinfo, sect[0], sect[1], out,
+                          height=_height_of(option), hooks=hooks, log=log,
+                          limit_bps=limit_rate_bytes(settings))
+    except hls_cut.HlsCutError as exc:
+        # Сегменты уже качались и оборвались. Честно сообщаем.
+        log.event("Section download failed")
+        log.info("HLS cut aborted: %s" % str(exc)[:200])
+        return False, "", True
+    if got:
+        log.event("Section cut from HLS segments")
+        return True, got, False
+    return False, "", False
+
+
+def _try_streamlink(url, settings, hooks, log, job_dir):
+    """Запасной движок для Twitch, когда yt-dlp исчерпал повторы."""
+    hooks.on_status(tr("Trying streamlink…"))
+    log.event("Trying streamlink")
+    args, out = build_streamlink_args(url, settings, job_dir)
+    ok, _ = _stream(args, hooks, log, progress=False)
+    return (True, out) if (ok and os.path.exists(out)) else (False, "")
+
+
+def _convert_result(dest, hooks, log):
+    """Перекодирование в редактируемый mp4. Возвращает (dest, conv_failed).
+
+    force=False: решение по РЕАЛЬНОМУ кодеку файла. VP9 -> перекодируем; если
+    вместо него приехал H.264 (VP9 у ролика не оказалось) — просто ремуксим MKV
+    в MP4, без бессмысленного H.264 -> H.264.
+    """
+    try:
+        hooks.on_status(tr("Converting…"))
+        log.event("Converting to editor-friendly mp4")
+        from core import convert
+        return convert.convert(dest, hooks=hooks, log=log), False
+    except Exception as exc:
+        log.event("Conversion failed")
+        log.info("Conversion failed: " + str(exc))
+        return dest, True
+
+
+def _finish_job(ok, dest, job_dir, download_dir, log, conv_failed):
+    """Общий финал: перенос готового файла, уборка временной папки, судьба лога."""
+    final = ""
+    if ok and dest and os.path.exists(dest):
+        try:
+            final = _move_to_dest(dest, download_dir)   # переносим готовый файл
+        except Exception as exc:
+            log.info("Move failed: " + str(exc))
+            ok = False
+    else:
+        ok = False
+    _rm_dir(job_dir)   # временная папка больше не нужна
+
+    # Скачали, но конвертация упала: файл оставляем (перенесён), но это НЕ успех.
+    if conv_failed:
+        return False, final, log
+    if ok:
+        log.event("Done")
+        log.discard()       # успех — лог не нужен, остаются только проблемные
+    else:
+        log.save_error()
+    return ok, final, log
+
+
 def run_job(option, url, settings, hooks, title=None, info=None):
     """
     Полный цикл одного задания: yt-dlp -> (fallback streamlink для Twitch) ->
@@ -1511,6 +1631,10 @@ def run_job(option, url, settings, hooks, title=None, info=None):
 
     info — готовая info с анализа: пробуем быстрый путь (--load-info-json) без
     повторного извлечения; при любой неудаче откатываемся к обычному.
+
+    Порядок попыток задан здесь, сами попытки — в функциях выше и рядом. Каждая
+    неудачная попытка начинает с ЧИСТОЙ временной папки (_restart_job): иначе
+    обломки прошлой сбивают поиск итогового файла.
     """
     if (option or {}).get("thumbnail") and not (option or {}).get("ember"):
         return _run_thumbnail_job(url, settings, hooks, title)
@@ -1532,6 +1656,13 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         # ищем итог прямо в одноразовой папке задания.
         return _scan_job_output(job_dir, _merge_ext(option, url, settings))
 
+    def _restart_job(opt=None):
+        """Чистая папка под следующую попытку (expected пересчитывается)."""
+        nonlocal job_dir, expected
+        _rm_dir(job_dir)
+        job_dir = _new_job_dir()
+        expected = _expected_path(opt or option, url, settings, title, job_dir)
+
     # Куки применяем best-effort. Если их извлечение из браузера падает (Chrome
     # App-Bound Encryption / залоченная БД), повторяем БЕЗ кук — публичное видео
     # тогда всё равно скачается (раньше такой сбой ронял вообще любую загрузку).
@@ -1540,56 +1671,19 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     ember_used = False
     hls_used = False
 
-    # Пост-галерея качается ТОЛЬКО через Ember: у её опции нет строки формата,
-    # и yt-dlp здесь всё равно бессилен (он и не отдал ссылку на анализе).
     if (option or {}).get("gallery"):
-        ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
-        final = ""
-        if ok and dest and os.path.exists(dest):
-            try:
-                final = _move_to_dest(dest, download_dir)
-            except Exception as exc:
-                log.info("Move failed: " + str(exc))
-                ok = False
-        _rm_dir(job_dir)
-        if ok and final:
-            log.event("Done")
-            log.discard()               # успех — лог не храним
-            return True, final, log
-        log.event("Download failed")
-        log.save_error()
-        return False, "", log
+        return _run_gallery_job(url, option, settings, hooks, log, job_dir,
+                                title, download_dir)
 
-    # Секция из HLS-потока (Twitch VOD и т.п.): yt-dlp отдал бы её ffmpeg, а тот
-    # перебирает сегменты ОТ НАЧАЛА — на 8-часовом VOD это выглядит зависанием.
-    # Качаем только нужные сегменты сами. Не подошло — обычный путь ниже.
-    _sect0 = _section_bounds(option)
     from core import hls_cut
+    _sect0 = _section_bounds(option)
     if _sect0 and not hooks.is_stopped() and hls_cut.looks_hls_only(info):
-        _hinfo = info
-        # В кэше URL форматов нет (они протухают) — для резки нужна свежая info.
-        if not _hinfo or not any((f.get("url") or "")
-                                 for f in (_hinfo.get("formats") or [])):
-            try:
-                _hinfo = probe(url, cookies=cookie_args(settings, url), timeout=90)
-            except Exception:
-                _hinfo = info
-        _out = os.path.join(job_dir, (_sanitize_name(title) or "video") + ".mp4")
-        try:
-            _got = hls_cut.cut(_hinfo, _sect0[0], _sect0[1], _out,
-                               height=_height_of(option), hooks=hooks, log=log,
-                               limit_bps=limit_rate_bytes(settings))
-        except hls_cut.HlsCutError as exc:
-            # Сегменты уже качались и оборвались. Откатываться на yt-dlp нельзя:
-            # на длинной HLS-секции он отдаёт обрезанный файл с неверной
-            # длительностью, и загрузка выглядит успешной. Честно сообщаем.
-            log.event("Section download failed")
-            log.info("HLS cut aborted: %s" % str(exc)[:200])
+        ok, dest, fatal = _try_hls_section(url, option, settings, hooks, log,
+                                           job_dir, title, info, _sect0)
+        if fatal:
             _rm_dir(job_dir)
             return False, "", log
-        if _got:
-            ok, dest, hls_used = True, _got, True
-            log.event("Section cut from HLS segments")
+        hls_used = ok
 
     # Twitter/X — Ember ОСНОВНОЙ движок (yt-dlp там регулярно не справляется).
     from core import ember_dl
@@ -1618,9 +1712,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             pass
         if not ok and not hooks.is_stopped():
             log.event("load-info-json failed — full extraction fallback")
-            _rm_dir(job_dir)
-            job_dir = _new_job_dir()
-            expected = _expected_path(option, url, settings, title, job_dir)
+            _restart_job()
 
     if not ok and not hooks.is_stopped():
         _args = build_download_args(option, url, settings, title, job_dir)
@@ -1630,6 +1722,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         if not hooks.is_stopped():
             dest = _resolve(dest)
             ok = bool(dest)
+
     # Повтор без кук. Два случая: (1) куки не извлеклись (залоченная БД/DPAPI);
     # (2) куки извлеклись, но САМ САЙТ с ними отдаёт ответ, который экстрактор не
     # разбирает (VK с авторизацией: «Failed to parse JSON»). Не повторяем, только
@@ -1638,9 +1731,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             and (is_cookie_error(log.text()) or not is_auth_error(log.text()))):
         log.event("Retrying without cookies")
         use_cookies = False
-        _rm_dir(job_dir)
-        job_dir = _new_job_dir()
-        expected = _expected_path(option, url, settings, title, job_dir)
+        _restart_job()
         ok, dest = _stream(
             build_download_args(option, url, settings, title, job_dir, cookies=False),
             hooks, log, progress=True, ff_total=ff_total)
@@ -1653,9 +1744,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     if (not ok and not hooks.is_stopped()
             and "http error 403" in log.text().lower()):
         log.event("HTTP 403 — retrying with browser impersonation")
-        _rm_dir(job_dir)
-        job_dir = _new_job_dir()
-        expected = _expected_path(option, url, settings, title, job_dir)
+        _restart_job()
         _args = build_download_args(option, url, settings, title, job_dir,
                                     cookies=use_cookies, impersonate=True)
         ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
@@ -1672,10 +1761,8 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     if (not ok and sect and not hooks.is_stopped()
             and _is_section_stream_error(log.text())):
         log.event("Section stream blocked — full download + local precise cut")
-        _rm_dir(job_dir)
-        job_dir = _new_job_dir()
         opt_full = {k: v for k, v in option.items() if k != "section"}
-        expected = _expected_path(opt_full, url, settings, title, job_dir)
+        _restart_job(opt_full)
         _args = build_download_args(opt_full, url, settings, title, job_dir,
                                     cookies=use_cookies, impersonate=True)
         ok, dest = _stream(_args, hooks, log, progress=True)
@@ -1705,9 +1792,17 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         alt = vimeo_player_url(url)
         if alt:
             log.event("Retrying via Vimeo player URL")
-            _args = build_download_args(alt, option, settings, job_dir, title,
+            _restart_job()
+            # Порядок аргументов здесь был перепутан (ссылка уходила на место
+            # option, словарь опции — на место url), из-за чего ветка падала с
+            # AttributeError и фолбэк Vimeo не работал вообще.
+            _args = build_download_args(option, alt, settings, title, job_dir,
                                         cookies=use_cookies)
             ok, dest = _stream(_args, hooks, log, progress=True, ff_total=ff_total)
+            _del_cookie_copy(_args)
+            if not hooks.is_stopped():
+                dest = _resolve(dest)
+                ok = bool(dest)
 
     # yt-dlp исчерпал повторы — пробуем Ember как запасной движок (для сервисов,
     # которые он поддерживает). Для Twitter он уже отработал выше как основной.
@@ -1719,52 +1814,18 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     if not ok and not hooks.is_stopped():
         log.event("yt-dlp failed")
         if is_twitch(url) and tools.have_streamlink():
-            hooks.on_status(tr("Trying streamlink…"))
-            log.event("Trying streamlink")
-            args, out = build_streamlink_args(url, settings, job_dir)
-            ok, _ = _stream(args, hooks, log, progress=False)
-            dest = out if (ok and os.path.exists(out)) else ""
+            ok, dest = _try_streamlink(url, settings, hooks, log, job_dir)
 
-    conv_failed = False
     # Ember и HLS-резак отдают готовый H.264/AAC — перекодировать нечего.
+    conv_failed = False
     if (ok and dest and not hooks.is_stopped() and not section_fallback
             and not ember_used and not hls_used
             and should_convert(option, url, settings)):
-        try:
-            hooks.on_status(tr("Converting…"))
-            log.event("Converting to editor-friendly mp4")
-            from core import convert
-            # force=False: решение по РЕАЛЬНОМУ кодеку файла. VP9 -> перекодируем;
-            # если вместо него приехал H.264 (VP9 у ролика не оказалось) — просто
-            # ремуксим MKV в MP4, без бессмысленного H.264 -> H.264.
-            dest = convert.convert(dest, hooks=hooks, log=log)
-        except Exception as exc:
-            conv_failed = True
-            log.event("Conversion failed")
-            log.info("Conversion failed: " + str(exc))
+        dest, conv_failed = _convert_result(dest, hooks, log)
 
     # Отмена задания или конвертации -> удаляем всю временную папку.
     if hooks.is_stopped():
         _rm_dir(job_dir)
         return False, "", log
 
-    final = ""
-    if ok and dest and os.path.exists(dest):
-        try:
-            final = _move_to_dest(dest, download_dir)   # переносим готовый файл
-        except Exception as exc:
-            log.info("Move failed: " + str(exc))
-            ok = False
-    else:
-        ok = False
-    _rm_dir(job_dir)   # временная папка больше не нужна
-
-    # Скачали, но конвертация упала: файл оставляем (перенесён), но это НЕ успех.
-    if conv_failed:
-        return False, final, log
-    if ok:
-        log.event("Done")
-        log.discard()       # успех — лог не нужен, остаются только проблемные
-    else:
-        log.save_error()
-    return ok, final, log
+    return _finish_job(ok, dest, job_dir, download_dir, log, conv_failed)

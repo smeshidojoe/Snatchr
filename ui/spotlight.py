@@ -345,6 +345,7 @@ class Spotlight(QWidget):
         if ids:
             for entry_id in ids:
                 history.remove(entry_id)
+        self.close_trim_if_gone()
 
     # авто-скрытие при потере фокуса (кроме моментов, когда открыто своё меню)
     def event(self, e):
@@ -445,12 +446,14 @@ class Spotlight(QWidget):
         self._update_tray_ring()         # запустить спиннер в трее
         self.search.edit().clear()       # поле снова свободно для новых ссылок
 
-    def start_bg_download(self, url, copy_on_done=False, announce=False, managed=True):
-        """Фоновая загрузка (Paste/Toast): добавляет строку-прогресс в историю,
-        даже если окно Spotlight скрыто. copy_on_done — скопировать готовый файл
-        в буфер по завершении (для Toast); announce — показать тост «Downloaded»;
-        managed=True — подчиняться лимиту очереди (Paste), False — старт сразу
-        (Toast). Возвращает True, если запущено."""
+    def start_bg_download(self, url, copy_on_done=False, announce=False,
+                          managed=True, audio=False):
+        """Фоновая загрузка (Paste/Toast/горячая клавиша): добавляет строку-
+        прогресс в историю, даже если окно Spotlight скрыто. copy_on_done —
+        скопировать готовый файл в буфер по завершении (для Toast); announce —
+        показать тост «Downloaded»; managed=True — подчиняться лимиту очереди
+        (Paste), False — старт сразу (Toast); audio=True — забрать только звук
+        (сочетание «скачать аудио»). Возвращает True, если запущено."""
         url = (url or "").strip()
         if not downloader.is_downloadable_single(url):
             return False
@@ -459,11 +462,15 @@ class Spotlight(QWidget):
         from core import tools
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
             return False
-        option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
+        if audio:
+            option = {"label": "Best Quality", "fmt": "ba/b", "mp3": True}
+        else:
+            option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT,
+                      "mp3": False}
         convert = downloader.should_convert(option, url, self.app.settings)
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
                  "host": history.host_label(url), "title": "", "path": None,
-                 "thumb": "", "ts": 0, "is_audio": False}
+                 "thumb": "", "ts": 0, "is_audio": bool(audio)}
         row = self.history.insert_downloading(entry)
         dl_id = entry["id"]
         self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
@@ -744,6 +751,17 @@ class Spotlight(QWidget):
     def _set_trim_h(self, h):
         self._trim_h = h
         self._relayout()
+
+    def close_trim_if_gone(self):
+        """Закрывает обрезку, если её файл удалён.
+
+        Без этого панель оставалась открытой над несуществующим файлом: превью
+        чернело, а волна и ползунки продолжали висеть как рабочие."""
+        if not self._trim_open:
+            return
+        path = self.trim.current_path() or ""
+        if path and not os.path.isfile(path):
+            self._close_trim()
 
     def _close_trim(self, animate=True):
         if not self._trim_open:

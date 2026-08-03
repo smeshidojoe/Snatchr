@@ -86,21 +86,34 @@ _plain_cache = {}
 
 
 def plain(text):
-    """Строка без пиктограмм — пригодная к отрисовке нашим шрифтом.
+    """Строка, пригодная к отрисовке нашим шрифтом ОДНОЙ строкой.
 
-    Буквы любых алфавитов не трогаем: режем только то, чего в шрифте заведомо
-    нет и что тянет за собой загрузку эмодзи-шрифта."""
+    Делает две вещи.
+
+    1. Берёт ПЕРВУЮ содержательную строку. Все места вызова рисуют текст в
+       полосу высотой в одну строку: многострочный текст в неё не влезает и
+       пропадает целиком. У твита «заголовок» — это его текст, где первая
+       строка и есть суть, а дальше идут упоминания и теги. Если первая строка
+       после очистки пуста, берём следующую непустую.
+    2. Режет пиктограммы: их нет в SF Pro Display, и первая же такая отрисовка
+       тянет загрузку эмодзи-шрифта (~600 мс на главном потоке). Буквы любых
+       алфавитов не трогаем.
+    """
     if not text:
         return text
     out = _plain_cache.get(text)
     if out is not None:
         return out
     if any(a <= ord(c) <= b for c in text for a, b in _PICTO_RANGES):
-        kept = "".join(c for c in text
-                       if not any(a <= ord(c) <= b for a, b in _PICTO_RANGES))
-        out = re.sub(r"\s+", " ", kept).strip()
+        text_ = "".join(c for c in text
+                        if not any(a <= ord(c) <= b for a, b in _PICTO_RANGES))
     else:
-        out = text                      # чистить нечего — отдаём как есть
+        text_ = text
+    out = ""
+    for chunk in text_.splitlines():
+        out = re.sub(r"[ 	 ]+", " ", chunk).strip()
+        if out:
+            break
     if len(_plain_cache) > 512:
         _plain_cache.clear()
     _plain_cache[text] = out

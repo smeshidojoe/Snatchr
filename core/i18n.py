@@ -81,6 +81,18 @@ _RU = {
     "Delete": "Удалить файл",
     "Couldn't delete — file in use": "Не удалось удалить — файл занят",
     "Confirm": "Подтвердить",
+    "Hotkey Starts Download": "Скачивание по сочетанию",
+    "Enable": "Включить",
+    "Download Video": "Скачать видео",
+    "Download Audio": "Скачать аудио",
+    ("Download the link from the clipboard by pressing a\n"
+     "shortcut — no window opens. What is downloaded\n"
+     "(video or audio) depends on the shortcut pressed;\n"
+     "progress is shown by the spinning tray icon."):
+        ("Скачивает ссылку из буфера по нажатию сочетания —\n"
+         "окно не открывается. Что качать, видео или звук,\n"
+         "решает нажатое сочетание; ход загрузки видно\n"
+         "по значку в трее."),
     "Spotlight": "Spotlight",
     "Enable Spotlight": "Включить Spotlight",
     "Shortcut": "Сочетание",

@@ -133,8 +133,12 @@ class App(QWidget):
         self._hist_prune_timer.timeout.connect(self._prune_histories)
         self._hist_prune_timer.start()
         self._hotkey = None
+        self._hk_video = None      # «скачать видео» по сочетанию
+        self._hk_audio = None      # «скачать аудио» по сочетанию
         self._apply_hotkey()
+        self._apply_dl_hotkeys()
         QApplication.instance().aboutToQuit.connect(self._stop_hotkey)
+        QApplication.instance().aboutToQuit.connect(self._stop_dl_hotkeys)
 
     # ------------------------------------------------------------------ #
     def _s(self, value):
@@ -878,6 +882,74 @@ class App(QWidget):
             self._hotkey.stop()
             self._hotkey = None
 
+    # --- скачивание прямо по горячей клавише --------------------------- #
+    def _apply_dl_hotkeys(self):
+        """(Пере)регистрирует сочетания «скачать видео» и «скачать аудио»."""
+        self._stop_dl_hotkeys()
+        if not self.settings.get("hk_download_enabled", False):
+            return
+        from core.hotkey import HotkeyManager
+        video = (self.settings.get("hk_download_video") or "").strip()
+        audio = (self.settings.get("hk_download_audio") or "").strip()
+        if video:
+            self._hk_video = HotkeyManager(video, self)
+            self._hk_video.triggered.connect(
+                lambda: self.start_hotkey_download(audio=False))
+            self._hk_video.start()
+        # Совпадающие сочетания не регистрируем дважды: сработало бы оба раза,
+        # и одна ссылка ушла бы в загрузку и видео, и аудио.
+        if audio and audio != video:
+            self._hk_audio = HotkeyManager(audio, self)
+            self._hk_audio.triggered.connect(
+                lambda: self.start_hotkey_download(audio=True))
+            self._hk_audio.start()
+
+    def _stop_dl_hotkeys(self):
+        for attr in ("_hk_video", "_hk_audio"):
+            hk = getattr(self, attr, None)
+            if hk is not None:
+                hk.stop()
+                setattr(self, attr, None)
+
+    def start_hotkey_download(self, audio=False):
+        """Скачать ссылку из буфера, не открывая ни окна, ни Spotlight.
+
+        Единственная обратная связь — вращение значка в трее; строку видно в
+        истории, когда её откроют. Что качать (видео или звук) решает НАЖАТОЕ
+        СОЧЕТАНИЕ, а не переключатель в окне: иначе одно и то же нажатие давало
+        бы разный результат в зависимости от того, что осталось на экране.
+
+        Проверки «свежести» буфера здесь НЕТ, в отличие от автовставки. Та
+        срабатывает сама при открытии окна, и без ограничения по времени в поле
+        лезла бы вчерашняя ссылка. Нажатие сочетания — действие осознанное:
+        отказ из-за того, что ссылку скопировали минуту назад, выглядел бы
+        необъяснимо, тем более что вся обратная связь — значок в трее.
+        Негодную ссылку всё равно отсеет проверка ниже по пути.
+        """
+        if not self.settings.get("hk_download_enabled", False):
+            return
+        try:
+            text = QApplication.clipboard().text() or ""
+        except Exception:
+            text = ""
+        self._bg_download(text.strip(), copy_on_done=False, announce=False,
+                          managed=True, audio=bool(audio))
+
+    def set_hk_download_enabled(self, on):
+        self.settings["hk_download_enabled"] = bool(on)
+        self.save_settings()
+        self._apply_dl_hotkeys()
+
+    def set_hk_download_video(self, combo):
+        self.settings["hk_download_video"] = combo
+        self.save_settings()
+        self._apply_dl_hotkeys()
+
+    def set_hk_download_audio(self, combo):
+        self.settings["hk_download_audio"] = combo
+        self.save_settings()
+        self._apply_dl_hotkeys()
+
     def _ensure_spotlight(self):
         from core import perflog
         with perflog.measure("создание Spotlight"):
@@ -918,12 +990,17 @@ class App(QWidget):
         self._apply_hotkey()
 
     def suspend_hotkey(self):
-        """Временно снять глобальный хоткей (на время захвата новой комбинации в
-        настройках — иначе нажатие текущего сочетания заодно откроет Spotlight)."""
+        """Временно снять ВСЕ глобальные сочетания (на время захвата нового в
+        настройках).
+
+        Гасим и сочетания скачивания: иначе нажатие Ctrl+Alt+V при выборе новой
+        комбинации заодно отправило бы ссылку из буфера в загрузку."""
         self._stop_hotkey()
+        self._stop_dl_hotkeys()
 
     def resume_hotkey(self):
         self._apply_hotkey()
+        self._apply_dl_hotkeys()
 
     def record_download(self, dest, url, title=None, notify_window=True,
                         thumb_bytes=None, thumb_url=None, uploader=None):
@@ -968,7 +1045,8 @@ class App(QWidget):
         без тоста (это привилегия Toast)."""
         self._bg_download(url, copy_on_done=False, announce=False, managed=True)
 
-    def _bg_download(self, url, copy_on_done, announce=False, managed=True):
+    def _bg_download(self, url, copy_on_done, announce=False, managed=True,
+                     audio=False):
         """Общий путь фоновой загрузки (Paste/Toast): кладёт строку-прогресс в
         историю Spotlight (окно можно не открывать). copy_on_done — скопировать
         файл в буфер по завершении (для Toast, если включено в настройках)."""
@@ -989,7 +1067,8 @@ class App(QWidget):
             self.show_near_tray()
             return
         self._ensure_spotlight().start_bg_download(
-            url, copy_on_done=copy_on_done, announce=announce, managed=managed)
+            url, copy_on_done=copy_on_done, announce=announce, managed=managed,
+            audio=audio)
 
     # ------------------------------------------------------------------ #
     #  Мониторинг буфера обмена
@@ -1039,6 +1118,10 @@ class App(QWidget):
         # Немедленно завершаемся, чтобы освободить мьютекс single-instance.
         os._exit(0)
 
+    # Сколько секунд ссылка в буфере считается «свежей». Общий порог для
+    # автовставки при открытии окна и для скачивания по горячей клавише.
+    CLIP_FRESH_S = 30
+
     def _stamp_clip(self):
         import time
         self._clip_change_ts = time.monotonic()
@@ -1050,8 +1133,8 @@ class App(QWidget):
         if not self.settings.get("autopaste", False):
             return
         import time
-        if time.monotonic() - self._clip_change_ts > 30:   # только свежий буфер
-            return
+        if time.monotonic() - self._clip_change_ts > self.CLIP_FRESH_S:
+            return                       # только свежий буфер
         from core import downloader
         try:
             text = (QApplication.clipboard().text() or "").strip()
@@ -1200,7 +1283,17 @@ class App(QWidget):
                 v.history.remove_by_id(entry_id)
             except Exception:
                 pass
+        self.close_trim_if_gone()      # резать удалённый файл больше нечем
         return True
+
+    def close_trim_if_gone(self):
+        """Закрывает панель обрезки, если её файл исчез (удалили из истории или
+        снаружи)."""
+        if self.spotlight is not None:
+            try:
+                self.spotlight.close_trim_if_gone()
+            except RuntimeError:
+                pass
 
     def refresh_histories(self):
         """Немедленно пересобирает историю в окне и Spotlight из файла (после
@@ -1234,6 +1327,7 @@ class App(QWidget):
         for entry_id in gone:
             if entry_id:
                 history.remove(entry_id)
+        self.close_trim_if_gone()
 
     def report_active_downloads(self, source, n):
         """Источник (spotlight/window) сообщает число своих активных загрузок."""

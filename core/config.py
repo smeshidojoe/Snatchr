@@ -32,6 +32,11 @@ def defaults():
         "spotlight_enabled": True,        # включён ли Spotlight (глобальный хоткей)
         "spotlight_combo":   "ctrl+e",    # сочетание вызова Spotlight
         "spotlight_dismiss": "focus",     # "focus" (скрывать при потере фокуса) | "manual"
+        # Скачивание прямо по горячей клавише: ссылка берётся из буфера, окно не
+        # открывается, виден только вращающийся значок в трее.
+        "hk_download_enabled": False,     # включён ли этот способ
+        "hk_download_video": "ctrl+alt+v",  # сочетание: скачать видео
+        "hk_download_audio": "ctrl+alt+a",  # сочетание: скачать аудио
         "update_notify":     True,        # уведомлять тостом о новых версиях
         "update_dismissed_version": "",   # версия, тост которой уже закрыли
         "toast_copy_file":   True,        # копировать скачанный файл в буфер (Toast)
@@ -127,8 +132,16 @@ def validate(data):
     # (диск может быть временно отключён — пусть ошибка всплывёт при загрузке).
     if not str(data.get("download_path") or "").strip():
         data["download_path"] = d["download_path"]
-    if not str(data.get("spotlight_combo") or "").strip():
-        data["spotlight_combo"] = d["spotlight_combo"]
+    # Пустое сочетание означало бы «хоткей есть, но никакой» — берём дефолт.
+    for key in ("spotlight_combo", "hk_download_video", "hk_download_audio"):
+        if not str(data.get(key) or "").strip():
+            data[key] = d[key]
+    # Одинаковые сочетания у видео и аудио: сработало бы что-то одно, и какое
+    # именно — непредсказуемо. Возвращаем аудио к дефолту.
+    if data["hk_download_video"] == data["hk_download_audio"]:
+        data["hk_download_audio"] = d["hk_download_audio"]
+        if data["hk_download_video"] == data["hk_download_audio"]:
+            data["hk_download_video"] = d["hk_download_video"]
 
     return data
 

@@ -2,7 +2,7 @@ import os
 import sys
 
 APP_NAME    = "Snatchr"
-APP_VERSION = "0.9.5"
+APP_VERSION = "1.0.0"
 
 GITHUB_REPO = "SmeshidoJoe/Snatchr"
 

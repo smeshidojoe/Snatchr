@@ -3,6 +3,8 @@
   
 <img width="4096" height="1365" alt="Snatchr Banner v2" src="https://github.com/user-attachments/assets/b135759d-c19c-4347-94dc-73a7d54f593b" />
 
+**[🇷🇺 Русский](README.RU.md)** · **[🇬🇧 English](README.md)**
+
 # Snatchr
 
 ### *Just Download Anything.*
@@ -10,6 +12,8 @@
 ---
 
 **Snatchr** is a fast, lightweight video &amp; audio downloader for Windows that lives in your system tray. Grab media from 1,000+ sites without opening a browser, fighting ads, or touching the command line — then trim, copy, and re-download in a couple of clicks.
+
+[**Website**](https://smeshidojoe.github.io/Snatchr/) · [**Guide**](https://smeshidojoe.github.io/Snatchr/guide/) · [**Download**](https://github.com/smeshidojoe/snatchr/releases/latest)
 
 ---
 
@@ -21,10 +25,7 @@ No taskbar window, no clutter — Snatchr sits quietly in the system tray. **Lef
 
 <div align="center">
 
-<!-- 📸 Add a screenshot/GIF of the tray icon + right-click menu here.
-     Drag your image into a GitHub issue/PR comment to get a URL, then paste it below:
-<img src="TRAY_IMAGE_URL_HERE" alt="Snatchr in the system tray" width="520" />
--->
+<img src="https://smeshidojoe.github.io/Snatchr/assets/gifs/tray.gif" alt="Snatchr in the system tray" width="400" />
 
 </div>
 
@@ -44,9 +45,7 @@ The shortcut and dismiss behaviour are customizable in **Settings**.
 
 <div align="center">
 
-<!-- 📸 Add a screenshot/GIF of Spotlight (paste → history → trimming) here:
-<img src="SPOTLIGHT_IMAGE_URL_HERE" alt="Snatchr Spotlight" width="720" />
--->
+<img src="https://smeshidojoe.github.io/Snatchr/assets/gifs/spotlight.gif" alt="Snatchr Spotlight" width="400" />
 
 </div>
 
@@ -58,9 +57,31 @@ Turn on **clipboard watching** and Snatchr keeps an eye out: copy a supported li
 
 <div align="center">
 
-<!-- 📸 Add a screenshot/GIF of the "Download this?" toast here:
-<img src="TOAST_IMAGE_URL_HERE" alt="Snatchr clipboard toast" width="420" />
--->
+<img src="https://smeshidojoe.github.io/Snatchr/assets/gifs/toast.gif" alt="Snatchr clipboard toast" width="400" />
+
+</div>
+
+---
+
+## 🎚️ Pick your quality
+
+Paste a link in the main window and Snatchr lists the available resolutions and codecs in its own selector — choose the one you want, or take audio only.
+
+<div align="center">
+
+<img src="https://smeshidojoe.github.io/Snatchr/assets/gifs/quality.gif" alt="Choosing quality in Snatchr" width="400" />
+
+</div>
+
+---
+
+## ✂️ Trim without re-encoding
+
+Open a finished download in the trimmer: drag the two handles along the frame filmstrip, preview the cut, then save it next to the original or copy it straight to the clipboard.
+
+<div align="center">
+
+<img src="https://smeshidojoe.github.io/Snatchr/assets/gifs/trim.gif" alt="Trimming a video in Snatchr" width="400" />
 
 </div>
 
@@ -69,7 +90,6 @@ Turn on **clipboard watching** and Snatchr keeps an eye out: copy a supported li
 ## 🏗️ More features
 
 - **1,000+ sites** — YouTube, Instagram, TikTok, Twitch, Vimeo, Reddit, VK, Odnoklassniki, RuTube, and everything else `yt-dlp` supports.
-- **Pick your quality** — analyze a link, then choose resolution, codec, or audio-only (MP3) before downloading.
 - **Batch &amp; playlists** — paste many links at once; the window collapses and fetches them in the background.
 - **Trim by timecode** — download just a section of a video (From / To).
 - **Editor-friendly convert** — optionally re-encode YouTube videos into a clean, edit-ready MP4 (GPU-accelerated, CPU fallback).

@@ -288,21 +288,20 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
 
-    # Обратная карта «атрибут цвета -> ключ палитры»: подписи создаются с
-    # self.TEXT_COLOR и т.п., а для перекраски нужен ключ. Строится из
-    # THEME_ATTRS, поэтому не разъедется при добавлении цвета.
-    def _key_of_attr_value(self, color):
-        for attr, key in self.THEME_ATTRS.items():
-            if getattr(self, attr, None) == color:
-                return key
-        return None
-
     def _label(self, text, font, color, x, y, w=None, h=None, key=None):
+        """Подпись, участвующая в живой смене темы.
+
+        key — ключ палитры, ОБЯЗАТЕЛЕН. Раньше он подбирался по значению цвета
+        (искали атрибут с таким же значением), и это тихо ломалось: в теме цвета
+        разных ключей совпадают — в Blackout `title` и `text` оба #e0e0e0, в
+        Dark Pulse восемь ключей делят #f5d020. Подбор брал первый попавшийся, и
+        при переходе на тему, где эти цвета разные, подпись красилась не тем.
+        """
+        assert key, "у подписи должен быть явный ключ палитры: %r" % (text,)
         lbl = QLabel(text, self._host)
         lbl.setFont(font)
         lbl.setStyleSheet(f"color: {color}; background: transparent;")
-        # Ключ палитры: передан явно либо выведен из THEME_ATTRS по атрибуту.
-        self._labels.append((lbl, key or self._key_of_attr_value(color)))
+        self._labels.append((lbl, key))
         if w is not None and h is not None:
             lbl.setGeometry(x, y, w, h)
         else:
@@ -318,7 +317,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
 
         # --- заголовок + инфо-кнопка (статично) ------------------------- #
         self._label(tr("Settings"), fonts.font(s(14), "Semibold"),
-                    self.TITLE_COLOR, pad, s(12))
+                    self.TITLE_COLOR, pad, s(12), key="title")
         theme = self.settings.get("theme", themes.DEFAULT_THEME)
         ic_info   = themed_icon(theme, "info.png", self._pal["icon"], s(19))
         ic_info_h = themed_icon(theme, "info.png", self._pal["icon_hover"], s(19))
@@ -384,6 +383,22 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self._divider(pad, y, card_w)         # разделитель после Parallel Downloads
         y += s(16)
 
+        # Скачивание прямо по горячей клавише (ссылка берётся из буфера).
+        self._section_title(tr("Hotkey Starts Download"), pad, y)
+        y += s(18)
+        self._build_hk_download_row(pad, y, card_w)
+        y += s(30) + s(10)
+        self._build_hk_combo_row(tr("Download Video"), "hk_download_video",
+                                 "ctrl+alt+v", self.app.set_hk_download_video,
+                                 pad, y, card_w)
+        y += s(34) + s(8)
+        self._build_hk_combo_row(tr("Download Audio"), "hk_download_audio",
+                                 "ctrl+alt+a", self.app.set_hk_download_audio,
+                                 pad, y, card_w)
+        y += s(34) + s(16)
+        self._divider(pad, y, card_w)     # разделитель после блока
+        y += s(16)
+
         # Spotlight (вкл/выкл + режим скрытия + смена сочетания) — после Parallel.
         self._section_title(tr("Spotlight"), pad, y)
         y += s(18)
@@ -443,7 +458,8 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _build_ytdlp_row(self, x, y, card_w):
         s = self.app._s
         rh = s(30)
-        self._label("yt-dlp", fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6))
+        self._label("yt-dlp", fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6),
+                    key="text")
         # Переключатель канала — справа (старое положение).
         seg_w = s(160)
         seg = self.themed(SegmentedControl(
@@ -460,7 +476,8 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _build_tools_row(self, x, y, card_w):
         s = self.app._s
         rh, bh, gap = s(30), s(26), s(8)
-        self._label(tr("Tools"), fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6))
+        self._label(tr("Tools"), fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6),
+                    key="text")
         font = fonts.font(s(11), "Semibold")
         fm = QFontMetrics(font)
         t_yt, t_ff, t_cc = tr("Update yt-dlp"), tr("Update ffmpeg"), tr("Clear Cache")
@@ -546,13 +563,40 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _build_hotkey_row(self, x, y, card_w):
         s = self.app._s
         self._label(tr("Shortcut"), fonts.font(s(12), "Medium"), self.TEXT_COLOR,
-                    x, y + s(6))
+                    x, y + s(6), key="text")
         hk_w = s(180)
         hk = HotkeyEdit(self.app, self.settings.get("spotlight_combo", "ctrl+shift+d"),
                         self._host, self._pal)
         hk.setGeometry(self.width_ - x - hk_w, y, hk_w, s(30))
         hk.changed.connect(self.app.set_spotlight_combo)
         self._hotkey_edit = hk
+
+    HK_DOWNLOAD_TIP = ("Download the link from the clipboard by pressing a\n"
+                       "shortcut — no window opens. What is downloaded\n"
+                       "(video or audio) depends on the shortcut pressed;\n"
+                       "progress is shown by the spinning tray icon.")
+
+    def _build_hk_download_row(self, x, y, card_w):
+        s = self.app._s
+        cb = self.themed(CheckBox(self._host, tr("Enable"), fonts.font(s(12), "Regular"),
+                                  self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                         text_color="text", off_color="cb_off", on_color="cb_on")
+        cb.setChecked(bool(self.settings.get("hk_download_enabled", False)))
+        cb.setGeometry(x, y, card_w, s(30))
+        cb.setToolTip(tr(self.HK_DOWNLOAD_TIP))
+        cb.toggled.connect(self.app.set_hk_download_enabled)
+        self._checks["hk_download_enabled"] = cb
+
+    def _build_hk_combo_row(self, title, key, default, on_change, x, y, card_w):
+        """Строка со сменой сочетания: подпись слева, поле захвата справа."""
+        s = self.app._s
+        self._label(title, fonts.font(s(12), "Medium"), self.TEXT_COLOR,
+                    x, y + s(6), key="text")
+        hk_w = s(180)
+        hk = HotkeyEdit(self.app, self.settings.get(key, default), self._host, self._pal)
+        hk.setGeometry(self.width_ - x - hk_w, y, hk_w, s(30))
+        hk.changed.connect(on_change)
+        return hk
 
     def _build_convert_checkbox(self, x, y, card_w):
         s = self.app._s
@@ -828,7 +872,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _build_cookies_card(self, x, y, card_w):
         s = self.app._s
         self._label(tr("Browser for cookies"), fonts.font(s(11), "Regular"),
-                    self.TEXT_COLOR, x, y + s(3))
+                    self.TEXT_COLOR, x, y + s(3), key="text")
         cur_val = self.settings.get("cookies_browser", "auto")
         cur_label = next((lab for lab, v in _COOKIE_CHOICES if v == cur_val), "Auto")
         self._cookie_val = {lab: v for lab, v in _COOKIE_CHOICES}
@@ -871,7 +915,8 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self._section_title(tr("Format Priority"), x, y)
         sub_y = y + s(18)
         sub_f = fonts.font(s(11), "Regular")
-        self._label(tr("Show/Hide and reorder formats"), sub_f, self.TEXT_COLOR, x, sub_y)
+        self._label(tr("Show/Hide and reorder formats"), sub_f, self.TEXT_COLOR, x, sub_y,
+                    key="text")
         btn_w, btn_h = s(76), s(30)
         self.btn_formats = self.themed(LinkButton(
             self._host, tr("Edit"), fonts.font(s(11), "Semibold"),
@@ -885,7 +930,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     def _section_title(self, text, x, y):
         s = self.app._s
         self._label(text, fonts.font(s(10), "Medium"),
-                    self.SECTION_COLOR, x, y)
+                    self.SECTION_COLOR, x, y, key="icon")
 
     def _card(self, x, y, w, h):
         # Подложка карточек убрана (прозрачный контейнер для дочерних виджетов).
@@ -900,10 +945,16 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         card = self._card(x, y, card_w, card_h)
 
         # Иконка папки убрана — оставлен только путь (с прямыми слешами).
+        # Шрифт моноширинный, поэтому подпись создаётся вручную, а не через
+        # _label(). Регистрируем её в списке перекраски отдельно: без этого она
+        # держала цвет той темы, на которой была построена страница, и после
+        # возврата на светлую тему оставалась белой (страница живёт всю сессию,
+        # так что не помогало и закрытие окна — только перезапуск программы).
         self.path_lbl = QLabel(self._short_path(self.settings["download_path"]), card)
         self.path_lbl.setFont(fonts.mono(s(11)))
         self.path_lbl.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
         self.path_lbl.setGeometry(s(4), card_h // 2 - s(9), card_w - s(90), s(18))
+        self._labels.append((self.path_lbl, "text"))
 
         browse = self.themed(LinkButton(
             card, tr("Choose"), fonts.font(s(10), "Semibold"),
@@ -937,7 +988,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
 
         row_y = cb_h + s(6)
         self._label(tr("Window Mode"), fonts.font(s(12), "Medium"),
-                    self.TEXT_COLOR, x, y + row_y + s(8))
+                    self.TEXT_COLOR, x, y + row_y + s(8), key="text")
 
         seg_w = s(160)                       # компактнее и прижат вправо
         seg = self.themed(SegmentedControl(

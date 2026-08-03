@@ -318,12 +318,21 @@ class HistoryRow(QWidget):
             self._animate_dl(1.0)            # пилюли всё равно появляются анимацией
 
     def _plain_title(self):
-        """Заголовок без пиктограмм (см. fonts.plain). Считается один раз на
-        запись: отрисовка идёт десятки раз в секунду."""
-        raw = self.entry.get("title") or self.entry.get("url", "")
-        if raw != getattr(self, "_title_raw", None):
-            self._title_raw = raw
-            self._title_plain = fonts.plain(raw)
+        """Заголовок для отрисовки: без пиктограмм (см. fonts.plain).
+
+        Считается один раз на запись — отрисовка идёт десятки раз в секунду.
+        Отдаёт (текст, это_ссылка): ссылку обрезаем посередине, заголовок справа.
+
+        Если после вырезания пиктограмм не осталось НИЧЕГО — показываем ссылку.
+        У твиттера «заголовок» это текст твита, а он часто состоит из одних
+        эмодзи: строка тогда оставалась вовсе без надписи.
+        """
+        raw = self.entry.get("title") or ""
+        url = self.entry.get("url", "")
+        if (raw, url) != getattr(self, "_title_raw", None):
+            self._title_raw = (raw, url)
+            txt = fonts.plain(raw)
+            self._title_plain = (txt, False) if txt else (fonts.plain(url), True)
         return self._title_plain
 
     def _make_sub(self):
@@ -1010,14 +1019,14 @@ class HistoryRow(QWidget):
     def _paint_title(self, p, s, text_x, right_norm, right_dl, res, t):
         """Заголовок. Рисуется ОДИН раз (не переанимируется): при старте загрузки
         плавно съезжает вправо, освобождая место под пилюлю разрешения."""
-        title = self._plain_title()
+        title, title_is_url = self._plain_title()
         pill_off = (self._pill_w(res) + s(9)) if res else 0
         title_x = text_x + t * pill_off
         right_i = right_norm + (right_dl - right_norm) * t
         avail = max(s(30), right_i - title_x)
         f_url = fonts.font(s(12), "Medium")
         p.setFont(f_url)
-        elide = Qt.ElideRight if self.entry.get("title") else Qt.ElideMiddle
+        elide = Qt.ElideMiddle if title_is_url else Qt.ElideRight
         elided = QFontMetrics(f_url).elidedText(title, elide, int(avail))
         t0 = _time.perf_counter()
         self._draw_text_split(p, QRectF(title_x, s(14), avail, s(22)), elided,

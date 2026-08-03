@@ -10,7 +10,7 @@ import os
 
 from PySide6.QtCore import QThread, QThreadPool, QRunnable, QObject, Signal
 
-from core import tools, downloader
+from core import tools, downloader, perflog
 
 
 # Пул для обложек. Плейлист или пачка ссылок раньше поднимали по потоку ОС на
@@ -360,10 +360,22 @@ class ThumbWorker(PooledWorker):
     def work(self):
         import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
         try:
-            req = urllib.request.Request(self._url, headers={"User-Agent": "Snatchr"})
+            # Некоторые площадки (в т.ч. pbs.twimg.com) отдают картинку только
+            # браузероподобному клиенту — с «Snatchr» в User-Agent прилетал отказ,
+            # и строка молча оставалась с заглушкой.
+            req = urllib.request.Request(self._url, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/124.0 Safari/537.36"),
+                "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+            })
             with urllib.request.urlopen(req, timeout=15) as resp:
                 self.done.emit(resp.read())
-        except Exception:
+        except Exception as exc:
+            # Молчать нельзя: раньше сбой обложки не попадал никуда, и понять,
+            # почему в строке заглушка, было невозможно.
+            perflog.note("обложка не скачалась: %s | %s"
+                         % (str(exc)[:120], (self._url or "")[:120]))
             self.done.emit(b"")
 
 
