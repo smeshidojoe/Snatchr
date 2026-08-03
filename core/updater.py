@@ -21,6 +21,7 @@ import zipfile
 import subprocess
 
 from core.constants import APP_VERSION, GITHUB_REPO, APP_NAME
+from core import tools
 
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -71,7 +72,7 @@ def check_update(timeout=8):
         headers={"User-Agent": APP_NAME, "Accept": "application/vnd.github+json"})
     try:
         import json
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=tools.ssl_context()) as resp:
             data = json.load(resp)
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
@@ -101,7 +102,7 @@ def download_update(url, on_progress=None, timeout=60):
     os.makedirs(UPDATE_DIR, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": APP_NAME})
     tmp = UPDATE_ZIP + ".part"
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=tools.ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         with open(tmp, "wb") as f:

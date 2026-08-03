@@ -369,7 +369,7 @@ class ThumbWorker(PooledWorker):
                                "Chrome/124.0 Safari/537.36"),
                 "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
             })
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15, context=tools.ssl_context()) as resp:
                 self.done.emit(resp.read())
         except Exception as exc:
             # Молчать нельзя: раньше сбой обложки не попадал никуда, и понять,
@@ -454,7 +454,7 @@ class SpotlightThumbWorker(PooledWorker):
             data = b""
             if turl:
                 req = urllib.request.Request(turl, headers={"User-Agent": "Snatchr"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=15, context=tools.ssl_context()) as resp:
                     data = resp.read()
             self.done.emit(data, title, uploader, height, fps)
         except Exception:

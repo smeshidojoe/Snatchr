@@ -1442,7 +1442,7 @@ def _dl_url_to_file(url, path):
     try:
         import urllib.request
         req = urllib.request.Request(url, headers={"User-Agent": "Snatchr"})
-        with urllib.request.urlopen(req, timeout=20) as resp, open(path, "wb") as f:
+        with urllib.request.urlopen(req, timeout=20, context=tools.ssl_context()) as resp, open(path, "wb") as f:
             f.write(resp.read())
         return os.path.getsize(path) > 0
     except Exception:

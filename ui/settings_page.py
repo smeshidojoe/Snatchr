@@ -562,8 +562,9 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
 
     def _build_hotkey_row(self, x, y, card_w):
         s = self.app._s
+        # Выравнивание — как у строк сочетаний выше (по тексту галочки).
         self._label(tr("Shortcut"), fonts.font(s(12), "Medium"), self.TEXT_COLOR,
-                    x, y + s(6), key="text")
+                    x + int(CheckBox.text_dx(s(17))), y + s(6), key="text")
         hk_w = s(180)
         hk = HotkeyEdit(self.app, self.settings.get("spotlight_combo", "ctrl+shift+d"),
                         self._host, self._pal)
@@ -588,10 +589,13 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self._checks["hk_download_enabled"] = cb
 
     def _build_hk_combo_row(self, title, key, default, on_change, x, y, card_w):
-        """Строка со сменой сочетания: подпись слева, поле захвата справа."""
+        """Строка со сменой сочетания: подпись слева, поле захвата справа.
+
+        Подпись выравниваем по ТЕКСТУ галочки блока, а не по её рамке — иначе
+        она висит левее всего остального и колонка выглядит рваной."""
         s = self.app._s
         self._label(title, fonts.font(s(12), "Medium"), self.TEXT_COLOR,
-                    x, y + s(6), key="text")
+                    x + int(CheckBox.text_dx(s(17))), y + s(6), key="text")
         hk_w = s(180)
         hk = HotkeyEdit(self.app, self.settings.get(key, default), self._host, self._pal)
         hk.setGeometry(self.width_ - x - hk_w, y, hk_w, s(30))
@@ -745,7 +749,10 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         enabled = set(self.settings.get("autopaste_sites", downloader.AUTOPASTE_SITES))
         self._site_checks = {}
         cols, rh = 2, s(26)
-        col_w = card_w // cols
+        # Сетку сдвигаем под текст галочки «Paste link on open»: список сайтов
+        # ей подчинён, и по левому краю рамки он смотрелся как отдельный блок.
+        gx = x + int(CheckBox.text_dx(s(17)))
+        col_w = (card_w - (gx - x)) // cols
         gy = y + s(34)
         for i, (key, label) in enumerate(self._AUTOPASTE_SITES):
             r, c = divmod(i, cols)
@@ -754,7 +761,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
                          self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5)),
                 text_color="text", off_color="cb_off", on_color="cb_on")
             scb.setChecked(key in enabled)
-            scb.setGeometry(x + c * col_w, gy + r * rh, col_w - s(6), s(24))
+            scb.setGeometry(gx + c * col_w, gy + r * rh, col_w - s(6), s(24))
             scb.toggled.connect(lambda v, k=key: self._on_site_toggle(k, v))
             self._site_checks[key] = scb
         self._sync_sites_toggle_label()

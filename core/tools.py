@@ -63,6 +63,34 @@ def _migrate_old_tools():
         pass
 
 
+_SSL_CTX = None
+
+
+def ssl_context():
+    """SSL-контекст для наших сетевых запросов: системное хранилище ПЛЮС certifi.
+
+    На машине, где корневые сертификаты Windows устарели, проверка цепочки
+    Let's Encrypt падает с «certificate has expired» — а им подписан, например,
+    pbs.twimg.com, откуда берутся обложки твитов. yt-dlp этого не замечает,
+    потому что несёт собственную связку; наши запросы шли на системное
+    хранилище и молча обрывались.
+
+    Доверяем обоим источникам сразу: certifi закрывает устаревшие корни системы,
+    системное хранилище — корпоративные и самоподписанные, которых нет в certifi.
+    """
+    global _SSL_CTX
+    if _SSL_CTX is None:
+        import ssl
+        ctx = ssl.create_default_context()
+        try:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+        except Exception:
+            pass                     # certifi нет — остаёмся на системном хранилище
+        _SSL_CTX = ctx
+    return _SSL_CTX
+
+
 def ensure_dir():
     _migrate_old_tools()
     os.makedirs(TOOLS_DIR, exist_ok=True)
@@ -184,7 +212,7 @@ def _download(url, dest, progress=None):
     import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(url, headers={"User-Agent": "Snatchr"})
     tmp = dest + ".part"
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=60, context=ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         with open(tmp, "wb") as f:
@@ -246,7 +274,7 @@ def _ffmpeg_url():
         req = urllib.request.Request(
             FFMPEG_API,
             headers={"User-Agent": "Snatchr", "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as resp:
             releases = _json.load(resp)
         for rel in releases:
             if rel.get("tag_name") == "latest":
@@ -269,7 +297,7 @@ def download_ffmpeg(progress=None):
     import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(_ffmpeg_url(), headers={"User-Agent": "Snatchr"})
     buf = io.BytesIO()
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120, context=ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while True:
@@ -307,7 +335,7 @@ def download_deno(progress=None):
     import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(DENO_URL, headers={"User-Agent": "Snatchr"})
     buf = io.BytesIO()
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120, context=ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while True:

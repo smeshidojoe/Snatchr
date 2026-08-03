@@ -17,6 +17,11 @@ keyboard==0.13.5
 # WinAPI: win32api / win32gui / win32process (tray position, windows, processes).
 pywin32==311
 
+# CA bundle for our own HTTPS requests (thumbnails, updates, binaries). The
+# Windows root store can carry an expired Let's Encrypt chain, and then those
+# requests fail while yt-dlp keeps working — it ships its own bundle.
+certifi==2026.5.20
+
 
 # --- Build only (not needed to run from source) ---------------------------- #
 # pyinstaller==6.11.1

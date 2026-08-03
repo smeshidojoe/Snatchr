@@ -18,7 +18,7 @@ import threading
 from urllib.parse import urlparse
 
 from core.config import APP_DIR
-from core import trimmer
+from core import trimmer, tools
 
 HISTORY_PATH = os.path.join(APP_DIR, "history.json")
 
@@ -116,7 +116,7 @@ def _download_thumb(thumb_url, out_path):
     try:
         import urllib.request
         req = urllib.request.Request(thumb_url, headers={"User-Agent": "Snatchr"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=tools.ssl_context()) as resp:
             data = resp.read()
         if not data:
             return None

@@ -13,6 +13,7 @@ UI не отличает движки — кроме флага `_ember`, по �
 """
 
 import os
+import re
 import time
 
 try:
@@ -228,6 +229,28 @@ def _heights(result):
     return sorted(hs, reverse=True)
 
 
+def _preview_url(result):
+    """Ссылка на превью поста для строки истории.
+
+    У постов из одних фотографий Ember не заполняет thumbnail: он собирает его
+    только для видео и гифок. Тогда берём первую картинку самого поста — иначе
+    в строке до конца загрузки висела серая заглушка.
+
+    У twimg просим уменьшенный вариант: оригинал бывает в несколько мегабайт, а
+    рисуем мы полоску шириной под сотню пикселей.
+    """
+    thumb = getattr(result, "thumbnail", None)
+    if thumb:
+        return thumb
+    for m in (getattr(result, "media", None) or []):
+        if str(getattr(m, "kind", "")).lower() not in ("photo", "image", "gif"):
+            continue
+        url = getattr(m, "url", "") or ""
+        if url:
+            return re.sub(r"name=orig(?![\w-])", "name=small", url)
+    return ""
+
+
 def to_info(result):
     """Result -> info-словарь в формате, который ждёт UI (карточка + история)."""
     heights = _heights(result)
@@ -235,7 +258,7 @@ def to_info(result):
         "title": result.title or "",
         "uploader": result.author or "",
         "duration": result.duration or 0,
-        "thumbnail": result.thumbnail or "",
+        "thumbnail": _preview_url(result),
         "height": heights[0] if heights else 0,
         "_ember": True,                       # метка движка (см. модуль-docstring)
         "_ember_heights": heights,

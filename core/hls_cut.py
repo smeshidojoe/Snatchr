@@ -66,7 +66,7 @@ def _fetch(url, headers=None, timeout=30, retries=0):
         try:
             req = urllib.request.Request(
                 url, headers=dict(headers or {"User-Agent": _UA}))
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=tools.ssl_context()) as resp:
                 return resp.read()
         except Exception as exc:
             last = exc

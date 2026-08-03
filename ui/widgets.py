@@ -674,6 +674,14 @@ class CheckBox(Rethemable, QAbstractButton):
     _COLOR_ATTRS = {"text_color": ("_text_color", True), "off_color": ("_off", True),
                     "on_color": ("_on", True)}
 
+    @staticmethod
+    def text_dx(box_size):
+        """Отступ подписи от левого края чекбокса.
+
+        Нужен наружу: подписи соседних строк выравниваются по тексту галочки,
+        а не по её рамке. Считается здесь, чтобы не разъехаться с отрисовкой."""
+        return box_size * 0.20 + box_size + box_size * 0.5
+
     def __init__(self, parent, text, font, text_color,
                  off_color, on_color, box_size, radius):
         super().__init__(parent)
@@ -780,7 +788,7 @@ class CheckBox(Rethemable, QAbstractButton):
 
         p.setPen(self._text_color)
         p.setFont(self._font)
-        text_x = self._box * 0.20 + self._box + self._box * 0.5
+        text_x = self.text_dx(self._box)
         text_rect = QRectF(text_x, 0, self.width() - text_x, h)
         p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self._text)
         p.end()
