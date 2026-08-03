@@ -42,14 +42,25 @@ MIN_HEIGHT = 480     # ниже 480p не показываем
 # плееров такой звук не открывают. AAC приходит с площадки готовым: ни лишнего
 # сжатия, ни перекодирования (замерено: перегнать opus в AAC — ~18x реального
 # времени, полторы минуты на получасовой ролик).
-BEST_VIDEO_FMT = ("bv*[vcodec!^=av01]+ba[ext=m4a]/"
+# HDR исключаем: на обычном мониторе он выглядит блёклым, а приведение к SDR —
+# это лишнее перекодирование. Важная деталь: сортировка yt-dlp по умолчанию
+# HDR как раз ПРЕДПОЧИТАЕТ, поэтому фоновые загрузки (тост, горячая клавиша)
+# тянули именно его — фильтр в самой строке формата закрывает все пути разом.
+# Хвост без [dynamic_range=SDR] — страховка: обычно yt-dlp подставляет SDR даже
+# там, где площадка поле не заполнила, но если вдруг не подставит, лучше скачать
+# хоть что-то, чем не найти ни одного формата.
+BEST_VIDEO_FMT = ("bv*[vcodec!^=av01][dynamic_range=SDR]+ba[ext=m4a]/"
+                  "bv*[vcodec!^=av01][dynamic_range=SDR]+ba/"
+                  "bv*[vcodec!^=av01]+ba[ext=m4a]/"
                   "bv*[vcodec!^=av01]+ba/b")
 # Best Quality: сначала максимальное разрешение, а среди равных — предпочесть
 # H.264. Без этой сортировки yt-dlp брал VP9 по битрейту даже там, где AVC есть
 # (напр. ролик с потолком 720p), и запускалась ненужная конвертация.
 BEST_VIDEO_SORT = "res,vcodec:h264"
 # Совместимость: максимальное разрешение с кодеком AVC (обычно до 1080p).
-AVC_VIDEO_FMT = ("bv*[vcodec^=avc]+ba[ext=m4a]/"
+AVC_VIDEO_FMT = ("bv*[vcodec^=avc][dynamic_range=SDR]+ba[ext=m4a]/"
+                 "bv*[vcodec^=avc][dynamic_range=SDR]+ba/"
+                 "bv*[vcodec^=avc]+ba[ext=m4a]/"
                  "bv*[vcodec^=avc]+ba/b")
 PROGRESS_TAG = "@@SN@@"    # префикс строки прогресса
 DEST_TAG = "@@DEST@@"      # префикс строки с итоговым путём файла
@@ -252,6 +263,16 @@ def probe(url, no_playlist=True, timeout=60, cookies=None):
 
 
 # ------------------------------------------------------------------ #
+def is_hdr(f):
+    """HDR ли этот формат (по полю dynamic_range от yt-dlp).
+
+    Значения: «SDR», «HDR10», «HDR10+», «HLG», «DV». Пустое поле считаем SDR —
+    большинство сайтов его вовсе не заполняют, и трактовать неизвестность как
+    HDR значило бы выкинуть у них все форматы разом.
+    """
+    return (f.get("dynamic_range") or "SDR").upper() not in ("SDR", "")
+
+
 def best_picks_vp9(info):
     """
     Приедет ли по Best Quality именно VP9 (и значит нужна конвертация).
@@ -268,6 +289,8 @@ def best_picks_vp9(info):
             continue
         v = (f.get("vcodec") or "").lower()
         if v.startswith(("av01", "av1")):     # AV1 в Best Quality не участвует
+            continue
+        if is_hdr(f):                         # HDR не качаем (см. BEST_VIDEO_FMT)
             continue
         h = f.get("height") or 0
         max_h = max(max_h, h)
@@ -364,6 +387,10 @@ def video_formats(info, youtube=True, settings=None):
         # доступен всегда и не требует конвертации — VP9 там только мусорит выбор.
         if codec_lbl == "VP9" and (f.get("height") or 0) <= 1080:
             continue
+        # HDR не показываем и не качаем: на обычном мониторе такая картинка
+        # выглядит блёклой, а приведение к SDR — это ещё одно перекодирование.
+        if is_hdr(f):
+            continue
         # На YouTube берём только video-only (звук добьём bestaudio); на прочих
         # сайтах допускаем прогрессивные форматы (уже со звуком).
         if youtube and f.get("acodec") not in (None, "none"):
@@ -373,17 +400,15 @@ def video_formats(info, youtube=True, settings=None):
             continue
         vids.append(f)
 
-    # Показываем тип (HDR/SDR), только если у ссылки есть оба типа.
-    dranges = {(f.get("dynamic_range") or "SDR").upper() for f in vids}
-    show_dr = len(dranges) > 1
+    # Тип (HDR/SDR) в подписи больше не нужен: HDR отфильтрован выше, и все
+    # оставшиеся строки — SDR. Раньше пометка появлялась, когда у ссылки были оба.
 
-    # Лучший битрейт на (разрешение, кодек, тип).
+    # Лучший битрейт на (разрешение, кодек).
     best = {}
     for f in vids:
         h = f.get("height") or 0
         codec = _codec_label(f.get("vcodec"))
-        dr = (f.get("dynamic_range") or "SDR").upper()
-        key = (h, codec, dr)
+        key = (h, codec)
         tbr = f.get("tbr") or f.get("vbr") or 0
         if key not in best or tbr > (best[key].get("tbr") or 0):
             best[key] = f
@@ -391,10 +416,8 @@ def video_formats(info, youtube=True, settings=None):
     items = list(best.items())
     items.sort(key=lambda kv: (kv[0][0], kv[1].get("tbr") or 0), reverse=True)
 
-    for (h, codec, dr), f in items:
+    for (h, codec), f in items:
         parts = [_res_label(h), codec]
-        if show_dr:
-            parts.append(dr)
         br = _bitrate_str(f.get("tbr") or f.get("vbr"))
         if br:
             parts.append(br)

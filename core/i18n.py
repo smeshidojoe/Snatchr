@@ -183,14 +183,14 @@ _RU = {
     "Downloading update…": "Скачивание обновления…",
 
     # --- Подсказки (tooltip) ---
-    "Re-encode YouTube videos into an editor-friendly format\n"
-    "(SDR → H.264, HDR → HEVC 10-bit, mp4) so they import\n"
-    "cleanly into video editing software. Uses the GPU when\n"
-    "available, with a CPU fallback.":
-        "Перекодировать видео с YouTube в удобный для монтажа формат\n"
-        "(SDR → H.264, HDR → HEVC 10-bit, mp4), чтобы они без проблем\n"
-        "импортировались в видеоредакторы. Использует GPU, если доступен,\n"
-        "с откатом на процессор.",
+    "Videos above 1080p come in a codec that many editors\n"
+    "and messengers can't open. Convert them to H.264 mp4\n"
+    "so they work everywhere. Uses the GPU when available,\n"
+    "with a CPU fallback.":
+        "Видео выше 1080p приходят в кодеке, который многие\n"
+        "видеоредакторы и мессенджеры не открывают. Конвертация\n"
+        "переводит их в H.264 mp4, чтобы работали везде.\n"
+        "Использует GPU, если доступен, иначе процессор.",
     "Pinned: the tray icon opens and closes the window.\n"
     "Auto-hide: the tray icon opens the window; it closes\n"
     "on Esc or when you click outside it.":

@@ -154,9 +154,10 @@ for sname, st in SETTINGS_SET:
 head("5. Селектор форматов (yt-dlp info)")
 
 
-def fmt(fid, h, vcodec, acodec="none", ext="mp4", tbr=1000, fps=30):
+def fmt(fid, h, vcodec, acodec="none", ext="mp4", tbr=1000, fps=30, dr="SDR"):
     return {"format_id": fid, "height": h, "vcodec": vcodec, "acodec": acodec,
-            "ext": ext, "tbr": tbr, "fps": fps, "url": "https://x/%s" % fid}
+            "ext": ext, "tbr": tbr, "fps": fps, "dynamic_range": dr,
+            "url": "https://x/%s" % fid}
 
 
 INFOS = [
@@ -172,6 +173,20 @@ INFOS = [
     ("только аудио", {"title": "Трек", "extractor_key": "Soundcloud",
                       "formats": [fmt("http_mp3", None, "none", "mp3", "mp3")]}),
     ("без форматов", {"title": "Пусто", "formats": []}),
+    ("4k hdr + 4k sdr", {"title": "Ролик", "extractor_key": "Youtube",
+                         "formats": [fmt("337", 2160, "vp09.02.51", tbr=25000, dr="HDR10"),
+                                     fmt("313", 2160, "vp09.00.50", tbr=20000),
+                                     fmt("337h", 1440, "vp09.02.50", tbr=12000, dr="HLG"),
+                                     fmt("271", 1440, "vp09.00.50", tbr=10000),
+                                     fmt("137", 1080, "avc1", tbr=4500),
+                                     fmt("140", None, "none", "mp4a")]}),
+    ("на максимуме только hdr", {"title": "Ролик", "extractor_key": "Youtube",
+                                 "formats": [fmt("337", 2160, "vp09.02.51", dr="HDR10"),
+                                             fmt("137", 1080, "avc1"),
+                                             fmt("140", None, "none", "mp4a")]}),
+    ("только hdr", {"title": "Ролик", "extractor_key": "Youtube",
+                    "formats": [fmt("337", 2160, "vp09.02.51", dr="DV"),
+                                fmt("140", None, "none", "mp4a")]}),
     ("низкие", {"title": "Мелкий", "formats": [fmt("160", 144, "avc1"),
                                                fmt("133", 240, "avc1"),
                                                fmt("140", None, "none", "mp4a")]}),
@@ -187,6 +202,24 @@ for name, info in INFOS:
             line("%s|%s vp9picks=%s" % (name, sname, norm(bp)))
         except Exception as exc:
             line("%s|%s ИСКЛЮЧЕНИЕ %s: %s" % (name, sname, type(exc).__name__, exc))
+
+# --- 5b. HDR ---------------------------------------------------------- #
+head("5b. HDR: признак, отбор в селекторе, план конвертации")
+# Слепок гоняется и по СТАРЫМ ревизиям, где новых функций ещё нет: обращаемся
+# через getattr, иначе сравнение падало бы вместо того, чтобы показать разницу.
+_is_hdr = getattr(dl, "is_hdr", None)
+for dr in ("SDR", "", None, "HDR10", "HDR10+", "HLG", "DV", "hdr10", "sdr"):
+    got = _is_hdr({"dynamic_range": dr}) if _is_hdr else "(функции нет)"
+    line("dynamic_range=%-8r -> is_hdr=%s" % (dr, got))
+for name, info in INFOS:
+    try:
+        opts = dl.video_formats(info, settings={})
+        keys = " / ".join(str(o.get("key")) for o in opts)
+        line("%-26s vp9picks=%-5s | %s" % (name, dl.best_picks_vp9(info), keys))
+    except Exception as exc:
+        line("%-26s ИСКЛЮЧЕНИЕ %s: %s" % (name, type(exc).__name__, exc))
+for const in ("BEST_VIDEO_FMT", "AVC_VIDEO_FMT", "BEST_VIDEO_SORT"):
+    line("%-16s = %s" % (const, getattr(dl, const, "(нет)")))
 
 # --- 6. Ember: галереи, посты, селектор ----------------------------- #
 head("6. Ember")

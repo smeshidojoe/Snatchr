@@ -172,10 +172,10 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
     }
 
 
-    CONVERT_TIP = ("Re-encode YouTube videos into an editor-friendly format\n"
-                   "(SDR → H.264, HDR → HEVC 10-bit, mp4) so they import\n"
-                   "cleanly into video editing software. Uses the GPU when\n"
-                   "available, with a CPU fallback.")
+    CONVERT_TIP = ("Videos above 1080p come in a codec that many editors\n"
+                   "and messengers can't open. Convert them to H.264 mp4\n"
+                   "so they work everywhere. Uses the GPU when available,\n"
+                   "with a CPU fallback.")
     CLIPBOARD_TIP = ("When you copy a link from a supported site, a toast\n"
                      "appears offering to download it in the background.")
     AUTOPASTE_TIP = ("When you open the window, a freshly copied link is\n"

@@ -393,7 +393,11 @@ class Spotlight(QWidget):
         """Вариант формата по текущему переключателю Video/Audio."""
         if self._mode == "audio":
             return {"label": "Best Quality", "fmt": "ba/b", "mp3": True}
-        return {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT, "mp3": False}
+        # Сортировка та же, что в окне: максимальное разрешение, среди равных —
+        # H.264. Без неё действует порядок yt-dlp по умолчанию, а он предпочитает
+        # и HDR, и VP9 — то есть лишнюю конвертацию.
+        return {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT,
+                "sort": downloader.BEST_VIDEO_SORT, "mp3": False}
 
     def _on_submit(self, text):
         self._try_download(text, auto=False)
@@ -466,7 +470,7 @@ class Spotlight(QWidget):
             option = {"label": "Best Quality", "fmt": "ba/b", "mp3": True}
         else:
             option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT,
-                      "mp3": False}
+                      "sort": downloader.BEST_VIDEO_SORT, "mp3": False}
         convert = downloader.should_convert(option, url, self.app.settings)
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
                  "host": history.host_label(url), "title": "", "path": None,
