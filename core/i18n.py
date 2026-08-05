@@ -149,6 +149,8 @@ _RU = {
     "Not found (404).": "Не найдено (404).",
     "Too many requests — try later.": "Много запросов — попробуйте позже.",
     "Video is private.": "Видео приватное.",
+    "The author restricted access to this video.":
+        "Автор ограничил доступ к видео.",
     "Members-only content.": "Только для участников.",
     "Video unavailable.": "Видео недоступно.",
     "Not available in your region.": "Недоступно в регионе.",

@@ -231,6 +231,14 @@ def _probe_ember(url, settings, errors=None):
     errors — список, куда кладём текст ошибки: он часто информативнее ответа
     yt-dlp (например, «нужны куки авторизации» вместо «HTTP Error 400»)."""
     from core import ember_dl
+    if not ember_dl.available():
+        # Библиотеки нет в сборке — говорим об этом вслух. Иначе посты из одних
+        # фотографий молча уходят к yt-dlp, и пользователь видит «No video could
+        # be found in this tweet», по которому причину не угадать.
+        if errors is not None:
+            errors.append("Ember engine unavailable (%s)"
+                          % (ember_dl.unavailable_reason() or "not installed"))
+        return None
     if not ember_dl.can_handle(url):
         return None
     try:

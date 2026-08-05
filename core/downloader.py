@@ -784,6 +784,9 @@ _ERROR_MAP = [
     ("http error 404", "Not found (404)."),
     ("http error 429", "Too many requests — try later."),
     ("private video", "Video is private."),
+    # VK: автор закрыл доступ конкретным людям. Куки не помогут — доступа нет у
+    # самой учётной записи, и раньше на это отвечало общее «Ошибка загрузки».
+    ("access restricted", "The author restricted access to this video."),
     ("members-only", "Members-only content."),
     ("join this channel", "Members-only content."),
     ("video unavailable", "Video unavailable."),

@@ -19,9 +19,14 @@ import time
 try:
     import ember
     HAVE = True
-except Exception:                     # библиотека не установлена — молча живём без неё
+    _IMPORT_ERROR = ""
+except Exception as _exc:             # библиотека не установлена — живём без неё
     ember = None
     HAVE = False
+    # Причину запоминаем: в собранном exe пакет может просто не попасть в сборку,
+    # и тогда посты из одних фотографий уходят к yt-dlp с невнятным ответом
+    # «No video could be found in this tweet». Молчать об этом нельзя.
+    _IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 
 from core import tools
 from core.i18n import tr
@@ -31,6 +36,11 @@ from core.i18n import tr
 
 def available():
     return HAVE
+
+
+def unavailable_reason():
+    """Почему Ember не подключился (пусто, если всё в порядке)."""
+    return _IMPORT_ERROR
 
 
 def can_handle(url):
