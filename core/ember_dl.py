@@ -173,18 +173,36 @@ def supports_timeline(url):
         return False
 
 
+def can_extract_single(url):
+    """Ведёт ли ссылка на КОНКРЕТНЫЙ пост (а не на профиль/ленту)."""
+    if not HAVE or not url:
+        return False
+    try:
+        return bool(ember.can_extract(url))
+    except Exception:
+        return False
+
+
 def is_collection(url):
     """Ссылка — НАБОР (сет/профиль/канал), а не одиночный пост.
 
     Осторожно: supports_playlist() у Ember True и для одиночного трека
     (одиночная ссылка отдаётся «плейлистом из одной записи»), поэтому набором
-    считаем только ленту автора либо явный сет в адресе."""
+    считаем только ленту автора либо явный сет в адресе.
+
+    Ссылка на конкретный пост всегда важнее ленты: у Ember шаблон профиля может
+    совпасть с адресом одиночного видео (vkvideo.ru/video<id>_<id> подходит под
+    оба сразу), и тогда обычная ссылка уезжала на путь плейлиста — вместо строки
+    в истории появлялось «Fetching playlist…». Явный сет в адресе проверяем
+    ДО этого: у набора SoundCloud извлечение тоже доступно, и общая проверка
+    отбросила бы альбомы.
+    """
     if not HAVE or not url:
         return False
     low = str(url).lower()
-    if supports_timeline(low):
+    if "/sets/" in low and supports_playlist(low):
         return True
-    return "/sets/" in low and supports_playlist(low)
+    return supports_timeline(low) and not can_extract_single(low)
 
 
 def playlist_entries(url, settings=None, limit=30, timeout=25.0):
