@@ -519,7 +519,9 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     def _start_analyze(self):
         if self._is_multi():
             return
-        url = (self.url_edit.text() or "").strip()
+        # Зеркало переписываем на канонический домен СРАЗУ: дальше по этой
+        # ссылке идут и кэш, и история, и скачивание (см. canonical_url).
+        url = downloader.canonical_url((self.url_edit.text() or "").strip())
         # Эту ссылку уже разобрали и ждём Download — повторный анализ не нужен и
         # ВРЕДЕН: он заново заполняет селектор и сбрасывает выбранный формат на
         # «Best Quality» (пользователь выбрал Best Compatibility — а скачивалось
@@ -910,7 +912,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         for ln in self.url_text.toPlainText().splitlines():
             ln = ln.strip()
             if ln.startswith("http://") or ln.startswith("https://"):
-                out.append(ln)
+                out.append(downloader.canonical_url(ln))
         return out
 
     def _on_multi_text_changed(self):

@@ -377,8 +377,16 @@ def video_formats(info, youtube=True, settings=None):
 
     vids = []
     for f in info.get("formats", []):
-        if f.get("vcodec") in (None, "none"):
+        vc = f.get("vcodec")
+        if vc == "none":
+            continue                      # звуковая дорожка — не наш случай
+        if vc is None and not f.get("height"):
             continue
+        # ВАЖНО: пустой vcodec — это «кодек НЕ УКАЗАН», а не «видео нет». Часть
+        # сайтов (xvideos и прочие с HLS) кодеки не сообщает вовсе, и прежнее
+        # правило «нет vcodec — пропускаем» выкидывало у них ВСЕ форматы: в
+        # селекторе оставались только Best Quality и обложка, выбрать 720p было
+        # нельзя. Отсекаем лишь настоящее аудио и мусор без разрешения.
         # AV1 полностью исключаем из селектора.
         codec_lbl = _codec_label(f.get("vcodec"))
         if codec_lbl == "AV1":
@@ -417,7 +425,8 @@ def video_formats(info, youtube=True, settings=None):
     items.sort(key=lambda kv: (kv[0][0], kv[1].get("tbr") or 0), reverse=True)
 
     for (h, codec), f in items:
-        parts = [_res_label(h), codec]
+        # Кодек не указан — не пишем «?», просто опускаем.
+        parts = [_res_label(h)] + ([codec] if codec != "?" else [])
         br = _bitrate_str(f.get("tbr") or f.get("vbr"))
         if br:
             parts.append(br)
@@ -897,6 +906,40 @@ def is_playlist_url(url):
     # (профиль/канал) в Twitter/VK/Instagram и т.п.
     from core import ember_dl
     return ember_dl.is_collection(u)
+
+
+# Зеркала, где ПУТЬ совпадает с оригиналом, а домен другой. У yt-dlp и Ember
+# экстракторы привязаны к каноническому домену, и на зеркале срабатывает общий
+# (Generic) разбор: он вытаскивает со страницы единственный mp4 — самый низко-
+# качественный. Отсюда «скачалось 360p, хотя на сайте есть 1080p».
+_MIRROR_HOSTS = (
+    # xvideos раздаёт то же самое под кучей доменов: xv-ru.com, xvideos2.com,
+    # xvideos.es и т.п. Сужаем шаблоны, чтобы не задеть посторонние адреса.
+    (re.compile(r"^(?:www\.)?xvideos\d*\.[a-z.]{2,10}$"), "www.xvideos.com"),
+    (re.compile(r"^(?:www\.)?xv-[a-z]{2}\.com$"), "www.xvideos.com"),
+)
+
+
+def canonical_url(url):
+    """Ссылку с известного зеркала переписываем на канонический домен.
+
+    Путь и параметры не трогаем — у этих зеркал они совпадают с оригиналом.
+    Незнакомый адрес возвращаем как есть.
+    """
+    u = str(url or "").strip()
+    if not u:
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(u)
+        host = (parts.netloc or "").split("@")[-1].split(":")[0].lower()
+        for rx, canon in _MIRROR_HOSTS:
+            if rx.match(host):
+                return urlunsplit((parts.scheme or "https", canon, parts.path,
+                                   parts.query, parts.fragment))
+    except Exception:
+        pass
+    return u
 
 
 def vimeo_player_url(url):

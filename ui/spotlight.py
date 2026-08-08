@@ -408,7 +408,7 @@ class Spotlight(QWidget):
             self._try_download(t, auto=True)
 
     def _try_download(self, text, auto):
-        url = (text or "").strip()
+        url = downloader.canonical_url((text or "").strip())
         if not url:
             return
         if not downloader.is_supported_url(url):

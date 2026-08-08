@@ -785,6 +785,8 @@ class TrayIcon:
                    sticky=False, on_dismiss=None):
         """Показать кастомный тост (предыдущий закрывается). sticky=True — висит,
         пока не закроют (напр., анонс обновления)."""
+        if self.app.is_updating():
+            return                     # во время обновления программа стоит
         if self._toast is not None:
             try:
                 self._toast.close()
@@ -828,11 +830,17 @@ class TrayIcon:
                 (tr("Exit"), self._quit_app)]
 
     def _show_menu(self):
+        # Меню трея во время обновления не открываем: все его пункты, кроме
+        # выхода, всё равно заблокированы, а «живое» меню вводит в заблуждение.
+        if self.app.is_updating():
+            return
         self._menu_popup = TrayMenu(self.app, self._menu_items())
         self._menu_popup.popup_at(QCursor.pos())
 
     def show_menu_hold(self):
         """Меню по зажатию ЛКМ; ведётся из TrayHoldWatcher. Возвращает виджет."""
+        if self.app.is_updating():
+            return None
         self._hold_menu = TrayMenu(self.app, self._menu_items(), hold=True)
         self._hold_menu.popup_at(QCursor.pos())
         return self._hold_menu

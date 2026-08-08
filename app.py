@@ -926,7 +926,7 @@ class App(QWidget):
         необъяснимо, тем более что вся обратная связь — значок в трее.
         Негодную ссылку всё равно отсеет проверка ниже по пути.
         """
-        if not self.settings.get("hk_download_enabled", False):
+        if self.is_updating() or not self.settings.get("hk_download_enabled", False):
             return
         try:
             text = QApplication.clipboard().text() or ""
@@ -966,6 +966,8 @@ class App(QWidget):
 
 
     def toggle_spotlight(self):
+        if self.is_updating():
+            return
         from core import perflog
         perflog.note("хоткей дошёл до UI-потока")
         with perflog.measure("toggle_spotlight целиком"):
@@ -1047,12 +1049,14 @@ class App(QWidget):
 
     def _bg_download(self, url, copy_on_done, announce=False, managed=True,
                      audio=False):
+        if self.is_updating():
+            return
         """Общий путь фоновой загрузки (Paste/Toast): кладёт строку-прогресс в
         историю Spotlight (окно можно не открывать). copy_on_done — скопировать
         файл в буфер по завершении (для Toast, если включено в настройках)."""
         from core.i18n import tr
         from core import downloader, tools
-        url = (url or "").strip()
+        url = downloader.canonical_url((url or "").strip())
         if not (url.startswith("http://") or url.startswith("https://")):
             if self.tray is not None:
                 self.tray.notify(tr("Paste a video link first"))
@@ -1166,6 +1170,8 @@ class App(QWidget):
             self._clip_connected = True
 
     def _on_clipboard_changed(self):
+        if self.is_updating():
+            return
         from core import downloader
         try:
             text = (QApplication.clipboard().text() or "").strip()
@@ -1484,6 +1490,16 @@ class App(QWidget):
         except Exception:
             pass
 
+    def is_updating(self):
+        """Идёт установка обновления — программа должна стоять целиком.
+
+        Проверяется во ВСЕХ внешних точках входа: окно, Spotlight, трей, тосты,
+        фоновые загрузки. Раньше блокировалось только окно, и Spotlight с
+        горячими клавишами преспокойно работали поверх идущего обновления —
+        а оно в конце подменяет exe и перезапускает программу.
+        """
+        return bool(self._updating)
+
     def _show_overlay(self, title, worker, on_done=None):
         """Показывает модальный оверлей с заголовком и общей полосой прогресса,
         привязанный к worker (signals: progress[, status], done(ok, err))."""
@@ -1491,6 +1507,11 @@ class App(QWidget):
             return
         self._updating = True
         self.suppress_autohide(True)
+        # Глобальные сочетания снимаем совсем, а не проверяем флаг в колбэке:
+        # так нажатие физически ни к чему не приводит.
+        self.suspend_hotkey()
+        if self.spotlight is not None:
+            self.spotlight.hide_spotlight()
 
         from ui.widgets import UpdateOverlay
 
@@ -1523,6 +1544,7 @@ class App(QWidget):
             self._update_worker = None
             self._updating = False
             self.suppress_autohide(False)
+            self.resume_hotkey()          # сочетания обратно
             if on_done is not None:
                 on_done(ok, err)
 
@@ -1593,6 +1615,8 @@ class App(QWidget):
             self._show_near_tray_now()
 
     def _show_near_tray_now(self):
+        if self.is_updating():
+            return
         self._shown = True
         fresh = not self.isVisible()
 
