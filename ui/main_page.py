@@ -494,11 +494,21 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     # ------------------------------------------------------------------ #
     #  Single-link ввод
     # ------------------------------------------------------------------ #
+    def _current_url(self):
+        """Ссылка из поля в КАНОНИЧЕСКОМ виде.
+
+        Сравнивать с _analyzing_url надо именно её: в поле остаётся адрес,
+        который вставил пользователь (например, зеркало xv-ru.com), а разбор шёл
+        по каноническому. Сырое сравнение не сходилось — карточка появлялась, а
+        кнопка Download оставалась серой до ручного выбора качества.
+        """
+        return downloader.canonical_url((self.url_edit.text() or "").strip())
+
     def _on_text_changed(self, text):
         if self._is_multi():
             return
         self.btn_cancel.setVisible(bool(text))
-        url = text.strip()
+        url = downloader.canonical_url(text.strip())
         self._pending_url = url or None
         if not url:
             self._reset_info()
@@ -521,7 +531,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             return
         # Зеркало переписываем на канонический домен СРАЗУ: дальше по этой
         # ссылке идут и кэш, и история, и скачивание (см. canonical_url).
-        url = downloader.canonical_url((self.url_edit.text() or "").strip())
+        url = self._current_url()
         # Эту ссылку уже разобрали и ждём Download — повторный анализ не нужен и
         # ВРЕДЕН: он заново заполняет селектор и сбрасывает выбранный формат на
         # «Best Quality» (пользователь выбрал Best Compatibility — а скачивалось
@@ -1113,9 +1123,8 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                                            for r in getattr(self, "_pl_rows", []))
         else:
             # Download активен только если ввод совпадает с проанализированной ссылкой.
-            cur = (self.url_edit.text() or "").strip()
             en = (self._state == "ready" and self._tools_ready
-                  and cur == self._analyzing_url)
+                  and self._current_url() == self._analyzing_url)
         self.btn_download.setEnabled(en)
 
     def retranslate(self):
