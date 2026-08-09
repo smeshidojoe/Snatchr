@@ -652,37 +652,50 @@ class FlashToast(QWidget):
             return "right"
         return "bottom"
 
-    def flash(self):
-        """Показать: выезд от края с панелью задач, пауза, уезд обратно.
+    def _anchor(self):
+        """Куда встать и с какой стороны выезжать: (x, y, край).
 
-        Направление задаёт панель: снизу — плашка выезжает ВВЕРХ, сверху —
-        ВНИЗ. Там же находится и трей, так что появление идёт оттуда, откуда
-        пользователь его ждёт.
+        Основной путь — тот же расчёт, что и у окна: он находит настоящий
+        прямоугольник значков трея через WinAPI и ставит плашку ровно под
+        иконкой. Иначе она вылезала в углу экрана, а значок мигал в другом
+        месте — взгляд метался между ними.
+
+        Запасной путь (панель не нашлась, чужая оболочка) — угол рабочей
+        области того монитора, где курсор.
         """
+        try:
+            x, y, edge = self._app.tray_anchor(self._w, self._h)
+            return int(x), int(y), edge
+        except Exception:
+            pass
         screen = (QGuiApplication.screenAt(QCursor.pos())
                   or QGuiApplication.primaryScreen())
-        avail = screen.availableGeometry()
+        a = screen.availableGeometry()
         m = self._app._s(14)
         edge = self._taskbar_edge(screen)
-        off = self._app._s(18)
+        x = a.left() + m if edge == "left" else a.right() - self._w - m
+        y = a.top() + m if edge == "top" else a.bottom() - self._h - m
+        return (max(a.left(), min(x, a.right() - self._w)),
+                max(a.top(), min(y, a.bottom() - self._h)), edge)
 
-        x = (avail.left() + m if edge == "left"
-             else avail.right() - self._w - m)
-        if edge == "top":
-            y = avail.top() + m
-            self._dy = -off              # стартуем выше и опускаемся
-        else:
-            y = avail.bottom() - self._h - m
-            self._dy = off               # стартуем ниже и поднимаемся
-        x = max(avail.left(), min(x, avail.right() - self._w))
-        y = max(avail.top(), min(y, avail.bottom() - self._h))
+    def flash(self):
+        """Показать: выезд из-под значка в трее, пауза, уезд обратно.
+
+        Направление задаёт край с панелью задач: снизу — плашка идёт ВВЕРХ,
+        сверху — ВНИЗ, у боковой панели — вбок. То есть всегда «из панели».
+        """
+        x, y, edge = self._anchor()
+        off = self._app._s(18)
+        self._dx = -off if edge == "right" else (off if edge == "left" else 0)
+        self._dy = -off if edge == "top" else (off if edge == "bottom" else 0)
         self._home = (x, y)
 
-        self.move(x, y + self._dy)
+        self.move(x + self._dx, y + self._dy)
         self.show()
         self.raise_()
         anim.animate(self, 1.0, 0.0, self.IN_MS,
-                     lambda t: self.move(x, int(y + self._dy * t)),
+                     lambda t: self.move(int(x + self._dx * t),
+                                         int(y + self._dy * t)),
                      easing=QEasingCurve.OutCubic, attr="_slide_in")
         anim.fade(self, 0.0, 1.0, self.IN_MS)
         QTimer.singleShot(self.IN_MS + self.HOLD_MS, self._hide_away)
@@ -693,9 +706,10 @@ class FlashToast(QWidget):
             x, y = getattr(self, "_home", (self.x(), self.y()))
         except RuntimeError:
             return
+        dx = getattr(self, "_dx", 0)
         dy = getattr(self, "_dy", self._app._s(18))
         anim.animate(self, 0.0, 1.0, self.OUT_MS,
-                     lambda t: self.move(x, int(y + dy * t)),
+                     lambda t: self.move(int(x + dx * t), int(y + dy * t)),
                      easing=QEasingCurve.InCubic, attr="_slide_out")
         anim.fade(self, 1.0, 0.0, self.OUT_MS, on_finished=self.close)
 

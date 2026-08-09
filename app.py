@@ -1086,6 +1086,11 @@ class App(QWidget):
             return False, msg
 
         url = downloader.canonical_url((url or "").strip())
+        # Ссылка из плеера тащит хвост плейлиста («watch?v=ID&list=…»). Для
+        # ФОНОВОЙ загрузки выбирать не из чего, поэтому берём тот ролик, который
+        # человек видел на экране. В окне ссылка остаётся как есть — там плейлист
+        # показывается целиком и записи можно выбрать.
+        url = downloader.single_video_url(url)
         if not (url.startswith("http://") or url.startswith("https://")):
             return fail(tr("Paste a video link first"))
         # Плейлист/канал/ссылка с посторонним текстом — в фон не льём.
@@ -1208,11 +1213,14 @@ class App(QWidget):
         self._clip_last = text
         if self._toast_active:
             return          # уже качается ролик по тосту — новый тост не показываем
-        # Строгая проверка: одна ссылка на ОДНО видео, без лишнего текста рядом,
-        # без плейлиста и без страницы канала/профиля (иначе тост не всплывает).
-        if self.tray is not None and downloader.is_downloadable_single(text):
+        # Строгая проверка: одна ссылка на ОДНО видео, без лишнего текста рядом
+        # и без страницы канала/профиля. Хвост плейлиста при этом не помеха —
+        # скачается тот ролик, на который ссылка и ведёт (см. single_video_url),
+        # поэтому проверяем уже обрезанный адрес.
+        single = downloader.single_video_url(downloader.canonical_url(text))
+        if self.tray is not None and downloader.is_downloadable_single(single):
             from core.i18n import tr
-            self.tray.toast_download(text, tr("Download this?"))
+            self.tray.toast_download(single, tr("Download this?"))
 
     def on_toast_clicked(self, url):
         """Клик по тосту «Скачать это?» — фоновая загрузка с приоритетом (managed=
@@ -1794,7 +1802,18 @@ class App(QWidget):
         super().mouseReleaseEvent(event)
 
     def _compute_tray_pos(self):
-        w, h = self.WIN_W, self.WIN_H
+        """Позиция ОКНА у трея. Запоминает край панели для анимаций."""
+        x, y, edge = self.tray_anchor(self.WIN_W, self.WIN_H)
+        self._tray_edge = edge
+        return x, y
+
+    def tray_anchor(self, w, h):
+        """Куда поставить окно размера w×h, чтобы оно вышло из значка в трее.
+
+        Возвращает (x, y, край_панели). Пользуется не только окно: плашка
+        уведомления должна появляться там же, иначе она вылезает в углу экрана,
+        а значок мигает совсем в другом месте.
+        """
         screen = QGuiApplication.primaryScreen().geometry()
         sw, sh = screen.width(), screen.height()
 
@@ -1826,8 +1845,6 @@ class App(QWidget):
         else:
             position = "left" if tb_left < sw // 2 else "right"
 
-        self._tray_edge = position   # для направления анимаций/роста высоты
-
         if position == "bottom":
             x = tray_cx - w // 2
             y = tb_top - h - margin
@@ -1844,4 +1861,4 @@ class App(QWidget):
         x = max(margin, min(x, sw - w - margin))
         y = max(margin, min(y, sh - h - margin))
 
-        return x, y
+        return x, y, position

@@ -1089,6 +1089,28 @@ def should_convert(option, url, settings):
             and _picks_vp9(o))
 
 
+def convert_needed(option, url, settings):
+    """Нужна ли конвертация — решение ПОСЛЕ загрузки.
+
+    От should_convert отличается одним: учитывает поздний флаг `vp9_late`.
+    Загрузка без анализа (Paste/Toast/сочетание/поле Spotlight) стартует, не
+    зная форматов, а настоящая высота приходит из метаданных уже на ходу (см.
+    Spotlight._late_convert). Подменять для этого сам `vp9` нельзя: от него
+    зависит `_merge_ext`, а контейнер выбран ещё на старте — после подмены
+    _scan_job_output искал бы файл с другим расширением.
+    """
+    o = option or {}
+    late = o.get("vp9_late")
+    if late is None:
+        return should_convert(o, url, settings)
+    return (bool(settings.get("convert_yt"))
+            and is_youtube(url)
+            and not o.get("mp3")
+            and not o.get("audio")
+            and not o.get("thumbnail")
+            and bool(late))
+
+
 def probe_flat(url, timeout=90):
     """Быстрый разбор плейлиста (--flat-playlist): только список записей."""
     args = [tools.YTDLP_EXE, "-J", "--flat-playlist", "--no-warnings", url]
@@ -1459,6 +1481,25 @@ _YT_ID_RE = re.compile(
 def _youtube_id(url):
     m = _YT_ID_RE.search(url or "")
     return m.group(1) if m else ""
+
+
+def single_video_url(url):
+    """Ссылка на ОДИН ролик: у YouTube отбрасываем хвост плейлиста.
+
+    Скопированная из плеера ссылка обычно тащит за собой список
+    («watch?v=ID&list=PL…&index=7»). В окне это уместно — там показывается весь
+    плейлист и можно выбрать записи. Для фоновой загрузки по сочетанию выбирать
+    не из чего: раньше такая ссылка просто отвергалась как неподдерживаемая.
+    Берём тот ролик, который человек и видел на экране.
+
+    Ссылку без идентификатора (чистый плейлист, канал) не трогаем — брать
+    оттуда нечего, и отказ остаётся честным.
+    """
+    u = str(url or "").strip()
+    if not is_youtube(u):
+        return u
+    vid = _youtube_id(u)
+    return ("https://www.youtube.com/watch?v=" + vid) if vid else u
 
 
 # Ключи сайтов для автовставки ссылки при открытии окна (см. settings_page).
@@ -1890,7 +1931,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     conv_failed = False
     if (ok and dest and not hooks.is_stopped() and not section_fallback
             and not ember_used and not hls_used
-            and should_convert(option, url, settings)):
+            and convert_needed(option, url, settings)):
         dest, conv_failed = _convert_result(dest, hooks, log)
 
     # Отмена задания или конвертации -> удаляем всю временную папку.

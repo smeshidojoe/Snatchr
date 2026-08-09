@@ -389,6 +389,37 @@ class Spotlight(QWidget):
     def _on_mode_change(self, mode):
         self._mode = mode
 
+    @staticmethod
+    def _no_analysis(option):
+        """Копия варианта для загрузки БЕЗ анализа форматов.
+
+        Без ключа downloader._picks_vp9 отвечал «считаем VP9»: файл склеивался
+        в MKV, полоса резервировала половину под конвертацию, а после загрузки
+        шёл лишний проход ремукса — хотя до 1080p YouTube всегда отдаёт H.264,
+        и конвертировать нечего. Теперь ничего не планируем (MP4, полоса целиком
+        под загрузку), а решение принимаем позже — по высоте из метаданных,
+        см. _late_convert."""
+        o = option or {}
+        if o.get("mp3") or o.get("audio") or o.get("thumbnail"):
+            return o
+        return dict(o, key="best", vp9=False)
+
+    def _late_convert(self, dl_id, option, height):
+        """Пришла высота из метаданных: выше 1080p H.264 у YouTube нет, значит
+        приедет VP9/AV1 и конвертация нужна. Ставим поздний флаг — run_job
+        прочитает его уже после загрузки (downloader.convert_needed). Контейнер
+        и шкала прогресса выбраны на старте и не меняются."""
+        d = self._dls.get(dl_id)
+        if d is None or not height or height <= 1080:
+            return
+        # Все остальные условия (галочка, YouTube, не аудио) — те же, что у
+        # планового решения; спрашиваем их у downloader, чтобы не дублировать.
+        if not downloader.should_convert(dict(option, vp9=True), d["url"],
+                                         self.app.settings):
+            return
+        option["vp9_late"] = True
+        d["convert"] = True
+
     def _option_for(self):
         """Вариант формата по текущему переключателю Video/Audio."""
         if self._mode == "audio":
@@ -431,7 +462,7 @@ class Spotlight(QWidget):
             # без бинарников — открываем основное окно (там докачка)
             self.app.show_near_tray()
             return
-        option = self._option_for()         # Video / Audio по переключателю
+        option = self._no_analysis(self._option_for())   # Video / Audio по переключателю
         convert = downloader.should_convert(option, url, self.app.settings)
 
         # Сразу помещаем «файл» в историю как строку-прогресс (без кнопок).
@@ -444,7 +475,7 @@ class Spotlight(QWidget):
         self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
                             "copy": False, "announce": False, "managed": False,
                             "title": None, "uploader": None,
-                            "thumb": self._fetch_preview(url, row, dl_id)}
+                            "thumb": self._fetch_preview(url, row, dl_id, option)}
         self._sched.submit(dl_id, option, url, None, managed=False)
         self.app.mirror_start("spotlight", dl_id, entry)
         self._update_tray_ring()         # запустить спиннер в трее
@@ -469,8 +500,9 @@ class Spotlight(QWidget):
         if audio:
             option = {"label": "Best Quality", "fmt": "ba/b", "mp3": True}
         else:
-            option = {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT,
-                      "sort": downloader.BEST_VIDEO_SORT, "mp3": False}
+            option = self._no_analysis(
+                {"label": "Best Quality", "fmt": downloader.BEST_VIDEO_FMT,
+                 "sort": downloader.BEST_VIDEO_SORT, "mp3": False})
         convert = downloader.should_convert(option, url, self.app.settings)
         entry = {"id": uuid.uuid4().hex[:12], "url": url,
                  "host": history.host_label(url), "title": "", "path": None,
@@ -480,7 +512,7 @@ class Spotlight(QWidget):
         self._dls[dl_id] = {"row": row, "frac": 0.0, "convert": convert, "url": url,
                             "copy": bool(copy_on_done), "announce": bool(announce),
                             "managed": bool(managed), "title": None, "uploader": None,
-                            "thumb": self._fetch_preview(url, row, dl_id)}
+                            "thumb": self._fetch_preview(url, row, dl_id, option)}
         self._sched.submit(dl_id, option, url, None, managed=bool(managed))
         self.app.mirror_start("spotlight", dl_id, entry)
         # Toast-загрузка: если сейчас нет других активных — детерминированное кольцо
@@ -492,13 +524,15 @@ class Spotlight(QWidget):
         self._update_tray_ring()
         return True
 
-    def _fetch_preview(self, url, row, dl_id=None):
+    def _fetch_preview(self, url, row, dl_id=None, option=None):
         """Тянет обложку+название+автора через yt-dlp; показывает в строке сразу,
-        обновляет метаданные загрузки и зеркалит их в другое окно."""
+        обновляет метаданные загрузки и зеркалит их в другое окно. Заодно по
+        высоте решает судьбу конвертации, если на старте она была неизвестна
+        (option задан) — см. _late_convert."""
         from core.workers import SpotlightThumbWorker
-        tw = SpotlightThumbWorker(url, self)
+        tw = SpotlightThumbWorker(url, self.app.settings, self)
 
-        def on_done(data, title, uploader, height, fps, r=row, i=dl_id):
+        def on_done(data, title, uploader, height, fps, r=row, i=dl_id, o=option):
             try:
                 if data:
                     pm = QPixmap()
@@ -524,6 +558,8 @@ class Spotlight(QWidget):
                         d["title"] = title
                     if uploader:
                         d["uploader"] = uploader
+                if o is not None:
+                    self._late_convert(i, o, height)
                 self.app.mirror_meta("spotlight", i, data, title, uploader,
                                      height, fps)
         tw.done.connect(on_done)

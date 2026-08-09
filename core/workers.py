@@ -421,32 +421,49 @@ class SpotlightThumbWorker(PooledWorker):
     нормальные данные (а не URL/площадку) и превью. Ошибки глушим."""
     done = Signal(bytes, str, str, int, int)   # thumb, title, uploader, height, fps
 
-    def __init__(self, url, parent=None):
+    def __init__(self, url, settings=None, parent=None):
         super().__init__(parent)
         self._url = url
+        self._settings = settings or {}
+
+    def _read_meta(self, cookies):
+        """Один запуск yt-dlp: возвращает строки вывода (пустой список — не вышло)."""
+        # --print пишет в stdout в системной кодировке (frozen yt-dlp игнорирует
+        # PYTHONUTF8) -> кириллица приходит как «крякозябры». --print-to-file
+        # пишет файл в UTF-8, читаем его utf-8 — заголовок корректный.
+        import tempfile
+        fd, pf = tempfile.mkstemp(suffix=".txt", prefix="snatchr_meta_")
+        os.close(fd)
+        args = [tools.YTDLP_EXE, "--no-warnings", "--no-playlist"]
+        args += list(cookies or [])
+        args += ["--print-to-file",
+                 "%(thumbnail)s\n%(title)s\n%(uploader)s\n"
+                 "%(height)s\n%(fps)s", pf,
+                 "--skip-download", self._url]
+        try:
+            tools.run(args, timeout=40)
+            with open(pf, encoding="utf-8", errors="replace") as f:
+                return f.read().strip().splitlines()
+        finally:
+            downloader._del_cookie_copy(args)   # одноразовая копия кук
+            try:
+                os.remove(pf)
+            except OSError:
+                pass
 
     def work(self):
         import urllib.request        # http.client+email тяжёлые (~70 мс) — грузим по нужде
         try:
-            # --print пишет в stdout в системной кодировке (frozen yt-dlp игнорирует
-            # PYTHONUTF8) -> кириллица приходит как «крякозябры». --print-to-file
-            # пишет файл в UTF-8, читаем его utf-8 — заголовок корректный.
-            import tempfile
-            fd, pf = tempfile.mkstemp(suffix=".txt", prefix="snatchr_meta_")
-            os.close(fd)
-            try:
-                tools.run([tools.YTDLP_EXE, "--no-warnings", "--no-playlist",
-                           "--print-to-file",
-                           "%(thumbnail)s\n%(title)s\n%(uploader)s\n"
-                           "%(height)s\n%(fps)s", pf,
-                           "--skip-download", self._url], timeout=40)
-                with open(pf, encoding="utf-8", errors="replace") as f:
-                    out = f.read().strip().splitlines()
-            finally:
-                try:
-                    os.remove(pf)
-                except OSError:
-                    pass
+            # С куками: без них видео с ограничением (возраст, приватность) не
+            # отдаёт ни названия, ни обложки, ни высоты — строка загрузки
+            # оставалась с голым URL, а решение о конвертации принять было не по
+            # чему (см. Spotlight._late_convert).
+            ck = downloader.cookie_args(self._settings, self._url)
+            out = self._read_meta(ck)
+            # Куки могут и помешать: залоченная БД Chrome, протухшая сессия. Тогда
+            # yt-dlp падает целиком и файл пуст — повторяем анонимно, как раньше.
+            if ck and not any(v.strip() for v in out[:3]):
+                out = self._read_meta(None)
 
             def _val(i):
                 v = out[i].strip() if len(out) > i else ""
