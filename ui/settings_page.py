@@ -387,6 +387,8 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self._section_title(tr("Hotkey Starts Download"), pad, y)
         y += s(18)
         self._build_hk_download_row(pad, y, card_w)
+        y += s(30) + s(4)
+        self._build_hk_notify_row(pad, y, card_w)
         y += s(30) + s(10)
         self._build_hk_combo_row(tr("Download Video"), "hk_download_video",
                                  "ctrl+alt+v", self.app.set_hk_download_video,
@@ -579,7 +581,7 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
 
     def _build_hk_download_row(self, x, y, card_w):
         s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Enable"), fonts.font(s(12), "Regular"),
+        cb = self.themed(CheckBox(self._host, tr("Enable Feature"), fonts.font(s(12), "Regular"),
                                   self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
                          text_color="text", off_color="cb_off", on_color="cb_on")
         cb.setChecked(bool(self.settings.get("hk_download_enabled", False)))
@@ -587,6 +589,22 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         cb.setToolTip(tr(self.HK_DOWNLOAD_TIP))
         cb.toggled.connect(self.app.set_hk_download_enabled)
         self._checks["hk_download_enabled"] = cb
+
+    HK_NOTIFY_TIP = ("Show a short «Download Started» plate in the corner\n"
+                     "when a shortcut fires. Without it the only sign that\n"
+                     "the download began is the spinning tray icon.")
+
+    def _build_hk_notify_row(self, x, y, card_w):
+        s = self.app._s
+        cb = self.themed(CheckBox(self._host, tr("Show notification"),
+                                  fonts.font(s(12), "Regular"),
+                                  self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
+                         text_color="text", off_color="cb_off", on_color="cb_on")
+        cb.setChecked(bool(self.settings.get("hk_download_notify", True)))
+        cb.setGeometry(x, y, card_w, s(30))
+        cb.setToolTip(tr(self.HK_NOTIFY_TIP))
+        cb.toggled.connect(self.app.set_hk_download_notify)
+        self._checks["hk_download_notify"] = cb
 
     def _build_hk_combo_row(self, title, key, default, on_change, x, y, card_w):
         """Строка со сменой сочетания: подпись слева, поле захвата справа.

@@ -82,7 +82,15 @@ _RU = {
     "Couldn't delete — file in use": "Не удалось удалить — файл занят",
     "Confirm": "Подтвердить",
     "Hotkey Starts Download": "Скачивание по сочетанию",
-    "Enable": "Включить",
+    "Enable Feature": "Включить функцию",
+    "Show notification": "Показывать уведомление",
+    "Download Started": "Загрузка начата",
+    ("Show a short «Download Started» plate in the corner\n"
+     "when a shortcut fires. Without it the only sign that\n"
+     "the download began is the spinning tray icon."):
+        ("Показывать в углу короткую плашку «Загрузка начата»\n"
+         "при нажатии сочетания. Без неё единственный признак\n"
+         "начавшейся загрузки — вращение значка в трее."),
     "Download Video": "Скачать видео",
     "Download Audio": "Скачать аудио",
     ("Download the link from the clipboard by pressing a\n"

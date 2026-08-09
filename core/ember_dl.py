@@ -53,12 +53,23 @@ def can_handle(url):
         return False
 
 
+# Площадки, где Ember идёт ПЕРЕД yt-dlp. Список, а не набор условий: добавить
+# сервис — дописать строку.
+#   twitter/x — yt-dlp там регулярно не справляется;
+#   iwara.tv  — yt-dlp не поддерживает её вовсе.
+_PRIMARY_HOSTS = ("twitter.com", "x.com", "iwara.tv")
+
+
 def is_primary(url):
-    """Ссылка из сервиса, где Ember идёт ПЕРЕД yt-dlp (Twitter/X)."""
+    """Ссылка из сервиса, где Ember идёт ПЕРЕД yt-dlp."""
     if not can_handle(url):
         return False
-    low = (url or "").lower()
-    return ("twitter.com" in low or "//x.com" in low or ".x.com" in low)
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url or "").netloc or "").split("@")[-1].split(":")[0].lower()
+    except Exception:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _PRIMARY_HOSTS)
 
 
 def _browser(settings):

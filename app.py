@@ -926,14 +926,30 @@ class App(QWidget):
         необъяснимо, тем более что вся обратная связь — значок в трее.
         Негодную ссылку всё равно отсеет проверка ниже по пути.
         """
+        from core.i18n import tr
         if self.is_updating() or not self.settings.get("hk_download_enabled", False):
             return
         try:
             text = QApplication.clipboard().text() or ""
         except Exception:
             text = ""
-        self._bg_download(text.strip(), copy_on_done=False, announce=False,
-                          managed=True, audio=bool(audio))
+        # Когда плашки включены, они и объясняют исход — системное уведомление
+        # тогда не нужно, иначе об одном отказе сообщалось бы дважды.
+        plates = (self.settings.get("hk_download_notify", True)
+                  and self.tray is not None)
+        ok, why = self._bg_download(text.strip(), copy_on_done=False,
+                                    announce=False, managed=True,
+                                    audio=bool(audio), notify=not plates)
+        if not plates:
+            return
+        if ok:
+            self.tray.flash(tr("Download Started"))
+        elif why:
+            self.tray.flash(why, error=True)
+
+    def set_hk_download_notify(self, on):
+        self.settings["hk_download_notify"] = bool(on)
+        self.save_settings()
 
     def set_hk_download_enabled(self, on):
         self.settings["hk_download_enabled"] = bool(on)
@@ -1048,31 +1064,41 @@ class App(QWidget):
         self._bg_download(url, copy_on_done=False, announce=False, managed=True)
 
     def _bg_download(self, url, copy_on_done, announce=False, managed=True,
-                     audio=False):
-        if self.is_updating():
-            return
-        """Общий путь фоновой загрузки (Paste/Toast): кладёт строку-прогресс в
-        историю Spotlight (окно можно не открывать). copy_on_done — скопировать
-        файл в буфер по завершении (для Toast, если включено в настройках)."""
+                     audio=False, notify=True):
+        """Общий путь фоновой загрузки (Paste/Toast/горячая клавиша): кладёт
+        строку-прогресс в историю Spotlight (окно можно не открывать).
+
+        copy_on_done — скопировать файл в буфер по завершении (для Toast).
+        notify=False — не показывать системное уведомление об отказе: вызывающий
+        покажет причину сам (плашкой), и два сообщения об одном и том же были бы
+        лишними.
+
+        Возвращает (ok, причина). Причина уже переведена и пуста при успехе.
+        """
         from core.i18n import tr
         from core import downloader, tools
+        if self.is_updating():
+            return False, ""
+
+        def fail(msg):
+            if notify and msg and self.tray is not None:
+                self.tray.notify(msg)
+            return False, msg
+
         url = downloader.canonical_url((url or "").strip())
         if not (url.startswith("http://") or url.startswith("https://")):
-            if self.tray is not None:
-                self.tray.notify(tr("Paste a video link first"))
-            return
+            return fail(tr("Paste a video link first"))
         # Плейлист/канал/ссылка с посторонним текстом — в фон не льём.
         if not downloader.is_downloadable_single(url):
-            if self.tray is not None:
-                self.tray.notify(tr("Link not supported."))
-            return
+            return fail(tr("Link not supported."))
         # Без бинарников фоновая загрузка невозможна — открываем окно (там докачка).
         if not (tools.have_ytdlp() and tools.have_ffmpeg()):
             self.show_near_tray()
-            return
-        self._ensure_spotlight().start_bg_download(
+            return False, ""          # окно уже открыто, объяснять больше нечем
+        ok = bool(self._ensure_spotlight().start_bg_download(
             url, copy_on_done=copy_on_done, announce=announce, managed=managed,
-            audio=audio)
+            audio=audio))
+        return (True, "") if ok else fail(tr("Download failed."))
 
     # ------------------------------------------------------------------ #
     #  Мониторинг буфера обмена

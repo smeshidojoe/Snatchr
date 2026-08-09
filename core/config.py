@@ -37,6 +37,7 @@ def defaults():
         "hk_download_enabled": False,     # включён ли этот способ
         "hk_download_video": "ctrl+alt+v",  # сочетание: скачать видео
         "hk_download_audio": "ctrl+alt+a",  # сочетание: скачать аудио
+        "hk_download_notify": True,       # плашка «Download Started» по нажатию
         "update_notify":     True,        # уведомлять тостом о новых версиях
         "update_dismissed_version": "",   # версия, тост которой уже закрыли
         "toast_copy_file":   True,        # копировать скачанный файл в буфер (Toast)

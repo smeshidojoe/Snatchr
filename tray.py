@@ -578,6 +578,129 @@ class TrayHoldWatcher:
 
 
 # ------------------------------------------------------------------ #
+#  Короткая плашка-подтверждение (без действий)
+# ------------------------------------------------------------------ #
+class FlashToast(QWidget):
+    """Выезжает из угла, висит секунду и уезжает обратно.
+
+    От Toast отличается намеренно: там карточка с заголовком, подзаголовком,
+    крестиком и действием по клику, здесь — только факт («загрузка пошла»).
+    Нажимать не на что, поэтому обычный курсор, никакого перехвата фокуса и
+    никакого таймера отмены — плашка живёт ровно отведённое время.
+
+    Угол берём от availableGeometry() монитора под курсором: эта область уже
+    исключает панель задач, где бы она ни стояла, так что отдельная возня с её
+    положением не нужна.
+    """
+
+    HOLD_MS = 1000        # сколько висит на месте
+    IN_MS   = 200
+    OUT_MS  = 180
+
+    def __init__(self, app, text, error=False):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
+                         | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+                         | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._app = app
+        s = app._s
+        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._bg = QColor(pal["card_bg"])
+        # У плашки ошибки — своя рамка и цвет надписи: отличать успех от отказа
+        # надо мгновенно, а читать текст на бегу человек не станет.
+        self._border = QColor(pal["error"] if error else pal["border"])
+        self._text_col = QColor(pal["error"] if error else pal["title"])
+        self._border_w = 2 if error else 1
+        self._radius = s(12)
+        self._text = text
+        self._font = fonts.font(s(12), "Semibold")
+        pad = s(18)
+        w = QFontMetrics(self._font).horizontalAdvance(text) + 2 * pad
+        self._w, self._h = max(s(150), w), s(44)
+        self.resize(self._w, self._h)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        bw = self._border_w
+        r = QRectF(bw / 2.0, bw / 2.0, self._w - bw, self._h - bw)
+        p.setPen(QPen(self._border, bw))
+        p.setBrush(self._bg)
+        p.drawRoundedRect(r, self._radius, self._radius)
+        p.setFont(self._font)
+        p.setPen(self._text_col)
+        p.drawText(r, Qt.AlignCenter, self._text)
+        p.end()
+
+    @staticmethod
+    def _taskbar_edge(screen):
+        """С какой стороны экрана панель задач: 'top'|'bottom'|'left'|'right'.
+
+        Считаем по разнице полной и рабочей области. Если панель скрывается
+        автоматически, разницы нет — тогда ведём себя как при нижней панели.
+        """
+        g, a = screen.geometry(), screen.availableGeometry()
+        if a.top() > g.top():
+            return "top"
+        if a.bottom() < g.bottom():
+            return "bottom"
+        if a.left() > g.left():
+            return "left"
+        if a.right() < g.right():
+            return "right"
+        return "bottom"
+
+    def flash(self):
+        """Показать: выезд от края с панелью задач, пауза, уезд обратно.
+
+        Направление задаёт панель: снизу — плашка выезжает ВВЕРХ, сверху —
+        ВНИЗ. Там же находится и трей, так что появление идёт оттуда, откуда
+        пользователь его ждёт.
+        """
+        screen = (QGuiApplication.screenAt(QCursor.pos())
+                  or QGuiApplication.primaryScreen())
+        avail = screen.availableGeometry()
+        m = self._app._s(14)
+        edge = self._taskbar_edge(screen)
+        off = self._app._s(18)
+
+        x = (avail.left() + m if edge == "left"
+             else avail.right() - self._w - m)
+        if edge == "top":
+            y = avail.top() + m
+            self._dy = -off              # стартуем выше и опускаемся
+        else:
+            y = avail.bottom() - self._h - m
+            self._dy = off               # стартуем ниже и поднимаемся
+        x = max(avail.left(), min(x, avail.right() - self._w))
+        y = max(avail.top(), min(y, avail.bottom() - self._h))
+        self._home = (x, y)
+
+        self.move(x, y + self._dy)
+        self.show()
+        self.raise_()
+        anim.animate(self, 1.0, 0.0, self.IN_MS,
+                     lambda t: self.move(x, int(y + self._dy * t)),
+                     easing=QEasingCurve.OutCubic, attr="_slide_in")
+        anim.fade(self, 0.0, 1.0, self.IN_MS)
+        QTimer.singleShot(self.IN_MS + self.HOLD_MS, self._hide_away)
+
+    def _hide_away(self):
+        """Уезжает туда же, откуда пришла."""
+        try:
+            x, y = getattr(self, "_home", (self.x(), self.y()))
+        except RuntimeError:
+            return
+        dy = getattr(self, "_dy", self._app._s(18))
+        anim.animate(self, 0.0, 1.0, self.OUT_MS,
+                     lambda t: self.move(x, int(y + dy * t)),
+                     easing=QEasingCurve.InCubic, attr="_slide_out")
+        anim.fade(self, 1.0, 0.0, self.OUT_MS, on_finished=self.close)
+
+
+# ------------------------------------------------------------------ #
 #  Кастомный тост у трея (надёжнее нативного балуна Windows)
 # ------------------------------------------------------------------ #
 class Toast(QWidget):
@@ -795,6 +918,19 @@ class TrayIcon:
         self._toast = Toast(self.app, title, subtitle, on_click,
                             sticky=sticky, on_dismiss=on_dismiss)
         self._toast.show_at(position)
+
+    def flash(self, text, error=False):
+        """Короткая плашка (см. FlashToast). Предыдущую убираем."""
+        if self.app.is_updating():
+            return
+        old = getattr(self, "_flash", None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:
+                pass
+        self._flash = FlashToast(self.app, text, error=error)
+        self._flash.flash()
 
     def toast_download(self, url, title):
         """Тост «Скачать это?»: клик — фоновая загрузка url, ✕ — закрыть.

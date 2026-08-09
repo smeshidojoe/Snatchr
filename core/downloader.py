@@ -1754,7 +1754,8 @@ def run_job(option, url, settings, hooks, title=None, info=None):
             return False, "", log
         hls_used = ok
 
-    # Twitter/X — Ember ОСНОВНОЙ движок (yt-dlp там регулярно не справляется).
+    # Площадки, где Ember основной (см. ember_dl._PRIMARY_HOSTS): Twitter/X —
+    # yt-dlp там регулярно не справляется, iwara.tv — не поддерживает вовсе.
     from core import ember_dl
     if not ok and ember_dl.is_primary(url) and not hooks.is_stopped():
         ok, dest = _try_ember(url, option, settings, hooks, log, job_dir, title)
