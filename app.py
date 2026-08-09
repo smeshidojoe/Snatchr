@@ -280,13 +280,35 @@ class App(QWidget):
             setattr(self, attr, None)
 
         # Spotlight кэширует надписи при создании — пересоздадим при показе.
-        if self.spotlight is not None:
-            self.spotlight.hide_spotlight()
-            self.spotlight.deleteLater()
-            self.spotlight = None
+        self._drop_spotlight()
 
         # Меню трея строится заново при каждом показе — трогать его не нужно.
         self.update()
+
+    def _drop_spotlight(self):
+        """Снести Spotlight, чтобы он пересоздался на новом языке.
+
+        Только язык: от него зависит ширина надписей, одной перекраской не
+        обойтись. Тема идёт своим путём — Spotlight.apply_theme, без разрушения.
+
+        Пока в нём идут загрузки, удалять его НЕЛЬЗЯ. Spotlight владеет
+        планировщиком, планировщик — потоками загрузки, а deleteLater уносит всё
+        поддерево разом. Qt, разрушая живой QThread, убивает процесс на месте:
+        код 0xC0000409, без трейса, без записи в лог — снаружи это выглядело как
+        «программа вылетела», причём настройка успевала сохраниться. Занятый
+        Spotlight только помечаем: его сменят при первом показе после того, как
+        загрузки закончатся (_ensure_spotlight_now). До тех пор он остаётся на
+        старом языке — это единственное последствие.
+        """
+        sp = self.spotlight
+        if sp is None:
+            return
+        sp.hide_spotlight()
+        if sp.busy():
+            sp.mark_stale()
+            return
+        sp.deleteLater()
+        self.spotlight = None
 
     def apply_theme_live(self):
         """
@@ -297,11 +319,11 @@ class App(QWidget):
         """
         pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
         self._load_window_colors()
-        # Spotlight кэширует палитру при создании — пересоздадим при показе.
+        # Spotlight перекрашиваем на месте: пересоздавать его во время загрузок
+        # нельзя (см. _drop_spotlight), да и незачем — строки истории и
+        # положение прокрутки при перекраске уцелевают.
         if self.spotlight is not None:
-            self.spotlight.hide_spotlight()
-            self.spotlight.deleteLater()
-            self.spotlight = None
+            self.spotlight.apply_theme(pal)
         self.bottom_bar.apply_theme(pal)
         self.main_page.apply_theme(pal)
         for page in self._built_pages():        # только уже созданные
@@ -975,6 +997,14 @@ class App(QWidget):
         """Создаёт (но не показывает) окно Spotlight, если его ещё нет. Нужно для
         фоновых загрузок (Paste/Toast), которые кладут строку в историю, даже
         когда Spotlight не открывали."""
+        # Ждал пересоздания под новую тему/язык и наконец освободился (см.
+        # _drop_spotlight) — момент перед показом самый удобный: старый уносим,
+        # новый соберётся уже с нужной палитрой. Пока загрузки идут, продолжаем
+        # пользоваться прежним: он владеет их потоками и строками истории.
+        sp = self.spotlight
+        if sp is not None and sp.is_stale() and not sp.busy():
+            sp.deleteLater()
+            self.spotlight = None
         if self.spotlight is None:
             from ui.spotlight import Spotlight
             self.spotlight = Spotlight(self)

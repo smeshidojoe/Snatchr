@@ -37,9 +37,6 @@ class SearchField(QWidget):
         super().__init__(parent)
         self.app = app
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
-        self._bg = QColor(pal["field_bg"])
-        self._border = QColor(pal["border"])
         self._radius = s(18)
         self._glow = QColor(0, 0, 0, 0)     # анимируемая подсветка краёв
         self._glow_t = 0.0
@@ -47,9 +44,6 @@ class SearchField(QWidget):
         self._edit = QLineEdit(self)
         self._edit.setPlaceholderText(tr("Paste URL Here"))
         self._edit.setFrame(False)
-        self._edit.setStyleSheet(
-            f"QLineEdit {{ background: transparent; border: none; color: {pal['title']};"
-            f" selection-background-color: {pal['accent']}; }}")
         self._edit.setFont(fonts.font(s(16), "Regular"))
         self._edit.returnPressed.connect(lambda: on_submit(self._edit.text()))
         self._deb = QTimer(self)
@@ -57,6 +51,20 @@ class SearchField(QWidget):
         self._deb.setInterval(600)
         self._deb.timeout.connect(lambda: on_debounce(self._edit.text()))
         self._edit.textEdited.connect(lambda _t: self._deb.start())
+        self.apply_theme()
+
+    def apply_theme(self, pal=None):
+        """Перечитывает цвета поля. Отдельно от __init__, чтобы тему можно было
+        сменить, не пересоздавая Spotlight (см. Spotlight.apply_theme)."""
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._bg = QColor(pal["field_bg"])
+        self._border = QColor(pal["border"])
+        self._edit.setStyleSheet(
+            f"QLineEdit {{ background: transparent; border: none; color: {pal['title']};"
+            f" selection-background-color: {pal['accent']}; }}")
+        self.update()
 
     def edit(self):
         return self._edit
@@ -137,6 +145,7 @@ class Spotlight(QWidget):
         self._suppress_hide = False
         self._menu = None
         self._closing = False          # идёт анимация исчезновения окна
+        self._stale = False            # ждёт пересоздания под новую тему/язык
         self._tray_ring_on = False     # показываем ли кольцо в трее (скрытый спотлайт)
 
         pal0 = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
@@ -145,6 +154,8 @@ class Spotlight(QWidget):
             fonts.font(s(12), "Medium"), pal0["seg_bg"], pal0["seg_sel"],
             pal0["muted"], pal0["on_accent"], s(13))    # более круглые края
         self.seg_mode.changed.connect(self._on_mode_change)
+        self._seg_keys = {"bg_color": "seg_bg", "sel_color": "seg_sel",
+                          "text_color": "muted", "sel_text_color": "on_accent"}
 
         self.search = SearchField(app, self._on_submit, self._on_debounce, self)
         self.trim = TrimPanel(app, self)
@@ -162,14 +173,10 @@ class Spotlight(QWidget):
         self.history.moreClicked.connect(self._show_more_menu)
 
         # Всплывающая подсказка (напр., «плейлисты — через окно»).
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
         self._msg = QLabel("", self)
         self._msg.setFont(fonts.font(s(11), "Medium"))
         self._msg.setAlignment(Qt.AlignCenter)
-        self._msg.setStyleSheet(
-            f"QLabel {{ color: {pal['title']}; background: {pal['card_bg']};"
-            f" border: 1px solid {pal['border']}; border-radius: {s(10)}px;"
-            f" padding: {s(7)}px {s(14)}px; }}")
+        self._restyle_msg(pal0)
         self._msg.hide()
         self._msg_timer = QTimer(self)
         self._msg_timer.setSingleShot(True)
@@ -185,6 +192,34 @@ class Spotlight(QWidget):
         # «QThread: Destroyed while thread is still running»).
         QApplication.instance().aboutToQuit.connect(self.shutdown)
         self._relayout()
+
+    def _restyle_msg(self, pal):
+        s = self.app._s
+        self._msg.setStyleSheet(
+            f"QLabel {{ color: {pal['title']}; background: {pal['card_bg']};"
+            f" border: 1px solid {pal['border']}; border-radius: {s(10)}px;"
+            f" padding: {s(7)}px {s(14)}px; }}")
+
+    def apply_theme(self, pal=None):
+        """Перекрашивает Spotlight на месте, без пересоздания.
+
+        Пересоздать его нельзя, пока идут загрузки: он владеет их потоками, а
+        разрушение живого потока убивает процесс (см. app._drop_spotlight).
+        Поэтому тема меняется именно так — заодно уцелевают строки истории и
+        положение прокрутки.
+        """
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self.seg_mode.set_colors(**{arg: pal[key]
+                                    for arg, key in self._seg_keys.items()})
+        self._restyle_msg(pal)
+        for part in (self.search, self.history, self.trim, self.playlist):
+            try:
+                part.apply_theme(pal)
+            except RuntimeError:
+                pass                      # виджет уже удалён — пропускаем
+        self.update()
 
     def _notify(self, text):
         """Короткая всплывающая подсказка по центру, у верха истории."""
@@ -742,6 +777,21 @@ class Spotlight(QWidget):
         return out
 
     # --- кольцо в трее, пока спотлайт скрыт, а загрузка идёт ------------ #
+    def busy(self):
+        """Есть ли загрузки, которыми владеет ЭТОТ Spotlight (его планировщик).
+
+        Зеркала сюда не входят: их воркеры живут в окне, и на судьбу Spotlight
+        они не влияют."""
+        return bool(self._dls)
+
+    def is_stale(self):
+        return self._stale
+
+    def mark_stale(self):
+        """Тему/язык сменили, пока шли загрузки: пересоздать нас можно будет
+        только когда они закончатся (app._drop_spotlight объясняет, почему)."""
+        self._stale = True
+
     def _update_tray_ring(self):
         """Сообщаем координатору в app число своих активных загрузок. Спиннером в
         трее управляет app (суммарно по всем источникам)."""

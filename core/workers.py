@@ -21,6 +21,20 @@ _THUMB_POOL = QThreadPool()
 _THUMB_POOL.setMaxThreadCount(4)
 
 
+def _alive(obj):
+    """Жив ли ещё C++-объект воркера.
+
+    Воркер принадлежит виджету (напр. Spotlight), а тот может быть удалён прямо
+    во время работы задачи — при смене темы или языка. Тогда любой сигнал из
+    воркера бросает RuntimeError, и это НЕ поломка: результат просто некому
+    получать."""
+    try:
+        from shiboken6 import isValid
+        return isValid(obj)
+    except Exception:
+        return True          # не смогли спросить — считаем живым, как раньше
+
+
 class _PoolTask(QRunnable):
     """Обёртка задачи для пула: выполняет work() своего воркера."""
 
@@ -30,11 +44,16 @@ class _PoolTask(QRunnable):
 
     def run(self):
         w = self._worker
+        if not _alive(w):
+            return           # владельца снесли, пока задача ждала своей очереди
         try:
             w.work()
         except Exception:
             # Воркер обязан сам отдать пустой результат; сюда попадаем только
             # при поломке самого воркера — сообщаем в крэш-лог и не молчим.
+            # Исключение — исчезнувший владелец: там ломаться нечему.
+            if not _alive(w):
+                return
             try:
                 import sys
                 from core import crashlog

@@ -78,12 +78,18 @@ class _VolumeSlider(QWidget):
         self._v = max(0.0, min(1.0, value))
         self._drag = False
         self._hover = False
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self.apply_theme()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+
+    def apply_theme(self, pal=None):
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
         self._muted = QColor(pal["muted"])
         self._accent = QColor(pal["accent"])
         self._track = QColor(pal["sel_chip"])
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMouseTracking(True)
+        self.update()
 
     def value(self):
         return self._v
@@ -461,16 +467,22 @@ class _CtrlButton(QWidget):
         s = app._s
         self.setFixedSize(s(34), s(34))
         self.setCursor(Qt.PointingHandCursor)
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._pm = None
+        self.apply_theme()
+
+    def apply_theme(self, pal=None):
+        app, s = self.app, self.app._s
+        theme = app.settings.get("theme", themes.DEFAULT_THEME)
+        if pal is None:
+            pal = themes.palette(theme)
         self._fg = QColor(pal["text"])
         self._hover_bg = QColor(pal["sel_chip"]).lighter(140)
         self._accent_col = QColor(pal["accent"])
         # копирование — та же иконка, что в истории (copy.png), перекрашенная.
-        self._pm = None
-        if glyph == "copy":
+        if self._glyph == "copy":
             from core.icons import themed_pixmap
-            self._pm = themed_pixmap(app.settings.get("theme", themes.DEFAULT_THEME),
-                                     "copy.png", pal["text"], s(16))
+            self._pm = themed_pixmap(theme, "copy.png", pal["text"], s(16))
+        self.update()
 
     def set_glyph(self, g):
         self._glyph = g
@@ -556,9 +568,6 @@ class _ConfirmOverlay(QWidget):
         self.hide()
         s = app._s
         pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
-        self._card_bg = QColor(pal["field_bg"])
-        self._border = QColor(pal["border"])
-        self._title_col = QColor(pal["title"])
         self._title = ""
         self._on_yes = None
         self._card = QRectF()
@@ -570,6 +579,23 @@ class _ConfirmOverlay(QWidget):
             self, tr("Discard"), fonts.font(s(11), "Semibold"),
             pal["on_accent"], pal["on_accent"], self._yes,
             hover_bg=pal["accent_hover"], radius=s(7), base_bg=pal["accent"])
+        self.apply_theme(pal)
+
+    def apply_theme(self, pal=None):
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._card_bg = QColor(pal["field_bg"])
+        self._border = QColor(pal["border"])
+        self._title_col = QColor(pal["title"])
+        self._btn_cancel.set_colors(color=pal["muted"], hover_color=pal["text"],
+                                    hover_bg=pal["choose_bg_h"],
+                                    base_bg=pal["sel_chip"])
+        self._btn_yes.set_colors(color=pal["on_accent"],
+                                 hover_color=pal["on_accent"],
+                                 hover_bg=pal["accent_hover"],
+                                 base_bg=pal["accent"])
+        self.update()
 
     def ask(self, title, on_yes):
         self._title = title
@@ -686,17 +712,13 @@ class TrimPanel(QWidget):
 
         # In/Out — двигают край диапазона к плейхеду.
         from PySide6.QtWidgets import QPushButton
-        chip = QColor(pal["sel_chip"])
 
         def _mini(text, cb):
             b = QPushButton(text, self)
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.NoFocus)
             b.setFont(fonts.font(s(11), "Semibold"))
-            b.setStyleSheet(
-                "QPushButton { background: %s; border: none; border-radius: %dpx; "
-                "color: %s; } QPushButton:hover { background: %s; }"
-                % (chip.name(), s(7), pal["text"], chip.lighter(130).name()))
+            self._style_mini(b, pal)
             b.clicked.connect(cb)
             return b
         self._btn_in = _mini("In", self.set_in)
@@ -718,6 +740,33 @@ class TrimPanel(QWidget):
         self._time_lbl.setStyleSheet(f"color: {pal['muted']}; background: transparent;")
 
         self._confirm = _ConfirmOverlay(app, self)
+
+    def _style_mini(self, b, pal):
+        """Стиль кнопок In/Out (цвет живёт в таблице стилей, не в атрибуте)."""
+        chip = QColor(pal["sel_chip"])
+        b.setStyleSheet(
+            "QPushButton { background: %s; border: none; border-radius: %dpx; "
+            "color: %s; } QPushButton:hover { background: %s; }"
+            % (chip.name(), self.app._s(7), pal["text"], chip.lighter(130).name()))
+
+    def apply_theme(self, pal=None):
+        """Перекрашивает панель обрезки на месте (см. Spotlight.apply_theme).
+
+        Лента кадров и плейхед сюда не входят: их цвета от темы не зависят."""
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._bg = QColor(pal["card_bg"])
+        self._border = QColor(pal["border"])
+        self._muted = QColor(pal["muted"])
+        self._time_lbl.setStyleSheet(
+            f"color: {pal['muted']}; background: transparent;")
+        for b in (self._btn_in, self._btn_out):
+            self._style_mini(b, pal)
+        for w in (self._vol, self._btn_play, self._btn_copy, self._btn_save,
+                  self._confirm):
+            w.apply_theme(pal)
+        self.update()
 
     def set_in(self):
         b = self._bar

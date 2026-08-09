@@ -43,6 +43,38 @@ class PlaylistPanel(QWidget):
         self._btn.clicked.connect(self._on_download_click)
         self._header = None              # закреплённая шапка (вне скролла)
 
+    def apply_theme(self, pal=None):
+        """Перекрашивает панель на месте (см. Spotlight.apply_theme).
+
+        Строки и шапка живут только пока панель открыта, поэтому их красим
+        по факту наличия. Обложки роликов от темы не зависят."""
+        if pal is None:
+            pal = themes.palette(
+                self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._pal = pal          # им пользуется open_for при следующем открытии
+        self._bg = QColor(pal["card_bg"])
+        self._border = QColor(pal["border"])
+        self._list.set_colors(track_color=pal["field_bg"], handle_color=pal["muted"])
+        self._btn.set_colors(bg=pal["download_bg"], hover=pal["download_bg_hover"],
+                             fg=pal["on_accent"], disabled_bg=pal["disabled_bg"],
+                             disabled_text=pal["disabled_text"])
+        if self._header is not None:
+            try:
+                self._header.set_colors(
+                    title_color=pal["title"], action_color=pal["title"],
+                    action_hover=pal["muted"], count_color=pal["muted"])
+            except RuntimeError:
+                self._header = None
+        for r in list(self._rows):
+            try:
+                r.set_colors(title_color=pal["title"], text_color=pal["text"],
+                             muted_color=pal["muted"])
+                if r.cb is not None:
+                    r.cb.set_colors(off_color=pal["cb_off"], on_color=pal["cb_on"])
+            except RuntimeError:
+                pass
+        self.update()
+
     def target_height(self):
         return self.app._s(300)
 
