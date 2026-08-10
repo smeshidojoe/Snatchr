@@ -47,6 +47,12 @@ class HotkeyEdit(QWidget):
 
     changed = Signal(str)             # combo в формате keyboard ('ctrl+shift+d')
 
+    # F13–F24 на обычной клавиатуре отсутствуют — их шлют макропады и
+    # программируемые клавиатуры. Такие клавиши разрешаем назначать БЕЗ
+    # модификатора: отобрать чужое сочетание нечем (нажать их случайно тоже),
+    # а нажатие одной кнопкой — ровно то, ради чего макропад и держат.
+    _PAD_KEYS = frozenset(getattr(Qt, "Key_F%d" % n) for n in range(13, 25))
+
     def __init__(self, app, combo, parent, pal):
         super().__init__(parent)
         self.app = app
@@ -118,7 +124,7 @@ class HotkeyEdit(QWidget):
             parts.append("shift")
         if mods & Qt.MetaModifier:
             parts.append("windows")
-        if not parts:
+        if not parts and key not in self._PAD_KEYS:
             return                        # без модификатора глобальный хоткей опасен
         name = QKeySequence(key).toString().lower()
         if not name:
