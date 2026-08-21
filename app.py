@@ -692,10 +692,14 @@ class App(QWidget):
     # ------------------------------------------------------------------ #
     #  Обновление yt-dlp по требованию (кнопка в настройках).
     # ------------------------------------------------------------------ #
-    def start_ytdlp_update(self):
+    def start_ytdlp_update(self, on_done=None):
+        """on_done(ok, err) — чтобы вызывающий мог показать СБОЙ. Без него отказ
+        проходил незаметно: полоса всё равно доезжала до конца и оверлей гас,
+        как при успехе, а yt-dlp оставался старым."""
         from core.workers import UpdateYtdlpWorker
         ch = self.settings.get("ytdlp_channel", "stable")
-        self._show_overlay("Updating yt-dlp…", UpdateYtdlpWorker(ch, False, self))
+        self._show_overlay("Updating yt-dlp…", UpdateYtdlpWorker(ch, False, self),
+                           on_done)
 
     def set_ytdlp_channel(self, channel):
         """Переключить канал yt-dlp (stable/nightly) и сделать бинарь активным
@@ -707,9 +711,9 @@ class App(QWidget):
         from core.workers import UpdateYtdlpWorker
         self._show_overlay("Switching yt-dlp…", UpdateYtdlpWorker(channel, True, self))
 
-    def start_ffmpeg_update(self):
+    def start_ffmpeg_update(self, on_done=None):
         from core.workers import UpdateFfmpegWorker
-        self._show_overlay("Updating ffmpeg…", UpdateFfmpegWorker(self))
+        self._show_overlay("Updating ffmpeg…", UpdateFfmpegWorker(self), on_done)
 
     def start_app_update(self, url):
         """Скачивает обновление приложения (с прогрессом в оверлее), затем

@@ -62,6 +62,7 @@ _RU = {
     "Allow Dragging": "Перетаскивание окна",
     "Choose": "Выбрать",
     "Update yt-dlp": "Обновить yt-dlp",
+    "Update failed": "Не удалось обновить",
     "Update ffmpeg": "Обновить ffmpeg",
     "Clear Cache": "Очистить кэш",
     "Cache cleared": "Кэш очищен",

@@ -94,6 +94,23 @@ def ssl_context():
 def ensure_dir():
     _migrate_old_tools()
     os.makedirs(TOOLS_DIR, exist_ok=True)
+    _sweep_stale()
+
+
+def _sweep_stale():
+    """Убирает мусор прошлых обновлений: недокачанные .part и отодвинутые .old.
+
+    .old остаётся, когда обновляли РАБОТАЮЩИЙ exe (см. _download): удалить его
+    тогда нельзя, зато можно сейчас — процесс давно закончился."""
+    try:
+        for name in os.listdir(TOOLS_DIR):
+            if name.endswith((".part", ".old")):
+                try:
+                    os.remove(os.path.join(TOOLS_DIR, name))
+                except OSError:
+                    pass                 # ещё занят — уберём в следующий раз
+    except OSError:
+        pass
 
 
 # Разовая миграция при импорте — чтобы проверки have_* сразу видели бинарники
@@ -173,12 +190,36 @@ def _utf8_env():
 
 
 def run(args, timeout=None):
-    """Синхронный запуск; возвращает CompletedProcess (text=True)."""
-    return subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW,
+    """Синхронный запуск; возвращает CompletedProcess (text=True).
+
+    НЕ через subprocess.run: там таймаут убивает ТОЛЬКО сам процесс, а потом
+    ждёт закрытия труб. yt-dlp порождает deno (решение JS-задач YouTube), тот
+    наследует наши stdout/stderr и после смерти родителя держит трубу открытой —
+    ожидание не кончается НИКОГДА. Снаружи это выглядело как вечный «Fetching…»
+    без ошибки и без лога: поток анализа висел навсегда. Поэтому по таймауту
+    гасим ВСЁ дерево (taskkill /T) и только потом дочитываем. Контракт прежний:
+    таймаут — это TimeoutExpired.
+    """
+    if timeout is None:
+        return subprocess.run(
+            args, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", creationflags=CREATE_NO_WINDOW, env=_utf8_env(),
+        )
+    p = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW,
         env=_utf8_env(),
     )
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)                  # вместе с внуками — иначе труба не закроется
+        try:
+            out, err = p.communicate(timeout=15)
+        except Exception:
+            out = err = ""            # даже дерево не ушло — трубы бросаем
+        raise subprocess.TimeoutExpired(args, timeout, out, err)
+    return subprocess.CompletedProcess(args, p.returncode, out, err)
 
 
 def popen(args):
@@ -212,19 +253,60 @@ def _download(url, dest, progress=None):
     import urllib.request        # тянет http.client+email (~70 мс) — только по нужде
     req = urllib.request.Request(url, headers={"User-Agent": "Snatchr"})
     tmp = dest + ".part"
-    with urllib.request.urlopen(req, timeout=60, context=ssl_context()) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with open(tmp, "wb") as f:
-            while True:
-                chunk = resp.read(1024 * 64)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if progress and total:
-                    progress(done / total)
-    os.replace(tmp, dest)
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context()) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 64)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress and total:
+                        progress(done / total)
+    except Exception:
+        try:
+            os.remove(tmp)               # обрыв связи — недокачанный хвост не храним
+        except OSError:
+            pass
+        raise
+    _install(tmp, dest)
+
+
+def _install(tmp, dest):
+    """Ставит скачанный файл на место старого.
+
+    Windows не даёт перезаписать РАБОТАЮЩИЙ exe: os.replace падает с отказом в
+    доступе. Именно так молча срывалось обновление yt-dlp, если в этот момент
+    висел его процесс, — .part оставался лежать, exe оставался старым, а окно
+    рапортовало об успехе. Переименовать работающий exe Windows позволяет:
+    отодвигаем старый в .old и ставим новый на освободившееся имя. Отодвинутый
+    удалится при следующем запуске (_sweep_stale)."""
+    try:
+        os.replace(tmp, dest)
+        return
+    except OSError:
+        pass
+    old = dest + ".old"
+    try:
+        os.remove(old)
+    except OSError:
+        pass
+    try:
+        os.rename(dest, old)             # работающий exe переименовать МОЖНО
+        os.replace(tmp, dest)
+    except OSError:
+        try:
+            os.remove(tmp)               # не вышло — не оставляем хвост
+        except OSError:
+            pass
+        raise
+    try:
+        os.remove(old)
+    except OSError:
+        pass                             # ещё выполняется — уберёт _sweep_stale
 
 
 def _channel_cache(channel):

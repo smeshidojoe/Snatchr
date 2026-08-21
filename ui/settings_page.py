@@ -499,13 +499,17 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         ff_x = cc_x - gap - bw_ff
         yt_x = ff_x - gap - bw_yt
         self.btn_update = self.themed(LinkButton(
-            self._host, t_yt, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ytdlp_update,
+            self._host, t_yt, font, self.CHOOSE, self.LINK_HOVER,
+            lambda: self.app.start_ytdlp_update(
+                lambda ok, err: self._tool_update_done(self.btn_update, t_yt, ok)),
             hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
             color="choose", hover_color="link_hover",
             hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_update.setGeometry(yt_x, by, bw_yt, bh)
         self.btn_update_ff = self.themed(LinkButton(
-            self._host, t_ff, font, self.CHOOSE, self.LINK_HOVER, self.app.start_ffmpeg_update,
+            self._host, t_ff, font, self.CHOOSE, self.LINK_HOVER,
+            lambda: self.app.start_ffmpeg_update(
+                lambda ok, err: self._tool_update_done(self.btn_update_ff, t_ff, ok)),
             hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
             color="choose", hover_color="link_hover",
             hover_bg="choose_bg_h", base_bg="choose_bg")
@@ -1038,6 +1042,18 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         self._usage_seg = seg
 
         return card_h
+
+    def _tool_update_done(self, btn, restore, ok):
+        """Итог обновления инструмента — прямо на кнопке, которую нажали.
+        Успех не подтверждаем: там и так виден оверлей с полосой. Молчали только
+        о сбое, и это было хуже всего — обновление «проходило», а бинарь
+        оставался старым."""
+        if ok:
+            return
+        try:
+            self._flash_button_text(btn, tr("Update failed"), restore, hold_ms=2600)
+        except RuntimeError:
+            pass                          # страницу пересобрали — кнопки уже нет
 
     def _clear_cache(self):
         """Очищает cache.json в %APPDATA%/Snatchr и плавно подтверждает на кнопке."""

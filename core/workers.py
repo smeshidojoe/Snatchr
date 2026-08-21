@@ -7,6 +7,7 @@
 """
 
 import os
+import subprocess
 
 from PySide6.QtCore import QThread, QThreadPool, QRunnable, QObject, Signal
 
@@ -287,6 +288,10 @@ def _probe_with_cookies(url, settings):
     ck = downloader.cookie_args(settings or {}, url)
     try:
         return downloader.probe(url, cookies=ck)
+    except subprocess.TimeoutExpired:
+        # Не дождались ответа. Повторять без кук незачем: дело не в них, а ждать
+        # второй полный таймаут — значит удвоить и без того долгое ожидание.
+        raise RuntimeError("Timed out waiting for yt-dlp.")
     except Exception as exc:
         msg = str(exc)
         if ck and (downloader.is_cookie_error(msg)
