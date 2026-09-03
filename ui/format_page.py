@@ -6,7 +6,7 @@
 применяются к селектору через core.formats.apply().
 """
 
-from PySide6.QtCore import Qt, QRectF, Signal, QEasingCurve
+from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import QPainter, QPen, QColor
 from PySide6.QtWidgets import QWidget, QLabel, QFrame, QScrollArea
 
@@ -249,7 +249,7 @@ class FormatPage(WindowDragMixin, QWidget):
                 continue
             anim.animate(row, float(row.y()), float(ty), 170,
                          lambda v, r=row: r.move(self._pad, int(round(v))),
-                         easing=QEasingCurve.OutCubic, attr="_y_anim")
+                         easing=anim.EASE_OUT, attr="_y_anim")
 
     # --- изменения ------------------------------------------------------ #
     def _on_toggle(self, key, visible):

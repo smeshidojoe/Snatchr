@@ -2,7 +2,7 @@ import math
 import os
 
 from PySide6.QtCore import (
-    Qt, QRectF, QPointF, QPoint, QEvent, QPropertyAnimation, QEasingCurve, QTimer
+    Qt, QRectF, QPointF, QPoint, QEvent, QPropertyAnimation, QTimer
 )
 from PySide6.QtGui import (
     QPainter, QPainterPath, QRadialGradient, QColor, QPen, QBrush, QGuiApplication,
@@ -1651,13 +1651,13 @@ class App(QWidget):
         pos_anim.setDuration(220)
         pos_anim.setStartValue(p_from)
         pos_anim.setEndValue(p_to)
-        pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+        pos_anim.setEasingCurve(anim.EASE_OUT)
 
         op_anim = QPropertyAnimation(self, b"windowOpacity", self)
         op_anim.setDuration(200)
         op_anim.setStartValue(float(o_from))
         op_anim.setEndValue(float(o_to))
-        op_anim.setEasingCurve(QEasingCurve.OutCubic)
+        op_anim.setEasingCurve(anim.EASE_OUT)
 
         def _fin():
             if showing:

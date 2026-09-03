@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QTimer, QEasingCurve
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPalette, QColor, QPixmap, QImage
 from PySide6.QtWidgets import QWidget, QLineEdit, QTextEdit, QLabel
 
@@ -915,7 +915,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         anim.fade(h, 1.0, 0.0, 220, on_finished=restore)
         anim.animate(self, 0, self.app._s(30), 220,
                      lambda v: h.move(h.x(), y0 + int(v)),
-                     easing=QEasingCurve.InCubic, attr="_hist_out_anim")
+                     easing=anim.EASE_OUT, attr="_hist_out_anim")
 
     def _multi_urls(self):
         out = []
@@ -1512,7 +1512,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         anim.fade(self.status_box, 0.0, 1.0, 200)
         anim.animate(self, self._status_y + s(8), self._status_y, 200,
                      lambda v: self.status_box.move(self._dl_pad, int(round(v))),
-                     easing=QEasingCurve.OutCubic, attr="_status_anim")
+                     easing=anim.EASE_OUT, attr="_status_anim")
         self._status_timer.start(3000)
 
     def _hide_status(self):
@@ -1520,7 +1520,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         anim.fade(self.status_box, 1.0, 0.0, 200, on_finished=self.status_box.hide)
         anim.animate(self, self._status_y, self._status_y + s(8), 200,
                      lambda v: self.status_box.move(self._dl_pad, int(round(v))),
-                     easing=QEasingCurve.InCubic, attr="_status_anim")
+                     easing=anim.EASE_OUT, attr="_status_anim")
 
     # ------------------------------------------------------------------ #
     @staticmethod

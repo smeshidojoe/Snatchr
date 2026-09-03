@@ -12,7 +12,7 @@
 import os
 
 from PySide6.QtCore import (
-    Qt, QRectF, QUrl, QThread, Signal, QPointF, QTimer, QEasingCurve, QEvent
+    Qt, QRectF, QUrl, QThread, Signal, QPointF, QTimer, QEvent
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPixmap, QPolygonF, QPainterPath, QFontMetrics
@@ -305,7 +305,7 @@ class FilmstripBar(QWidget):
         self._strip = pixmap
         self._strip_alpha = 0.0
         anim.animate(self, 0.0, 1.0, 320, self._strip_fade,
-                     easing=QEasingCurve.OutCubic, attr="_strip_anim")
+                     easing=anim.EASE_OUT, attr="_strip_anim")
 
     def _strip_fade(self, v):
         self._strip_alpha = v

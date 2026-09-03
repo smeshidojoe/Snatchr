@@ -188,7 +188,7 @@ class FloatingHint(QLabel):
         # Подъём + проявление: резкий старт, мягкое приземление.
         anim.animate(self, 1.0, 0.0, 200,
                      lambda t: self.move(self._x, int(self._y + self._dy * t)),
-                     easing=QEasingCurve.OutCubic, attr="_hint_move")
+                     easing=anim.EASE_OUT, attr="_hint_move")
         anim.fade(self, 0.0, 1.0, 180)
         QTimer.singleShot(self.HOLD_MS, self._leave)
 
@@ -202,7 +202,7 @@ class FloatingHint(QLabel):
         up = self._dy * 0.75
         anim.animate(self, 0.0, 1.0, 220,
                      lambda t: self.move(self._x, int(y0 - up * t)),
-                     easing=QEasingCurve.InCubic, attr="_hint_move")
+                     easing=anim.EASE_OUT, attr="_hint_move")
         anim.fade(self, 1.0, 0.0, 220, on_finished=self._gone)
 
     def _gone(self):
@@ -431,6 +431,36 @@ class LinkButton(Rethemable, QPushButton):
         anim.animate(self, 0.0, 1.0, 150, tick, easing=QEasingCurve.Linear,
                      on_finished=fin, attr="_pop_anim")
 
+    # --- отклик на нажатие --------------------------------------------- #
+    def _press(self, down):
+        """Проседание под нажатием: подтверждает, что нажатие принято, ДО того
+        как сработает действие.
+
+        Кнопка нарисована таблицей стилей, а не нами, поэтому масштабируется не
+        рамка, а надпись — она тут и есть вся кнопка. Коэффициент чуть глубже
+        обычных 0.97 по той же причине: сжимается только текст, и на его фоне
+        три процента незаметны."""
+        if self._press_pop:
+            return                       # у этой кнопки свой отклик (_pop)
+        anim.animate(self, getattr(self, "_press_k", 1.0),
+                     0.95 if down else 1.0, 160, self._press_tick,
+                     easing=anim.EASE_OUT, attr="_press_anim")
+
+    def _press_tick(self, k):
+        self._press_k = k
+        ft = QFont(self.font())
+        ft.setPointSizeF(self._base_pt * k)
+        self.setFont(ft)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press(True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press(False)
+        super().mouseReleaseEvent(event)
+
     def _apply(self, color, bg):
         bg_css = f"background-color: {bg};" if bg else "background: transparent;"
         self.setStyleSheet(
@@ -444,6 +474,7 @@ class LinkButton(Rethemable, QPushButton):
 
     def leaveEvent(self, event):
         self._apply(self._color, self._base_bg)
+        self._press(False)              # ушли с кнопки, не отпустив её
         super().leaveEvent(event)
 
 
@@ -588,7 +619,7 @@ class SegmentedControl(Rethemable, QWidget):
             self._scale = 1.0
             self.update()
         anim.animate(self, 0.0, 1.0, 300, tick,
-                     easing=QEasingCurve.InOutCubic, on_finished=fin, attr="_pill_anim")
+                     easing=anim.EASE_IN_OUT, on_finished=fin, attr="_pill_anim")
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -992,7 +1023,21 @@ class _SelectorPopup(QWidget):
         # НЕ текущий пункт — тогда старая проверка (idx == _current) ошибочно
         # выбирала соседний пункт сразу при открытии.
         self._opened_at = time.monotonic()
+
+        # Появление ИЗ ПОЛЯ, а не из ниоткуда: список подрастает от той строки,
+        # что легла поверх поля, — она и есть его источник. Раньше он возникал
+        # рывком, без всякого перехода, и связь с полем читалась только по месту.
+        self._grow_anchor = float(row_top + self._row_h / 2.0)
+        self._grow = 0.0
+        self.setWindowOpacity(0.0)
         self.show()
+        anim.animate(self, 0.0, 1.0, 170, self._grow_tick,
+                     easing=anim.EASE_OUT, attr="_grow_anim")
+
+    def _grow_tick(self, t):
+        self._grow = t
+        self.setWindowOpacity(t)
+        self.update()
 
     # --- мышь ----------------------------------------------------------- #
     def _row_at(self, y):
@@ -1016,7 +1061,7 @@ class _SelectorPopup(QWidget):
                 self._hi_alpha = a0 * (1.0 - p)
                 self.update()
             anim.animate(self, 0.0, 1.0, 130, tick,
-                         easing=QEasingCurve.OutCubic, attr="_hi_anim")
+                         easing=anim.EASE_OUT, attr="_hi_anim")
             return
 
         def tick(p):
@@ -1029,7 +1074,7 @@ class _SelectorPopup(QWidget):
             self._hi_alpha = 1.0
             self.update()
         anim.animate(self, 0.0, 1.0, 190, tick,
-                     easing=QEasingCurve.OutCubic, on_finished=fin, attr="_hi_anim")
+                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim")
 
     def mouseReleaseEvent(self, event):
         if time.monotonic() - getattr(self, "_opened_at", 0.0) < 0.18:
@@ -1044,6 +1089,16 @@ class _SelectorPopup(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
+
+        # Рост из строки, накрывшей поле (origin-aware). Масштаб начинается с
+        # 0.94, а не с нуля: в жизни ничто не появляется из точки.
+        g = getattr(self, "_grow", 1.0)
+        if g < 0.999:
+            k = 0.94 + 0.06 * g
+            ay = getattr(self, "_grow_anchor", h / 2.0)
+            p.translate(w / 2.0, ay)
+            p.scale(k, k)
+            p.translate(-w / 2.0, -ay)
 
         bg = QRectF(0.5, 0.5, w - 1, h - 1)
         p.setPen(QPen(self._border, 1))
@@ -1145,7 +1200,7 @@ class DownloadButton(Rethemable, QWidget):
             self._bg = to
             self.update()
         anim.animate(self, 0.0, 1.0, dur, tick,
-                     easing=QEasingCurve.InOutCubic, on_finished=fin, attr="_bg_anim")
+                     easing=anim.EASE_IN_OUT, on_finished=fin, attr="_bg_anim")
 
     def fade_text(self, new_text, dur=240):
         def tick(p):
@@ -1161,7 +1216,7 @@ class DownloadButton(Rethemable, QWidget):
             self._text_alpha = 1.0
             self.update()
         anim.animate(self, 0.0, 1.0, dur, tick,
-                     easing=QEasingCurve.InOutQuad, on_finished=fin, attr="_txt_anim")
+                     easing=anim.EASE_IN_OUT, on_finished=fin, attr="_txt_anim")
 
     def enterEvent(self, event):
         self._hovered = True
@@ -1170,19 +1225,45 @@ class DownloadButton(Rethemable, QWidget):
 
     def leaveEvent(self, event):
         self._hovered = False
+        self._press(False)              # ушли с кнопки, не отпустив её
         self.update()
         super().leaveEvent(event)
 
+    def mousePressEvent(self, event):
+        if self.isEnabled() and event.button() == Qt.LeftButton:
+            self._press(True)
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event):
+        self._press(False)
         if self.isEnabled() and event.button() == Qt.LeftButton \
                 and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 
+    def _press(self, down):
+        """Кнопка слегка проседает под нажатием и распрямляется при отпускании.
+
+        Отклик идёт на НАЖАТИЕ, а не на отпускание: он подтверждает, что нажатие
+        принято, — значит должен появиться раньше действия, а не после него."""
+        anim.animate(self, getattr(self, "_press_k", 1.0), 0.97 if down else 1.0,
+                     160, self._press_tick, easing=anim.EASE_OUT,
+                     attr="_press_anim")
+
+    def _press_tick(self, v):
+        self._press_k = v
+        self.update()
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
+
+        k = getattr(self, "_press_k", 1.0)
+        if k < 0.999:                     # проседание под нажатием, из центра
+            p.translate(w / 2.0, h / 2.0)
+            p.scale(k, k)
+            p.translate(-w / 2.0, -h / 2.0)
 
         if not self.isEnabled():
             bg = self.DISABLED_BG
@@ -1299,7 +1380,7 @@ class UpdateOverlay(QWidget):
         anim.fade(self, 0.0, 1.0, 200)
         anim.fade(self.card, 0.0, 1.0, 300)
         anim.animate(self, 0.0, 1.0, 300, tick,
-                     easing=QEasingCurve.OutCubic, attr="_slide_anim")
+                     easing=anim.EASE_OUT, attr="_slide_anim")
 
     def disappear(self, on_finished=None):
         anim.fade(self, 1.0, 0.0, 180, on_finished=on_finished)

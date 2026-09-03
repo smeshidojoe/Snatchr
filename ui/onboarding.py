@@ -9,7 +9,7 @@
 под треем (стрелка вверх).
 """
 
-from PySide6.QtCore import Qt, QRectF, QPoint, Signal, QEasingCurve
+from PySide6.QtCore import Qt, QRectF, QPoint, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPolygonF, QPainterPath
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QWidget
@@ -107,7 +107,7 @@ class TrayHint(QWidget):
         anim.animate(self, 0.0, 1.0, 340,
                      lambda v: self.move(final.x(),
                                          int(start_y + (final.y() - start_y) * v)),
-                     easing=QEasingCurve.OutCubic, attr="_slide_anim")
+                     easing=anim.EASE_OUT, attr="_slide_anim")
         anim.fade(self, 0.0, 1.0, 260)
 
     def _dismiss(self):
@@ -118,7 +118,7 @@ class TrayHint(QWidget):
         end_y = cur.y() + (-drop if self._arrow_up() else drop)
         anim.animate(self, 0.0, 1.0, 200,
                      lambda v: self.move(cur.x(), int(cur.y() + (end_y - cur.y()) * v)),
-                     easing=QEasingCurve.InCubic, attr="_slide_anim")
+                     easing=anim.EASE_OUT, attr="_slide_anim")
         anim.fade(self, 1.0, 0.0, 190, on_finished=self._finish)
 
     def _finish(self):

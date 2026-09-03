@@ -1,7 +1,7 @@
 import os
 import time
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QEasingCurve
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
 from PySide6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QBrush, QPen, QPolygonF,
     QFontMetrics, QCursor, QGuiApplication,
@@ -183,7 +183,7 @@ class TrayMenu(QWidget):
             self._cur_color = _blend(c0, tc, p)
             self.update()
         anim.animate(self, 0.0, 1.0, 160, tick,
-                     easing=QEasingCurve.OutCubic, attr="_col_anim")
+                     easing=anim.EASE_OUT, attr="_col_anim")
 
     def _animate_hi(self, to_idx):
         self._animate_color(self._target_color(to_idx))   # синий/красный под курсором
@@ -194,7 +194,7 @@ class TrayMenu(QWidget):
                 self._hi_alpha = a0 * (1.0 - p)
                 self.update()
             anim.animate(self, 0.0, 1.0, 130, tick,
-                         easing=QEasingCurve.OutCubic, attr="_hi_anim")
+                         easing=anim.EASE_OUT, attr="_hi_anim")
             return
 
         def tick(p):
@@ -207,7 +207,7 @@ class TrayMenu(QWidget):
             self._hi_alpha = 1.0
             self.update()
         anim.animate(self, 0.0, 1.0, 190, tick,
-                     easing=QEasingCurve.OutCubic, on_finished=fin, attr="_hi_anim")
+                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim")
 
     # --- отрисовка ----------------------------------------------------- #
     def paintEvent(self, event):
@@ -696,7 +696,7 @@ class FlashToast(QWidget):
         anim.animate(self, 1.0, 0.0, self.IN_MS,
                      lambda t: self.move(int(x + self._dx * t),
                                          int(y + self._dy * t)),
-                     easing=QEasingCurve.OutCubic, attr="_slide_in")
+                     easing=anim.EASE_OUT, attr="_slide_in")
         anim.fade(self, 0.0, 1.0, self.IN_MS)
         QTimer.singleShot(self.IN_MS + self.HOLD_MS, self._hide_away)
 
@@ -710,7 +710,7 @@ class FlashToast(QWidget):
         dy = getattr(self, "_dy", self._app._s(18))
         anim.animate(self, 0.0, 1.0, self.OUT_MS,
                      lambda t: self.move(int(x + dx * t), int(y + dy * t)),
-                     easing=QEasingCurve.InCubic, attr="_slide_out")
+                     easing=anim.EASE_OUT, attr="_slide_out")
         anim.fade(self, 1.0, 0.0, self.OUT_MS, on_finished=self.close)
 
 

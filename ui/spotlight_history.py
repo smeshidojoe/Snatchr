@@ -131,7 +131,7 @@ class GlyphButton(QWidget):
             self.update()
             return
         anim.animate(self, self._hover_t, to, 150, self._hover_tick,
-                     easing=QEasingCurve.OutCubic, attr="_hover_anim")
+                     easing=anim.EASE_OUT, attr="_hover_anim")
 
     def _hover_tick(self, v):
         self._hover_t = v
@@ -389,7 +389,7 @@ class HistoryRow(QWidget):
                 on_finished()
             return
         anim.animate(self, self._dl_t, to, 720, self._dl_tick,
-                     easing=QEasingCurve.InOutCubic, on_finished=on_finished,
+                     easing=anim.EASE_IN_OUT, on_finished=on_finished,
                      attr="_dl_anim")
 
     def _dl_tick(self, v):
@@ -635,7 +635,7 @@ class HistoryRow(QWidget):
         if not self._spin_timer.isActive():
             self._spin_timer.start()      # спиннер крутится, пока уезжает
         anim.animate(self, 1.0, 0.0, 320, self._trans_tick,
-                     easing=QEasingCurve.OutCubic, on_finished=self._trans_done,
+                     easing=anim.EASE_OUT, on_finished=self._trans_done,
                      attr="_trans_anim")
 
     def _trans_tick(self, v):
@@ -838,7 +838,7 @@ class HistoryRow(QWidget):
             self.update()
             return
         anim.animate(self, self._hover_t, to, 160, self._hover_tick,
-                     easing=QEasingCurve.OutCubic, attr="_hover_anim")
+                     easing=anim.EASE_OUT, attr="_hover_anim")
 
     def _hover_tick(self, v):
         self._hover_t = v
@@ -1214,7 +1214,7 @@ class HistoryList(QWidget):
                 a.setStartValue(r.pos())
                 from PySide6.QtCore import QPoint as _QP
                 a.setEndValue(_QP(0, target_y))
-                a.setEasingCurve(QEasingCurve.OutCubic)
+                a.setEasingCurve(anim.EASE_OUT)
                 a.start()
                 r._pos_anim = a
             else:
@@ -1389,7 +1389,7 @@ class HistoryList(QWidget):
             rr.set_alpha(1.0 - t)          # 1 -> 0 по t, значит 0 -> 1 прозрачности
 
         anim.animate(row, 1.0, 0.0, 240, tick,
-                     easing=QEasingCurve.OutCubic, on_finished=done,
+                     easing=anim.EASE_OUT, on_finished=done,
                      attr="_cascade_anim")
 
     def insert_new(self, entry):
@@ -1426,7 +1426,7 @@ class HistoryList(QWidget):
             a.setDuration(280)
             a.setStartValue(QPoint(0, (i - 1) * self._row_h))
             a.setEndValue(QPoint(0, i * self._row_h))
-            a.setEasingCurve(QEasingCurve.OutCubic)
+            a.setEasingCurve(anim.EASE_OUT)
             a.start()
             r._pos_anim = a
         # новая строка: наезжает сверху (сдвиг + прозрачность)
@@ -1435,7 +1435,7 @@ class HistoryList(QWidget):
         a.setDuration(300)
         a.setStartValue(QPoint(0, -self._row_h // 3))
         a.setEndValue(QPoint(0, 0))
-        a.setEasingCurve(QEasingCurve.OutCubic)
+        a.setEasingCurve(anim.EASE_OUT)
         a.start()
         row._pos_anim = a
         anim.fade(row, 0.0, 1.0, 300)

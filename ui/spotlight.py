@@ -10,7 +10,7 @@ import os
 import uuid
 
 from PySide6.QtCore import (
-    Qt, QRectF, QTimer, QEvent, QEasingCurve, QPoint, QPropertyAnimation
+    Qt, QRectF, QTimer, QEvent, QPoint, QPropertyAnimation
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPixmap, QGuiApplication, QCursor, QKeyEvent,
@@ -78,7 +78,7 @@ class SearchField(QWidget):
     def flash(self, color):
         self._glow = QColor(color)
         anim.animate(self, 1.0, 0.0, 900, self._set_glow_t,
-                     easing=QEasingCurve.OutCubic, attr="_glow_anim")
+                     easing=anim.EASE_OUT, attr="_glow_anim")
 
     def _set_glow_t(self, v):
         self._glow_t = float(v)
@@ -320,7 +320,7 @@ class Spotlight(QWidget):
         a.setDuration(170)
         a.setStartValue(0.0)
         a.setEndValue(1.0)
-        a.setEasingCurve(QEasingCurve.OutCubic)
+        a.setEasingCurve(anim.EASE_OUT)
         a.start()
         self._show_anim = a
         self._run_slide(self.seg_mode, delay=0)
@@ -340,7 +340,7 @@ class Spotlight(QWidget):
             pa.setDuration(300)
             pa.setStartValue(widget._enter_start)
             pa.setEndValue(widget._enter_end)
-            pa.setEasingCurve(QEasingCurve.OutCubic)
+            pa.setEasingCurve(anim.EASE_OUT)
             pa.start()
             widget._enter_pos_anim = pa
         if delay:
@@ -358,7 +358,7 @@ class Spotlight(QWidget):
         a.setDuration(150)
         a.setStartValue(1.0)
         a.setEndValue(0.0)
-        a.setEasingCurve(QEasingCurve.InCubic)
+        a.setEasingCurve(anim.EASE_OUT)
         a.finished.connect(self._after_fade_out)
         a.start()
         self._exit_anim = a
@@ -830,7 +830,7 @@ class Spotlight(QWidget):
         self._fit_for_extra(target + self.GAP)
         anim.animate(self, 0.0, 1.0, 560,
                      lambda v: self._set_trim_h(int(target * v)),
-                     easing=QEasingCurve.OutCubic,
+                     easing=anim.EASE_OUT,
                      on_finished=self.trim.end_anim, attr="_trim_anim")
 
     def _load_trim(self, path, waveform=None, entry_id=""):
@@ -875,7 +875,7 @@ class Spotlight(QWidget):
             self._relayout()
         anim.animate(self, 1.0, 0.0, 500,
                      lambda v: self._set_trim_h(int(start * v)),
-                     easing=QEasingCurve.OutCubic, on_finished=done, attr="_trim_anim")
+                     easing=anim.EASE_OUT, on_finished=done, attr="_trim_anim")
 
     def _fit_for_extra(self, extra):
         screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
@@ -916,7 +916,7 @@ class Spotlight(QWidget):
         self._fit_for_extra(target + self.GAP)
         anim.animate(self, 0.0, 1.0, 300,
                      lambda v: self._set_pl_h(int(target * v)),
-                     easing=QEasingCurve.OutCubic, attr="_pl_anim")
+                     easing=anim.EASE_OUT, attr="_pl_anim")
 
     def _set_pl_h(self, h):
         self._pl_h = h
@@ -940,7 +940,7 @@ class Spotlight(QWidget):
             self._relayout()
         anim.animate(self, 1.0, 0.0, 240,
                      lambda v: self._set_pl_h(int(start * v)),
-                     easing=QEasingCurve.InCubic, on_finished=done, attr="_pl_anim")
+                     easing=anim.EASE_OUT, on_finished=done, attr="_pl_anim")
 
     def _on_playlist_download(self, entries):
         """Кнопка Download в панели: выбранные ролики уезжают в историю и качаются
