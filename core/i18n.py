@@ -172,6 +172,9 @@ _RU = {
     "Processing failed (ffmpeg).": "Ошибка обработки (ffmpeg).",
     "Not enough disk space.": "Нет места на диске.",
     "Download failed.": "Ошибка загрузки.",
+    "No connection to the internet or site.":
+        "Нет соединения с интернетом или сайтом.",
+    "Connection problem — retrying…": "Проблемы со связью, повтор…",
     "Downloading required libraries…": "Скачивание необходимых компонентов…",
     "Downloading Libraries…": "Скачивание компонентов…",
     "Failed to download libraries.": "Не удалось скачать компоненты.",

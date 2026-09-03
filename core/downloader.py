@@ -781,8 +781,34 @@ def parse_destination(line):
     return None
 
 
+# Сеть отвалилась целиком: ни имя не разрешается, ни соединение не встаёт.
+# Держим ПЕРЕД остальными: сообщение yt-dlp при этом длинное и содержит слова
+# вроде «unable to download», под которые подошли бы более общие строки ниже.
+_NETWORK_ERRORS = (
+    "getaddrinfo failed",                    # имя не разрешилось (Windows 11001)
+    "failed to establish a new connection",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "network is unreachable",
+    "no route to host",
+    "connection refused",                    # в т.ч. мёртвый локальный прокси
+    "unable to connect to proxy",
+    "winerror 11001", "winerror 10061", "winerror 10065",
+)
+
+
+def is_network_error(text):
+    """Отказ из-за отсутствия связи, а не из-за самого видео.
+
+    Повторять такое с другими куками бессмысленно — до сайта попросту не
+    доходит запрос."""
+    low = str(text or "").lower()
+    return any(k in low for k in _NETWORK_ERRORS)
+
+
 _ERROR_MAP = [
     ("conversion failed", "Downloaded, but conversion failed."),
+] + [(k, "No connection to the internet or site.") for k in _NETWORK_ERRORS] + [
     ("failed to decrypt with dpapi", "Browser cookies locked (Chrome encryption)."),
     ("could not copy chrome cookie", "Close the browser and retry (cookies busy)."),
     ("not a bot", "Bot check — try cookies or later."),
@@ -1044,6 +1070,11 @@ def overall_progress(p, convert):
     иначе он спорит с полосой (скачивание показывало свои 46.6% на 23% полосы,
     а конвертация начинала счёт заново с 0%). None -> текст не подменяем."""
     stage = p.get("stage")
+    if stage == "retry":
+        # Связь отвалилась, yt-dlp пробует снова. Полосу не двигаем (вызывающий
+        # не даст ей откатиться), но молчащий спиннер подписываем: иначе десяток
+        # секунд выглядит как зависание, и неясно, что можно нажать «Стоп».
+        return 0.0, tr("Connection problem — retrying…")
     if stage == "post":
         return (0.5 if convert else 1.0), None
     if stage == "convert":
@@ -1458,6 +1489,10 @@ def _stream(args, hooks, log, progress=True, ff_total=None):
                         info["size"] = sz    # размер вырезанного фрагмента (растёт)
                     hooks.on_progress(info)
                     continue
+            if "Retrying (" in line and "warning" in line.lower():
+                # Без continue: строка нужна и в логе — по ней потом видно,
+                # сколько заходов сделал yt-dlp и на чём именно спотыкался.
+                hooks.on_progress({"stage": "retry"})
             if _POST_RE.search(line):        # постобработка после 100% (mp3/merge/…)
                 hooks.on_progress({"stage": "post"})
                 continue
@@ -1837,8 +1872,10 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     # Повтор без кук. Два случая: (1) куки не извлеклись (залоченная БД/DPAPI);
     # (2) куки извлеклись, но САМ САЙТ с ними отдаёт ответ, который экстрактор не
     # разбирает (VK с авторизацией: «Failed to parse JSON»). Не повторяем, только
-    # если ошибка явно про доступ (приватное/вход/403) — там куки как раз нужны.
+    # если ошибка явно про доступ (приватное/вход/403) — там куки как раз нужны,
+    # и если связи нет вовсе — второй заход тогда лишь удваивает ожидание.
     if (not ok and not hooks.is_stopped() and have_cookies(settings, url)
+            and not is_network_error(log.text())
             and (is_cookie_error(log.text()) or not is_auth_error(log.text()))):
         log.event("Retrying without cookies")
         use_cookies = False

@@ -294,6 +294,8 @@ def _probe_with_cookies(url, settings):
         raise RuntimeError("Timed out waiting for yt-dlp.")
     except Exception as exc:
         msg = str(exc)
+        if downloader.is_network_error(msg):
+            raise                    # связи нет — второй заход только тянет время
         if ck and (downloader.is_cookie_error(msg)
                    or not downloader.is_auth_error(msg)):
             try:
