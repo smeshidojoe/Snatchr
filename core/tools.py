@@ -104,11 +104,24 @@ def _sweep_stale():
     тогда нельзя, зато можно сейчас — процесс давно закончился."""
     try:
         for name in os.listdir(TOOLS_DIR):
-            if name.endswith((".part", ".old")):
-                try:
-                    os.remove(os.path.join(TOOLS_DIR, name))
-                except OSError:
-                    pass                 # ещё занят — уберём в следующий раз
+            path = os.path.join(TOOLS_DIR, name)
+            if name.endswith(".old"):
+                # Страховка: если самого бинаря нет, значит обновление сорвалось
+                # между переименованием и подменой. Возвращаем старый на место,
+                # а не стираем последнюю копию.
+                real = path[:-4]
+                if not os.path.exists(real):
+                    try:
+                        os.rename(path, real)
+                        continue
+                    except OSError:
+                        pass
+            elif not name.endswith(".part"):
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                pass                     # ещё занят — уберём в следующий раз
     except OSError:
         pass
 
@@ -296,10 +309,24 @@ def _install(tmp, dest):
         pass
     try:
         os.rename(dest, old)             # работающий exe переименовать МОЖНО
-        os.replace(tmp, dest)
     except OSError:
         try:
             os.remove(tmp)               # не вышло — не оставляем хвост
+        except OSError:
+            pass
+        raise
+    # С этого момента бинаря по имени dest НЕТ — он лежит под .old. Если новый
+    # поставить не удастся, старый обязан вернуться на место: иначе программа
+    # остаётся вообще без yt-dlp, а .old потом подметёт _sweep_stale.
+    try:
+        os.replace(tmp, dest)
+    except OSError:
+        try:
+            os.rename(old, dest)         # откат: возвращаем рабочий бинарь
+        except OSError:
+            pass
+        try:
+            os.remove(tmp)
         except OSError:
             pass
         raise

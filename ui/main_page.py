@@ -722,6 +722,12 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
     def _apply_info(self, info):
         self._info = info
         self._populate_selector()
+        # YouTube отдал только запасной 360p — строк качества не будет вовсе, и
+        # Best Quality молча притащит те же 360p. Говорим об этом прямо: причина
+        # почти всегда чинится обновлением yt-dlp (кнопка в настройках).
+        if downloader.youtube_degraded(info, self._analyzing_url):
+            self._show_status(tr("YouTube gave only 360p — update yt-dlp"),
+                              self.ERR_COLOR, self._err_pm, hold_ms=6000)
         # Вместо карточки — pending-строка в истории (подсвечена; ждёт Download).
         url = self._analyzing_url
         from core import ember_dl
@@ -1497,7 +1503,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self._msg_key = None
         self.lbl_msg.setText(text)
 
-    def _show_status(self, text, color, icon_pm):
+    def _show_status(self, text, color, icon_pm, hold_ms=3000):
         s = self.app._s
         if icon_pm is not None:
             self.status_icon.setPixmap(icon_pm)
@@ -1513,7 +1519,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         anim.animate(self, self._status_y + s(8), self._status_y, 200,
                      lambda v: self.status_box.move(self._dl_pad, int(round(v))),
                      easing=anim.EASE_OUT, attr="_status_anim")
-        self._status_timer.start(3000)
+        self._status_timer.start(int(hold_ms))
 
     def _hide_status(self):
         s = self.app._s

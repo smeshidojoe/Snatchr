@@ -27,7 +27,7 @@ from core.config import APP_DIR
 TMP_ROOT = os.path.join(APP_DIR, "tmp")   # временные папки загрузок рядом с конфигом
 
 SEP = " · "          # разделитель блоков в подписи
-MIN_HEIGHT = 480     # ниже 480p не показываем
+MIN_HEIGHT = 360     # ниже 360p не показываем
 
 # Best Quality: максимальное РАЗРЕШЕНИЕ среди не-AV1 кодеков. При равном
 # разрешении yt-dlp сам предпочтёт VP9 кодеку H.264 (штатный порядок сортировки
@@ -327,12 +327,15 @@ def _codec_label(vcodec):
 
 
 def _bitrate_str(tbr):
-    # >= 1 Мбит/с -> «~Nмбит», иначе «Nkbit».
+    # >= 1 Мбит/с -> «~Nмбит», иначе «Nкбит». Единицы переводимые: раньше они
+    # были зашиты кириллицей, и в английском интерфейсе строки качества
+    # выглядели как «1080p · H.264 · ~6мбит». Без пробела перед единицей —
+    # подпись и так собирается из нескольких частей через разделитель.
     if not tbr:
         return None
     if tbr >= 1000:
-        return f"~{round(tbr / 1000.0)}мбит"
-    return f"{round(tbr)}kbit"
+        return "~%d%s" % (round(tbr / 1000.0), tr("Mbit"))
+    return "%d%s" % (round(tbr), tr("kbit"))
 
 
 def _kbit(abr):
@@ -441,6 +444,29 @@ def video_formats(info, youtube=True, settings=None):
     if settings is not None:
         options = formats.apply(options, settings)
     return options
+
+
+def youtube_degraded(info, url):
+    """Урезанный ответ YouTube: адаптивных дорожек нет вовсе, остался только
+    запасной прогрессивный поток (обычно формат 18, 360p со звуком).
+
+    Так YouTube отвечает, когда клиент не смог получить полный ответ плеера:
+    устарел yt-dlp, не встали deno/PO-провайдер либо адрес помечен как бот.
+    Прогрессивные форматы мы для YouTube не показываем (звук добавляем отдельно),
+    поэтому селектор в этом случае оказывается ПУСТ, а Best Quality молча тянет
+    360p — со стороны это выглядит как «программа не видит качество выше 360».
+    """
+    if not is_youtube(url):
+        return False
+    video_only = progressive = False
+    for f in (info or {}).get("formats") or []:
+        if f.get("vcodec") in (None, "none"):
+            continue                      # чистое аудио — не в счёт
+        if f.get("acodec") in (None, "none"):
+            video_only = True
+            break                         # нашли адаптивную дорожку — ответ целый
+        progressive = True
+    return progressive and not video_only
 
 
 def audio_formats(info):

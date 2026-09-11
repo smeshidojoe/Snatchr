@@ -132,6 +132,9 @@ _RU = {
     "To": "До",
     "Invalid time range": "Неверный интервал времени",
     "Best Quality": "Лучшее качество",
+    # Единицы битрейта в подписях качества («1080p · H.264 · ~6мбит»).
+    "Mbit": "мбит",
+    "kbit": "кбит",
     "Best Compatibility (MP4)": "Лучшая совместимость (MP4)",
     "Thumbnail": "Обложка",
     "Paste video link here...": "Вставьте ссылку на видео...",
@@ -175,6 +178,8 @@ _RU = {
     "No connection to the internet or site.":
         "Нет соединения с интернетом или сайтом.",
     "Connection problem — retrying…": "Проблемы со связью, повтор…",
+    "YouTube gave only 360p — update yt-dlp":
+        "YouTube отдал только 360p — обновите yt-dlp",
     "Downloading required libraries…": "Скачивание необходимых компонентов…",
     "Downloading Libraries…": "Скачивание компонентов…",
     "Failed to download libraries.": "Не удалось скачать компоненты.",
