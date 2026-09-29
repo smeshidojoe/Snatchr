@@ -15,12 +15,18 @@
 #endif
 #define MyAppExeName "Snatchr.exe"
 #define MyAppPublisher "SmeshidoJoe"
+#define MyAppUrl "https://github.com/SmeshidoJoe/Snatchr"
 
 [Setup]
-AppId={{72713E8B-B190-4DDE-8545-47025B4A4703}} 
+; Первая скобка удвоена не по ошибке: одиночная «{» в Inno Setup начинает
+; константу, и AppId с GUID без экранирования не компилируется.
+AppId={{72713E8B-B190-4DDE-8545-47025B4A4703}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppUrl}
+AppSupportURL={#MyAppUrl}
+AppUpdatesURL={#MyAppUrl}/releases
 ; Путь по умолчанию — папка программ ТЕКУЩЕГО пользователя. При
 ; PrivilegesRequired=lowest это %LOCALAPPDATA%\Programs: туда можно писать без
 ; прав администратора, а это обязательное условие — Snatchr обновляет себя сам,
@@ -35,10 +41,18 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer_output
 OutputBaseFilename=Snatchr-Setup-{#MyAppVersion}
+SetupIconFile=assets\app.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+
+; Snatchr держит один экземпляр на именованном мьютексе (main.py) и сидит в
+; трее. Если его не закрыть, установщик не сможет заменить exe.
+CloseApplications=yes
+RestartApplications=no
+AppMutex=Snatchr-Single-Instance-Mutex
 
 [Code]
 // Проверяем, что в выбранную папку можно писать БЕЗ прав администратора.
@@ -61,6 +75,23 @@ begin
   end;
 end;
 
+// При удалении спрашиваем, оставлять ли данные. Молча стирать нельзя (там
+// история загрузок и настройки), молча оставлять тоже плохо: в tools\ лежат
+// yt-dlp и ffmpeg на сотни мегабайт.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: string;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+  DataDir := ExpandConstant('{userappdata}\{#MyAppName}');
+  if not DirExists(DataDir) then
+    Exit;
+  // Тихое удаление (/SILENT) без вопроса оставляет данные.
+  if SuppressibleMsgBox(ExpandConstant('{cm:KeepData}'), mbConfirmation, MB_YESNO, IDYES) = IDNO then
+    DelTree(DataDir, True, True, True);
+end;
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -68,6 +99,8 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [CustomMessages]
 english.DirNotWritable=This folder cannot be written to without administrator rights.%n%nSnatchr updates itself and needs write access to its own folder, so please pick another location — for example the default one.
 russian.DirNotWritable=В эту папку нельзя записывать без прав администратора.%n%nSnatchr обновляется самостоятельно и должен иметь доступ на запись в свою папку, поэтому выберите другое место — например, предложенное по умолчанию.
+english.KeepData=Keep settings, download history and the downloaded tools (yt-dlp, ffmpeg)?
+russian.KeepData=Оставить настройки, историю загрузок и скачанные инструменты (yt-dlp, ffmpeg)?
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
@@ -75,10 +108,26 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
+; Скачанное обновление (update.zip, Snatchr-new.exe, helper.log) программа
+; держит в _update рядом с exe. Установщик его не ставил и сам бы не удалил —
+; папка пережила бы удаление.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\_update"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; Автозапуск включается в настройках самой программы (core/autostart.py), а не
+; установщиком, поэтому без этой строки запись пережила бы удаление и Windows
+; при каждом входе пыталась бы запустить стёртый exe. ValueType: none +
+; dontcreatekey — «при установке ничего не делать», значение удаляется только
+; при удалении программы.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+    ValueType: none; ValueName: "Snatchr"; \
+    Flags: dontcreatekey uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
