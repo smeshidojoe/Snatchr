@@ -3,7 +3,7 @@ import time
 
 from PySide6.QtCore import (
     Qt, QSize, QRectF, QPointF, QPoint, Signal, QEasingCurve, QTimer,
-    QObject, QEvent
+    QObject, QEvent, QElapsedTimer
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPolygonF, QFontMetrics, QPixmap, QGuiApplication,
@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 from core import fonts, themes
 from core.i18n import tr
 from ui import anim
+from ui import compose
+from ui import glass as _glass
 
 
 def _label_color(lbl, color):
@@ -186,10 +188,10 @@ class FloatingHint(QLabel):
         self.show()
         self.raise_()
         # Подъём + проявление: резкий старт, мягкое приземление.
-        anim.animate(self, 1.0, 0.0, 200,
+        anim.animate(self, 1.0, 0.0, anim.ENTER_MS,
                      lambda t: self.move(self._x, int(self._y + self._dy * t)),
-                     easing=anim.EASE_OUT, attr="_hint_move")
-        anim.fade(self, 0.0, 1.0, 180)
+                     easing=anim.EASE_OUT, attr="_hint_move", moves=True)
+        anim.fade(self, 0.0, 1.0, anim.ENTER_MS)
         QTimer.singleShot(self.HOLD_MS, self._leave)
 
     def _leave(self):
@@ -200,10 +202,10 @@ class FloatingHint(QLabel):
             return                       # виджет уже удалён (повторный клик)
         y0 = self.y()
         up = self._dy * 0.75
-        anim.animate(self, 0.0, 1.0, 220,
+        anim.animate(self, 0.0, 1.0, anim.EXIT_MS,
                      lambda t: self.move(self._x, int(y0 - up * t)),
-                     easing=anim.EASE_OUT, attr="_hint_move")
-        anim.fade(self, 1.0, 0.0, 220, on_finished=self._gone)
+                     easing=anim.EASE_OUT, attr="_hint_move", moves=True)
+        anim.fade(self, 1.0, 0.0, anim.EXIT_MS, on_finished=self._gone)
 
     def _gone(self):
         # Снимаем ссылку с окна: иначе там останется указатель на удалённый
@@ -294,12 +296,44 @@ def rounded_pixmap(src, w, h, radius):
     return out
 
 
+def pressed_rect(rect, k=0.97):
+    """Прямоугольник, «вдавленный» к центру (отклик на нажатие строки меню)."""
+    dw = rect.width() * (1.0 - k) / 2.0
+    dh = rect.height() * (1.0 - k) / 2.0
+    return rect.adjusted(dw, dh, -dw, -dh)
+
+
 def _lerp_color(c0, c1, t):
+    # С альфой: у темы Frosted поверхности полупрозрачные, и без неё пустой
+    # чекбокс на время анимации становился сплошным белым квадратом.
     return QColor(
         int(c0.red()   + (c1.red()   - c0.red())   * t),
         int(c0.green() + (c1.green() - c0.green()) * t),
         int(c0.blue()  + (c1.blue()  - c0.blue())  * t),
+        int(c0.alpha() + (c1.alpha() - c0.alpha()) * t),
     )
+
+
+def lift(color, factor=140):
+    """Цвет «под курсором»: светлее на factor процентов.
+
+    QColor.lighter() на полупрозрачном белом (поверхности темы Frosted) ничего
+    не меняет — белее белого не бывает. Такой слой становится заметнее за
+    счёт плотности."""
+    c = QColor(color)
+    if c.alpha() < 255:
+        c.setAlphaF(min(1.0, c.alphaF() * (1.0 + (factor - 100) / 50.0)))
+        return c
+    return c.lighter(factor)
+
+
+def edge_css(color):
+    """QSS-рамка поля: у темы с кромкой (field_edge) — волосяная линия, иначе
+    без рамки (как раньше: рамка в 1px сдвинула бы текст полей)."""
+    c = QColor(color) if color else QColor(0, 0, 0, 0)
+    if c.alpha() == 0:
+        return "border: none;"
+    return "border: 1px solid %s;" % c.name(QColor.HexArgb)
 
 
 class WindowDragMixin:
@@ -356,20 +390,33 @@ class IconButton(QPushButton):
         self.setStyleSheet(
             "QPushButton { background: transparent; border: none; outline: none; }"
         )
-        self.clicked.connect(self._pop)   # тактильный отклик
+        self._press_k = 1.0
         if on_click is not None:
             self.clicked.connect(on_click)
 
-    def _pop(self):
-        # Тактильный отклик: иконка сначала уменьшается, затем возвращается.
-        base = self._base_icon
-        def tick(p):
-            f = 1.0 - 0.16 * math.sin(math.pi * p)
-            sz = max(1, int(round(base * f)))
-            self.setIconSize(QSize(sz, sz))
-        anim.animate(self, 0.0, 1.0, 150, tick, easing=QEasingCurve.Linear,
-                     on_finished=lambda: self.setIconSize(QSize(base, base)),
-                     attr="_pop_anim")
+    # --- отклик на нажатие --------------------------------------------- #
+    def _press(self, down):
+        """Иконка проседает, пока кнопку держат, и возвращается при отпускании.
+
+        Раньше отклик («сжалась и вернулась») проигрывался по clicked — уже
+        после отпускания, одновременно с действием, и подтверждал нажатие
+        задним числом. Теперь он начинается на нажатии."""
+        anim.animate(self, self._press_k, 0.86 if down else 1.0, anim.PRESS_MS,
+                     self._press_tick, easing=anim.EASE_OUT, attr="_press_anim")
+
+    def _press_tick(self, k):
+        self._press_k = k
+        sz = max(1, int(round(self._base_icon * k)))
+        self.setIconSize(QSize(sz, sz))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press(True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press(False)
+        super().mouseReleaseEvent(event)
 
     def set_icons(self, icon_normal, icon_hover):
         self._icon_normal = icon_normal
@@ -428,7 +475,7 @@ class LinkButton(Rethemable, QPushButton):
             self.setFont(ft)
         def fin():
             ft = QFont(f0); ft.setPointSizeF(base); self.setFont(ft)
-        anim.animate(self, 0.0, 1.0, 150, tick, easing=QEasingCurve.Linear,
+        anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick, easing=QEasingCurve.Linear,
                      on_finished=fin, attr="_pop_anim")
 
     # --- отклик на нажатие --------------------------------------------- #
@@ -443,7 +490,7 @@ class LinkButton(Rethemable, QPushButton):
         if self._press_pop:
             return                       # у этой кнопки свой отклик (_pop)
         anim.animate(self, getattr(self, "_press_k", 1.0),
-                     0.95 if down else 1.0, 160, self._press_tick,
+                     0.95 if down else 1.0, anim.PRESS_MS, self._press_tick,
                      easing=anim.EASE_OUT, attr="_press_anim")
 
     def _press_tick(self, k):
@@ -484,8 +531,9 @@ class TimeCodeEdit(QLineEdit):
     (часы/минуты/секунды) и вписать своё число. 00:00:00 = «не задано»."""
 
     def __init__(self, parent, font, field_bg, text_color, radius,
-                 disabled_bg, disabled_text):
+                 disabled_bg, disabled_text, edge=None):
         super().__init__(parent)
+        self._edge = edge
         self.setFont(font)
         self.setInputMask("00:00:00;0")     # шаблон, правится по сегментам
         self.setText("00:00:00")
@@ -495,15 +543,15 @@ class TimeCodeEdit(QLineEdit):
                         disabled_bg=disabled_bg, disabled_text=disabled_text)
 
     def set_colors(self, field_bg=None, text_color=None,
-                   disabled_bg=None, disabled_text=None):
+                   disabled_bg=None, disabled_text=None, edge=None):
         """Перекраска для живой смены темы."""
         for name, val in (("_field_bg", field_bg), ("_text_color", text_color),
                           ("_disabled_bg", disabled_bg),
-                          ("_disabled_text", disabled_text)):
+                          ("_disabled_text", disabled_text), ("_edge", edge)):
             if val is not None:
                 setattr(self, name, val)
         self.setStyleSheet(
-            f"QLineEdit {{ background-color: {self._field_bg}; border: none; "
+            f"QLineEdit {{ background-color: {self._field_bg}; {edge_css(self._edge)} "
             f"border-radius: {self._radius}px; color: {self._text_color}; }}"
             f"QLineEdit:disabled {{ background-color: {self._disabled_bg}; "
             f"color: {self._disabled_text}; }}")
@@ -536,7 +584,8 @@ class SegmentedControl(Rethemable, QWidget):
     changed = Signal(str)
 
     _COLOR_ATTRS = {"bg_color": ("_bg", True), "sel_color": ("_sel", True),
-                    "text_color": ("_text", True), "sel_text_color": ("_sel_text", True)}
+                    "text_color": ("_text", True), "sel_text_color": ("_sel_text", True),
+                    "edge_color": ("_edge", True)}
 
     def fit_width(self, minimum=0, pad=None):
         """Минимальная ширина, при которой влезают ВСЕ подписи.
@@ -553,8 +602,10 @@ class SegmentedControl(Rethemable, QWidget):
         return max(int(minimum), int(need))
 
     def __init__(self, parent, options, current, font,
-                 bg_color, sel_color, text_color, sel_text_color, radius):
+                 bg_color, sel_color, text_color, sel_text_color, radius,
+                 edge_color=None):
         super().__init__(parent)
+        self._edge = QColor(edge_color) if edge_color else QColor(0, 0, 0, 0)
         self._options = list(options)
         self._value = current
         self._font = font
@@ -611,15 +662,16 @@ class SegmentedControl(Rethemable, QWidget):
     def _animate_pill(self, frm, to):
         def tick(p):
             self._pill_pos = frm + (to - frm) * p
-            # лёгкий overshoot-размер: растёт за границы и к концу возвращается.
-            self._scale = 1.0 + 0.16 * math.sin(math.pi * p)
+            # Едва заметное «вздутие» в пути: подложка переезжает, а не
+            # подпрыгивает — сильнее спорит со спокойным стеклом.
+            self._scale = 1.0 + 0.05 * math.sin(math.pi * p)
             self.update()
         def fin():
             self._pill_pos = float(to)
             self._scale = 1.0
             self.update()
-        anim.animate(self, 0.0, 1.0, 300, tick,
-                     easing=anim.EASE_IN_OUT, on_finished=fin, attr="_pill_anim")
+        anim.animate(self, 0.0, 1.0, anim.TOGGLE_MS, tick,
+                     easing=anim.EASE_IN_OUT, on_finished=fin, attr="_pill_anim", moves=True)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -634,11 +686,12 @@ class SegmentedControl(Rethemable, QWidget):
 
         mg = max(2, int(round(h * 0.10)))   # поле, чтобы пилюля могла выходить за блок
 
-        # Контейнер (тёмный блок).
-        p.setPen(Qt.NoPen)
+        # Контейнер (тёмный блок) — с волосяной кромкой, если она есть у темы.
+        p.setPen(QPen(self._edge, 1) if self._edge.alpha() else Qt.NoPen)
         p.setBrush(self._bg)
-        p.drawRoundedRect(QRectF(mg, mg, w - 2 * mg, h - 2 * mg),
+        p.drawRoundedRect(QRectF(mg + 0.5, mg + 0.5, w - 2 * mg - 1, h - 2 * mg - 1),
                           self._radius, self._radius)
+        p.setPen(Qt.NoPen)
 
         seg_w = (w - 2 * mg) / n
         seg_h = h - 2 * mg
@@ -760,7 +813,7 @@ class CheckBox(Rethemable, QAbstractButton):
             self._p = 1.0
             self._from_on = self._to_on
             self.update()
-        anim.animate(self, 0.0, 1.0, 240, tick,
+        anim.animate(self, 0.0, 1.0, anim.TOGGLE_MS, tick,
                      easing=QEasingCurve.Linear, on_finished=fin, attr="_cb_anim")
 
     @staticmethod
@@ -825,6 +878,174 @@ class CheckBox(Rethemable, QAbstractButton):
         p.end()
 
 
+class Switch(Rethemable, QAbstractButton):
+    """
+    Переключатель в духе iOS (по образцу Scribe/Clipr): подпись слева, дорожка
+    справа. Бегунок доезжает до своей стороны, дорожка перекрашивается; пока
+    кнопка зажата, бегунок чуть растягивается — видно, что его взяли, ещё до
+    отпускания. Кликабельна вся строка, а не только дорожка.
+
+    API совпадает с CheckBox (setChecked / setCheckedAnimated / set_text /
+    toggled), поэтому страница настроек меняет одно на другое без переделок.
+    """
+
+    _COLOR_ATTRS = {"text_color": ("_text_color", True), "off_color": ("_off", True),
+                    "on_color": ("_on", True)}
+
+    def __init__(self, parent, text, font, text_color, off_color, on_color, track_h):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._text = text
+        self._font = font
+        self._text_color = QColor(text_color)
+        self._off = QColor(off_color)
+        self._on = QColor(on_color)
+        self._th = float(track_h)
+        self._pos = 0.0            # 0 — выкл, 1 — вкл (что сейчас на экране)
+        self._grip = 0.0           # 0..1 — насколько бегунок растянут нажатием
+        self.toggled.connect(self._animate_to)
+
+    def set_text(self, text):
+        """Новая подпись (смена языка на лету)."""
+        self._text = text
+        self.update()
+
+    def setChecked(self, on):
+        """Без анимации (начальное состояние, сброс). Сигнал toggled уходит,
+        как у CheckBox, — подписчики сохраняют настройку."""
+        on = bool(on)
+        anim.stop(self, "_sw_anim")
+        self._silent = True
+        try:
+            super().setChecked(on)
+        finally:
+            self._silent = False
+        self._pos = 1.0 if on else 0.0
+        self.update()
+
+    def setCheckedAnimated(self, on):
+        """Программное переключение с той же анимацией, что и по клику."""
+        if self.isChecked() != bool(on):
+            super().setChecked(bool(on))       # toggled -> _animate_to
+
+    def _animate_to(self, on):
+        if getattr(self, "_silent", False):
+            return
+        def tick(v):
+            self._pos = v
+            self.update()
+        # Стартуем с того, что на экране: быстрый двойной клик разворачивает
+        # бегунок посреди пути, а не дёргает его в край.
+        anim.animate(self, self._pos, 1.0 if on else 0.0, anim.TOGGLE_MS, tick,
+                     easing=anim.EASE_OUT, attr="_sw_anim", moves=True)
+
+    def _animate_grip(self, to):
+        def tick(v):
+            self._grip = v
+            self.update()
+        anim.animate(self, self._grip, to, anim.PRESS_MS, tick,
+                     easing=anim.EASE_OUT, attr="_grip_anim", moves=True)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._animate_grip(1.0)            # отклик — на нажатие, не на отпускание
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._animate_grip(0.0)
+        super().mouseReleaseEvent(e)
+
+    def track_rect(self):
+        th = self._th
+        tw = th * 1.72
+        return QRectF(self.width() - tw - 1, (self.height() - th) / 2.0, tw, th)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def sizeHint(self):
+        return QSize(int(self._th * 4), int(self._th * 1.8))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        tr_ = self.track_rect()
+        th = tr_.height()
+        p.setPen(Qt.NoPen)
+        p.setBrush(_lerp_color(self._off, self._on, self._pos))
+        p.drawRoundedRect(tr_, th / 2.0, th / 2.0)
+
+        m = max(2.0, th * 0.10)
+        d = th - 2 * m
+        grow = d * 0.22 * self._grip           # растяжение под пальцем
+        kw = d + grow
+        x0 = tr_.left() + m
+        x1 = tr_.right() - m - kw
+        kx = x0 + (x1 - x0) * self._pos
+        knob = QRectF(kx, tr_.top() + m, kw, d)
+        p.setBrush(QColor(0, 0, 0, 38))        # мягкая тень бегунка
+        p.drawRoundedRect(knob.translated(0, 0.8), d / 2.0, d / 2.0)
+        p.setBrush(QColor(255, 255, 255))
+        p.drawRoundedRect(knob, d / 2.0, d / 2.0)
+
+        p.setPen(self._text_color)
+        p.setFont(self._font)
+        text_w = tr_.left() - 8
+        fm = QFontMetrics(self._font)
+        p.drawText(QRectF(0, 0, text_w, self.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   fm.elidedText(self._text, Qt.ElideRight, int(text_w)))
+        p.end()
+
+
+class SettingsGroup(Rethemable, QWidget):
+    """
+    Скруглённая карточка-подложка группы настроек (как Group в Scribe/Clipr):
+    строки лежат поверх неё, между строками — волосяные линии с отступом.
+
+    Сама ничего не раскладывает: страница ставит строки и сообщает, где линии
+    (add_line). Прозрачна для мыши.
+    """
+
+    _COLOR_ATTRS = {"bg_color": ("_bg", True), "line_color": ("_line", True),
+                    "border_color": ("_border", True)}
+
+    def __init__(self, parent, bg_color, line_color, border_color, radius, inset):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._bg = QColor(bg_color)
+        self._line = QColor(line_color)
+        self._border = QColor(border_color)
+        self._radius = radius
+        self._inset = inset
+        self._lines = []
+
+    def add_line(self, y):
+        """Линия-разделитель на высоте y (в координатах карточки)."""
+        self._lines.append(y)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        bg = QColor(self._bg)
+        bg.setAlphaF(min(bg.alphaF(), 0.78))   # фон окна чуть просвечивает
+        border = QColor(self._border)
+        border.setAlphaF(border.alphaF() * 0.55)
+        p.setPen(QPen(border, 1))
+        p.setBrush(bg)
+        p.drawRoundedRect(r, self._radius, self._radius)
+        line = QColor(self._line)
+        line.setAlphaF(line.alphaF() * 0.7)
+        p.setPen(QPen(line, 1))
+        for y in self._lines:
+            yy = int(y) + 0.5
+            p.drawLine(QPointF(self._inset, yy), QPointF(self.width() - self._inset, yy))
+        p.end()
+
+
 def _draw_chevrons(p, cx, h, chip_w, color):
     """Двойной шеврон (вверх/вниз) по центру «чипа» селектора."""
     p.setPen(Qt.NoPen)
@@ -860,12 +1081,19 @@ class Selector(Rethemable, QWidget):
     _COLOR_ATTRS = {"field_bg": ("_field_bg", True), "chip_bg": ("_chip_bg", True),
                     "text_color": ("_text_color", True), "chevron_color": ("_chevron", True),
                     "accent": ("_popup_accent", True), "border": ("_popup_border", True),
-                    "on_accent": ("_popup_on_accent", True)}
+                    "on_accent": ("_popup_on_accent", True), "edge": ("_edge", True),
+                    "popup_bg": ("_popup_bg", True)}
 
     def __init__(self, parent, font, field_bg, chip_bg, text_color,
                  chevron_color, radius, chip_w,
-                 accent="#3a77f0", border="#3a5068", on_accent="#ffffff"):
+                 accent="#3a77f0", border="#3a5068", on_accent="#ffffff",
+                 edge=None, popup_bg=None):
         super().__init__(parent)
+        self._edge = QColor(edge) if edge else QColor(0, 0, 0, 0)
+        # Фон всплывающего списка, если стекла под ним нет (см. _SelectorPopup):
+        # поле у темы Frosted полупрозрачное, отдельное окно с таким фоном
+        # показало бы насквозь рабочий стол.
+        self._popup_bg = QColor(popup_bg or field_bg)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
         self._font = font
@@ -950,6 +1178,11 @@ class Selector(Rethemable, QWidget):
         p.setBrush(self._chip_bg)
         p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
         p.restore()
+        if self._edge.alpha():
+            p.setPen(QPen(self._edge, 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r - 0.5, r - 0.5)
+            p.setPen(Qt.NoPen)
         _draw_chevrons(p, w - self._chip_w / 2.0, h, self._chip_w, self._chevron)
 
         # Текущее значение (иконка + текст).
@@ -978,7 +1211,12 @@ class _SelectorPopup(QWidget):
         super().__init__(None, Qt.Popup | Qt.FramelessWindowHint
                          | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         self.setMouseTracking(True)
+        # Тема Frosted: список — такое же стекло, как окно под ним (снимок
+        # экрана делается в момент показа и захватывает само окно).
+        owner = _glass.backdrop_of(selector)
+        self._glass = _glass.Backdrop(self, owner._app) if owner is not None else None
 
         self._sel = selector
         self._items = selector._items
@@ -986,8 +1224,9 @@ class _SelectorPopup(QWidget):
         self._hover = selector._current
         self._hi_pos = float(selector._current)   # позиция скользящей подсветки
         self._hi_alpha = 1.0                       # прозрачность подсветки (0 = вне строк)
+        self._pressed = -1                         # строка под нажатой кнопкой мыши
         self._font = selector._font
-        self._field_bg = selector._field_bg
+        self._field_bg = selector._popup_bg
         self._text_color = selector._text_color
         self._accent = selector._popup_accent
         self._border = selector._popup_border
@@ -1031,7 +1270,7 @@ class _SelectorPopup(QWidget):
         self._grow = 0.0
         self.setWindowOpacity(0.0)
         self.show()
-        anim.animate(self, 0.0, 1.0, 170, self._grow_tick,
+        anim.animate(self, 0.0, 1.0, anim.ENTER_MS, self._grow_tick,
                      easing=anim.EASE_OUT, attr="_grow_anim")
 
     def _grow_tick(self, t):
@@ -1060,7 +1299,7 @@ class _SelectorPopup(QWidget):
             def tick(p):
                 self._hi_alpha = a0 * (1.0 - p)
                 self.update()
-            anim.animate(self, 0.0, 1.0, 130, tick,
+            anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick,
                          easing=anim.EASE_OUT, attr="_hi_anim")
             return
 
@@ -1073,16 +1312,24 @@ class _SelectorPopup(QWidget):
             self._hi_pos = float(to_idx)
             self._hi_alpha = 1.0
             self.update()
-        anim.animate(self, 0.0, 1.0, 190, tick,
-                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim")
+        anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick,
+                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim", moves=True)
 
     def mouseReleaseEvent(self, event):
         if time.monotonic() - getattr(self, "_opened_at", 0.0) < 0.18:
             return                       # хвост открывающего клика — не выбираем
         idx = self._row_at(event.position().y())
+        self._pressed = -1
         if idx >= 0:
             self._sel._on_pick(idx)
         self.close()
+
+    def mousePressEvent(self, event):
+        # Подсветка под пальцем чуть «вдавливается» сразу на нажатии —
+        # выбор произойдёт на отпускании, но видно, что нажатие принято.
+        self._pressed = self._row_at(event.position().y())
+        self.update()
+        super().mousePressEvent(event)
 
     # --- отрисовка ------------------------------------------------------ #
     def paintEvent(self, event):
@@ -1101,14 +1348,20 @@ class _SelectorPopup(QWidget):
             p.translate(-w / 2.0, -ay)
 
         bg = QRectF(0.5, 0.5, w - 1, h - 1)
+        if self._glass is not None and self._glass.paint(
+                p, self, QRectF(0, 0, w, h), self._radius, edge=False):
+            p.setBrush(Qt.NoBrush)
+        else:
+            p.setBrush(self._field_bg)
         p.setPen(QPen(self._border, 1))
-        p.setBrush(self._field_bg)
         p.drawRoundedRect(bg, self._radius, self._radius)
 
         # Одна скользящая «пилюля» подсветки (плавно перемещается между строками).
         if self._hi_alpha > 0.01:
             hy = self._pad + self._hi_pos * self._row_h
             hrow = QRectF(self._pad, hy, w - 2 * self._pad, self._row_h)
+            if self._pressed >= 0 and self._pressed == int(round(self._hi_pos)):
+                hrow = pressed_rect(hrow)
             acc = QColor(self._accent)
             acc.setAlphaF(max(0.0, min(1.0, self._hi_alpha)))
             p.setPen(Qt.NoPen)
@@ -1160,11 +1413,14 @@ class DownloadButton(Rethemable, QWidget):
 
     _COLOR_ATTRS = {"bg": ("_bg", True), "hover": ("_hover", True), "fg": ("_fg", True),
                     "disabled_bg": ("DISABLED_BG", True),
-                    "disabled_text": ("DISABLED_TEXT", True)}
+                    "disabled_text": ("DISABLED_TEXT", True),
+                    "edge": ("_edge", True)}
 
     def __init__(self, parent, text, font, bg, hover, radius,
-                 fg="#ffffff", disabled_bg="#34425c", disabled_text="#7d93ad"):
+                 fg="#ffffff", disabled_bg="#34425c", disabled_text="#7d93ad",
+                 edge=None):
         super().__init__(parent)
+        self._edge = QColor(edge) if edge else QColor(0, 0, 0, 0)
         self._text = text
         self._font = font
         self._bg = QColor(bg)
@@ -1247,7 +1503,7 @@ class DownloadButton(Rethemable, QWidget):
         Отклик идёт на НАЖАТИЕ, а не на отпускание: он подтверждает, что нажатие
         принято, — значит должен появиться раньше действия, а не после него."""
         anim.animate(self, getattr(self, "_press_k", 1.0), 0.97 if down else 1.0,
-                     160, self._press_tick, easing=anim.EASE_OUT,
+                     anim.PRESS_MS, self._press_tick, easing=anim.EASE_OUT,
                      attr="_press_anim")
 
     def _press_tick(self, v):
@@ -1272,9 +1528,17 @@ class DownloadButton(Rethemable, QWidget):
             bg = self._hover if self._hovered else self._bg
             text_col = QColor(self._fg)
 
-        p.setPen(Qt.NoPen)
-        p.setBrush(bg)
-        p.drawRoundedRect(QRectF(0, 0, w, h), self._radius, self._radius)
+        # Неактивная кнопка у темы Frosted — почти прозрачный слой, контур ей
+        # задаёт волосяная кромка (field_edge).
+        if not self.isEnabled() and self._edge.alpha():
+            p.setPen(QPen(self._edge, 1))
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1),
+                              self._radius - 0.5, self._radius - 0.5)
+        else:
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(0, 0, w, h), self._radius, self._radius)
 
         text_col.setAlphaF(self._text_alpha if self.isEnabled() else 1.0)
         p.setPen(text_col)
@@ -1377,13 +1641,13 @@ class UpdateOverlay(QWidget):
             y = int(start_y + (self._card_y - start_y) * v)
             self.card.move(self.card.x(), y)
 
-        anim.fade(self, 0.0, 1.0, 200)
-        anim.fade(self.card, 0.0, 1.0, 300)
-        anim.animate(self, 0.0, 1.0, 300, tick,
-                     easing=anim.EASE_OUT, attr="_slide_anim")
+        anim.fade(self, 0.0, 1.0, anim.ENTER_MS)
+        anim.fade(self.card, 0.0, 1.0, anim.SLIDE_MS)
+        anim.animate(self, 0.0, 1.0, anim.SLIDE_MS, tick,
+                     easing=anim.EASE_OUT, attr="_slide_anim", moves=True)
 
     def disappear(self, on_finished=None):
-        anim.fade(self, 1.0, 0.0, 180, on_finished=on_finished)
+        anim.fade(self, 1.0, 0.0, anim.EXIT_MS, on_finished=on_finished)
 
 
 class Spinner(QWidget):
@@ -1392,10 +1656,11 @@ class Spinner(QWidget):
     def __init__(self, parent, pixmap, size):
         super().__init__(parent)
         self._pm = pixmap
-        self._angle = 0
+        self._angle = 0.0
         self.resize(size, size)
+        self._clock = QElapsedTimer()
         self._timer = QTimer(self)
-        self._timer.setInterval(28)
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
 
     def set_pixmap(self, pm):
@@ -1403,8 +1668,11 @@ class Spinner(QWidget):
         self._pm = pm
         self.update()
 
+    DEG_PER_S = 180.0      # скорость вращения
+
     def start(self):
         if self._pm is not None:
+            self._clock.start()
             self._timer.start()
             self.show()
 
@@ -1413,7 +1681,9 @@ class Spinner(QWidget):
         self.hide()
 
     def _tick(self):
-        self._angle = (self._angle + 5) % 360
+        # Угол — от времени, а не от числа тиков: при просадке кадров спиннер
+        # не замедляется, а просто пропускает кадр.
+        self._angle = (self._clock.elapsed() * self.DEG_PER_S / 1000.0) % 360
         self.update()
 
     def paintEvent(self, event):

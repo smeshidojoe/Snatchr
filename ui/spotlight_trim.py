@@ -24,7 +24,8 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from core import fonts, themes, trimmer, tools
 from core.i18n import tr
 from ui import anim
-from ui.widgets import LinkButton
+from ui.glass import backdrop_of
+from ui.widgets import LinkButton, lift
 
 
 def _fmt_time(sec):
@@ -304,7 +305,7 @@ class FilmstripBar(QWidget):
     def set_strip(self, pixmap):
         self._strip = pixmap
         self._strip_alpha = 0.0
-        anim.animate(self, 0.0, 1.0, 320, self._strip_fade,
+        anim.animate(self, 0.0, 1.0, anim.ENTER_MS, self._strip_fade,
                      easing=anim.EASE_OUT, attr="_strip_anim")
 
     def _strip_fade(self, v):
@@ -476,7 +477,7 @@ class _CtrlButton(QWidget):
         if pal is None:
             pal = themes.palette(theme)
         self._fg = QColor(pal["text"])
-        self._hover_bg = QColor(pal["sel_chip"]).lighter(140)
+        self._hover_bg = lift(pal["sel_chip"], 140)
         self._accent_col = QColor(pal["accent"])
         # копирование — та же иконка, что в истории (copy.png), перекрашенная.
         if self._glyph == "copy":
@@ -585,7 +586,9 @@ class _ConfirmOverlay(QWidget):
         if pal is None:
             pal = themes.palette(
                 self.app.settings.get("theme", themes.DEFAULT_THEME))
-        self._card_bg = QColor(pal["field_bg"])
+        # Карточка подтверждения лежит на затемнении, а не на стекле —
+        # ей нужен плотный фон и у темы Frosted.
+        self._card_bg = QColor(themes.solid(pal)["field_bg"])
         self._border = QColor(pal["border"])
         self._title_col = QColor(pal["title"])
         self._btn_cancel.set_colors(color=pal["muted"], hover_color=pal["text"],
@@ -604,7 +607,7 @@ class _ConfirmOverlay(QWidget):
         self._layout()
         self.show()
         self.raise_()
-        anim.fade(self, 0.0, 1.0, 180)
+        anim.fade(self, 0.0, 1.0, anim.ENTER_MS)
 
     def _layout(self):
         s = self.app._s
@@ -627,7 +630,7 @@ class _ConfirmOverlay(QWidget):
             cb()
 
     def _dismiss(self):
-        anim.fade(self, 1.0, 0.0, 140, on_finished=self.hide)
+        anim.fade(self, 1.0, 0.0, anim.EXIT_MS, on_finished=self.hide)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -747,7 +750,8 @@ class TrimPanel(QWidget):
         b.setStyleSheet(
             "QPushButton { background: %s; border: none; border-radius: %dpx; "
             "color: %s; } QPushButton:hover { background: %s; }"
-            % (chip.name(), self.app._s(7), pal["text"], chip.lighter(130).name()))
+            % (chip.name(QColor.HexArgb), self.app._s(7), pal["text"],
+               lift(chip, 130).name(QColor.HexArgb)))
 
     def apply_theme(self, pal=None):
         """Перекрашивает панель обрезки на месте (см. Spotlight.apply_theme).
@@ -1289,9 +1293,12 @@ class TrimPanel(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
-        p.setPen(QPen(self._border, 1))
-        p.setBrush(self._bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), s(16), s(16))
+        glass = backdrop_of(self)
+        if glass is None or not glass.paint(p, self, QRectF(0, 0, w, h), s(16),
+                                            "glass_panel_bright"):
+            p.setPen(QPen(self._border, 1))
+            p.setBrush(self._bg)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), s(16), s(16))
         p.end()
 
 

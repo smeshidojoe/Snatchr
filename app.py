@@ -1,8 +1,11 @@
 import math
 import os
 
+import threading
+
 from PySide6.QtCore import (
-    Qt, QRectF, QPointF, QPoint, QEvent, QPropertyAnimation, QTimer
+    Qt, QRectF, QPointF, QPoint, QEvent, QPropertyAnimation, QTimer, QObject,
+    Signal
 )
 from PySide6.QtGui import (
     QPainter, QPainterPath, QRadialGradient, QColor, QPen, QBrush, QGuiApplication,
@@ -20,9 +23,15 @@ from core import fonts
 from core import i18n
 from core import themes
 from ui import anim
+from ui import compose
 from ui.bottom_bar import BottomBar
 from ui.main_page import MainPage
 from ui.settings_page import SettingsPage
+
+
+class _PruneRelay(QObject):
+    """Возвращает результат фоновой проверки истории в главный поток."""
+    done = Signal(object)
 
 
 class App(QWidget):
@@ -56,6 +65,9 @@ class App(QWidget):
 
         # Цвета окна — из палитры выбранной темы.
         self._load_window_colors()
+        # Тема Frosted: фон окна — размытый экран под ним (ui/glass.py).
+        from ui.glass import Backdrop
+        self._glass = Backdrop(self, self)
 
         self.current_page = "main"
         self._nav_busy = False
@@ -92,6 +104,7 @@ class App(QWidget):
             Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         self.setFixedSize(self.WIN_W, self.WIN_H)
 
         # Авто-скрытие в режиме Auto-hide: реакция на потерю активности
@@ -128,6 +141,10 @@ class App(QWidget):
         self._ring_cooldown = False     # идёт завершающая анимация (галочка/крестик)
         self._toast_active = False      # идёт Toast-загрузка — новые тосты не показываем
         # Периодически убираем из истории удалённые с диска файлы (для обоих окон).
+        # Сама проверка диска — в фоновом потоке (см. _prune_histories).
+        self._pruning = False
+        self._prune_relay = _PruneRelay()
+        self._prune_relay.done.connect(self._apply_pruned)
         self._hist_prune_timer = QTimer(self)
         self._hist_prune_timer.setInterval(1000)
         self._hist_prune_timer.timeout.connect(self._prune_histories)
@@ -319,6 +336,7 @@ class App(QWidget):
         """
         pal = themes.palette(self.settings.get("theme", themes.DEFAULT_THEME))
         self._load_window_colors()
+        self._glass.theme_changed()
         # Spotlight перекрашиваем на месте: пересоздавать его во время загрузок
         # нельзя (см. _drop_spotlight), да и незачем — строки истории и
         # положение прокрутки при перекраске уцелевают.
@@ -343,12 +361,14 @@ class App(QWidget):
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, w, h), r, r)
 
-        cx, cy = w / 2.0, h / 2.0
-        radius = math.hypot(cx, cy)
-        grad = QRadialGradient(QPointF(cx, cy), radius)
-        grad.setColorAt(0.0, QColor(self.GRAD_CENTER))
-        grad.setColorAt(1.0, QColor(self.GRAD_EDGE))
-        p.fillPath(path, QBrush(grad))
+        # Тема Frosted — стекло (размытый экран под окном); нет снимка — градиент.
+        if not self._glass.paint(p, self, QRectF(0, 0, w, h), r, edge=False):
+            cx, cy = w / 2.0, h / 2.0
+            radius = math.hypot(cx, cy)
+            grad = QRadialGradient(QPointF(cx, cy), radius)
+            grad.setColorAt(0.0, QColor(self.GRAD_CENTER))
+            grad.setColorAt(1.0, QColor(self.GRAD_EDGE))
+            p.fillPath(path, QBrush(grad))
 
         bw = self.BORDER_W
         border_path = QPainterPath()
@@ -400,15 +420,7 @@ class App(QWidget):
 
         # Последовательно: сначала уходит главная, ПОТОМ появляется Settings
         # (как в About), а не crossfade.
-        def after_out():
-            self.main_page.hide()
-            self.settings_page.show()
-            self.settings_page.raise_()
-            anim.fade(self.settings_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(self.main_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        self._swap_pages(self.main_page, self.settings_page)
 
     def close_settings(self):
         if self.current_page != "settings" or self._nav_busy:
@@ -426,20 +438,9 @@ class App(QWidget):
         self._animate_height(target)                 # размер меняется параллельно
 
         # Последовательно: сначала уходит Settings, ПОТОМ появляется главная.
-        def after_out():
-            self.settings_page.hide()
-            self.reset_settings_scroll()     # ушли из настроек — прокрутку в начало
-            self.main_page.show()
-            self.main_page.raise_()
-            self.bottom_bar.btn_settings.raise_()
-            self.bottom_bar.btn_folder2.raise_()
-            self.bottom_bar.btn_about.raise_()
-            self.bottom_bar.btn_exit.raise_()
-            anim.fade(self.main_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(self.settings_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        # Прокрутку в начало — после ухода (снимок берётся с текущей позиции).
+        self._swap_pages(self.settings_page, self.main_page,
+                         after_out=self.reset_settings_scroll)
 
     def reset_settings_scroll(self):
         """Прокрутку настроек — в начало. Зовём при выходе из Settings и при
@@ -464,15 +465,7 @@ class App(QWidget):
         self.about_page.setGeometry(self.content_x, self.content_y,
                                     self.content_w, self.about_content_h)
 
-        def after_out():
-            from_page.hide()
-            self.about_page.show()
-            self.about_page.raise_()
-            anim.fade(self.about_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(from_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        self._swap_pages(from_page, self.about_page)
 
     def close_about(self):
         if self.current_page != "about" or self._nav_busy:
@@ -495,19 +488,7 @@ class App(QWidget):
             page.setGeometry(self.content_x, self.content_y, self.content_w, new_ch)
             page.relayout(new_ch)
 
-        def after_out():
-            self.about_page.hide()
-            page.show()
-            page.raise_()
-            self.bottom_bar.btn_settings.raise_()
-            self.bottom_bar.btn_folder2.raise_()
-            self.bottom_bar.btn_about.raise_()
-            self.bottom_bar.btn_exit.raise_()
-            anim.fade(page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(self.about_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        self._swap_pages(self.about_page, page)
 
     def open_formats(self):
         """Settings -> Format Priority (fade, высота окна не меняется)."""
@@ -521,15 +502,7 @@ class App(QWidget):
         self.format_page.reload()                  # порядок мог измениться
         self._animate_height(self.WIN_H_SETTINGS)
 
-        def after_out():
-            self.settings_page.hide()
-            self.format_page.show()
-            self.format_page.raise_()
-            anim.fade(self.format_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(self.settings_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        self._swap_pages(self.settings_page, self.format_page)
 
     def close_formats(self):
         """Format Priority -> обратно в Settings (fade)."""
@@ -542,18 +515,30 @@ class App(QWidget):
         self.settings_page.setGeometry(self.content_x, self.content_y,
                                        self.content_w, self.content_h)
 
-        def after_out():
-            self.format_page.hide()
-            self.settings_page.show()
-            self.settings_page.raise_()
-            anim.fade(self.settings_page, 0.0, 1.0, anim.PAGE_FADE_IN_MS,
-                      easing=anim.PAGE_FADE_EASING, on_finished=self._nav_done)
-
-        anim.fade(self.format_page, 1.0, 0.0, anim.PAGE_FADE_OUT_MS,
-                  easing=anim.PAGE_FADE_EASING, on_finished=after_out)
+        self._swap_pages(self.format_page, self.settings_page)
 
     def _nav_done(self):
         self._nav_busy = False
+
+    def _raise_bar_buttons(self):
+        """Кнопки нижней панели — поверх страниц и их снимков."""
+        bb = self.bottom_bar
+        for b in (bb.btn_settings, bb.btn_folder2, bb.btn_about, bb.btn_exit):
+            b.raise_()
+
+    def _swap_pages(self, old, new, after_out=None):
+        """Смена вкладки: old гаснет, затем проявляется new (через снимки —
+        см. anim.swap_pages). after_out() — когда old уже скрыта."""
+        def on_shown():
+            self._raise_bar_buttons()
+
+        def finished():
+            self._raise_bar_buttons()
+            self._nav_done()
+
+        anim.swap_pages(self, old, new, on_finished=finished, on_shown=on_shown)
+        if after_out:
+            after_out()
 
     def set_main_expanded(self, expanded):
         """
@@ -586,7 +571,14 @@ class App(QWidget):
             self.update()
 
         anim.animate(self, start_extra, target_extra, anim.WIN_RESIZE_MS, apply,
-                     easing=anim.WIN_RESIZE_EASING, attr="_main_exp_anim")
+                     easing=anim.WIN_RESIZE_EASING, attr="_main_exp_anim", moves=True)
+
+    def glass_grow(self):
+        """Запас снимка под стекло (вверх, вниз): окно растёт до высоты Settings /
+        About, а доснимать фон посреди перехода нельзя (см. ui/glass.py)."""
+        max_h = max(self.WIN_H_SETTINGS, self.WIN_H_ABOUT, self.WIN_H_FULL + self._s(50))
+        g = max(0, max_h - self.height())
+        return (g, 0) if self._tray_edge == "bottom" else (0, g)
 
     def _animate_height(self, target):
         """
@@ -614,7 +606,7 @@ class App(QWidget):
         anim.animate(self, start, target, anim.WIN_RESIZE_MS,
                      lambda v: apply(int(round(v))),
                      easing=anim.WIN_RESIZE_EASING,
-                     on_finished=lambda: apply(target), attr="_h_anim")
+                     on_finished=lambda: apply(target), attr="_h_anim", moves=True)
 
     def set_window_height(self, new_h):
         """Мгновенно меняет высоту окна (используется при скрытом окне)."""
@@ -779,6 +771,16 @@ class App(QWidget):
     def set_update_notify(self, on):
         self.settings["update_notify"] = bool(on)
         self.save_settings()
+
+    def set_live_glass(self, on):
+        """«Живое стекло»: фон под стеклом обновляется постоянно, а не
+        снимком при показе (см. ui/glass.py). Применяется сразу к открытым окнам."""
+        self.settings["live_glass"] = bool(on)
+        self.save_settings()
+        for win in (self, self.spotlight):
+            glass = getattr(win, "_glass", None) if win is not None else None
+            if glass is not None:
+                glass.set_live(bool(on))
 
     def _check_update_bg(self):
         if not self.settings.get("update_notify", True):
@@ -1384,23 +1386,58 @@ class App(QWidget):
             except Exception:
                 pass
 
+    def _visible_histories(self):
+        lists = []
+        if self.main_page.isVisible():
+            lists.append(self.main_page.history)
+        if self.spotlight is not None and self.spotlight.isVisible():
+            lists.append(self.spotlight.history)
+        return lists
+
     def _prune_histories(self):
-        """Тик (1с): если файлы истории удалили с диска — убираем ТОЛЬКО пропавшие
-        строки (не пересобирая весь список) и стираем их из файла истории. Работает
-        лишь когда что-то показано (иначе при показе история и так пересоберётся)."""
-        win = self.main_page.isVisible()
-        spot = self.spotlight is not None and self.spotlight.isVisible()
-        if not win and not spot:
+        """Тик (1с) и показ окна: если файлы истории удалили с диска — убираем
+        ТОЛЬКО пропавшие строки и стираем их из файла истории. Работает лишь
+        когда что-то показано.
+
+        Диск проверяется в фоновом потоке: на сетевой папке, OneDrive или
+        уснувшем внешнем диске одна проверка длится сотни миллисекунд, и раньше
+        окно на это время замирало — раз в секунду и на каждом открытии."""
+        lists = self._visible_histories()
+        if not lists or self._pruning:
             return
-        from core import history
-        gone = set()
-        if win:
-            gone.update(self.main_page.history.drop_missing())
-        if spot:
-            gone.update(self.spotlight.history.drop_missing())
-        for entry_id in gone:
-            if entry_id:
-                history.remove(entry_id)
+        pairs = {}
+        for hl in lists:
+            pairs.update(hl.settled_paths())
+        if not pairs:
+            return
+        self._pruning = True
+        relay = self._prune_relay
+
+        def work():
+            from core import history
+            gone = []
+            try:
+                for entry_id, path in pairs.items():
+                    if entry_id and history.file_gone(path):
+                        history.remove(entry_id)
+                        gone.append(entry_id)
+            except Exception:
+                pass
+            relay.done.emit(gone)
+
+        threading.Thread(target=work, name="history-prune", daemon=True).start()
+
+    def _apply_pruned(self, gone):
+        """Главный поток: убрать строки, чьи файлы пропали (см. _prune_histories)."""
+        self._pruning = False
+        if not gone:
+            return
+        for hl in (self.main_page.history,
+                   self.spotlight.history if self.spotlight is not None else None):
+            if hl is None:
+                continue
+            for entry_id in gone:
+                hl.remove_settled(entry_id)
         self.close_trim_if_gone()
 
     def report_active_downloads(self, source, n):
@@ -1770,6 +1807,8 @@ class App(QWidget):
         if self.current_page != "main":
             self.current_page = "main"
             self.bottom_bar.set_page_mode("main")
+        anim.cancel_swap(self)                # смена вкладок могла не доиграть
+        self._nav_busy = False
         # Только по уже построенным: этот метод зовётся при каждом показе окна,
         # и обращение к свойствам создало бы все страницы на первом же клике.
         for p in self._built_pages():
@@ -1780,10 +1819,7 @@ class App(QWidget):
         self.main_page.show()
         self.main_page.on_window_shown()      # обновить историю окна (убрать удалённые)
         self.main_page.raise_()
-        self.bottom_bar.btn_settings.raise_()
-        self.bottom_bar.btn_folder2.raise_()
-        self.bottom_bar.btn_about.raise_()
-        self.bottom_bar.btn_exit.raise_()
+        self._raise_bar_buttons()
         # Учитываем расширение главной (режим Multiple Links).
         extra = self.main_page.expand_extra()
         target = self.WIN_H_FULL + extra

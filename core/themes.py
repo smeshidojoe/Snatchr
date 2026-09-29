@@ -472,6 +472,66 @@ _DARK_GLASS = {
 }
 
 
+# --- Frosted (стекло без цвета: только размытие и прозрачность) ------------- #
+# Текст и акцент — от Dark Glass. Фон окна — то, что под ним, размытым
+# (ui/glass.py) и притенённым нейтральным чёрным: своего оттенка у стекла нет,
+# цвет даёт только рабочий стол. Когда снимка экрана нет (не Windows, сбой
+# захвата), фон — градиент grad_* ниже.
+#
+# Поверхности (поля, кнопки, переключатели) — не свои серые плашки, а слои
+# белого разной прозрачности поверх стекла (#AARRGGBB), с волосяной кромкой
+# field_edge. Окна без стекла (тосты, меню трея, подсказка онбординга) берут
+# непрозрачные цвета из "solid" через themes.solid(): на них прозрачная
+# поверхность показала бы насквозь рабочий стол.
+_GLASS_SMOKE = dict(_DARK_GLASS)
+_GLASS_SMOKE.update({
+    "glass":         True,
+    "glass_tint":    "#000000",      # нейтральная тень: без оттенка
+    # Плотность тени подбирается под яркость фона (ui/glass.py tint_alpha):
+    # итоговая яркость стремится к glass_bright, плотность — в [glass_min, glass_max].
+    # Над светлым фоном стекло темнеет сильнее — белый текст читается всегда.
+    "glass_bright":  0.16,           # окно
+    "glass_panel_bright": 0.15,      # панели Spotlight (поле, история)
+    "glass_min":     0.45,
+    "glass_max":     0.80,
+    "glass_saturation": 1.0,         # насыщенность размытого фона (1 — как есть)
+    "glass_color":   0.0,
+    "glass_lift":    False,
+    "glass_edge":    "#ffffff",      # тонкая светлая кромка по краю стекла
+    "glass_edge_alpha": 0.22,
+    "grad_center":   "#1c1c21",
+    "grad_edge":     "#0c0c0f",
+    "border":        "#29ffffff",    # 16% рамка окна и карточек
+    "separator":     "#1fffffff",
+
+    # Поверхности — белый разной плотности.
+    "card_bg":       "#0fffffff",    # 6%  карточки, группы настроек
+    "field_bg":      "#12ffffff",    # 7%  поля ввода, селектор
+    "seg_bg":        "#12ffffff",
+    "sel_chip":      "#17ffffff",    # 9%  чип селектора, кнопки-иконки
+    "cb_off":        "#2effffff",    # 18% пустой чекбокс
+    "prog_track":    "#1affffff",
+    "disabled_bg":   "#0affffff",    # 4%  неактивная кнопка почти растворяется
+    "disabled_text": "#5c5c61",
+    "field_edge":    "#14ffffff",    # 8%  волосяная кромка полей
+    "popup_bg":      _DARK_GLASS["field_bg"],   # список селектора, если стекла под ним нет
+
+    "solid": {
+        "card_bg":       _DARK_GLASS["card_bg"],
+        "field_bg":      _DARK_GLASS["field_bg"],
+        "seg_bg":        _DARK_GLASS["seg_bg"],
+        "sel_chip":      _DARK_GLASS["sel_chip"],
+        "cb_off":        _DARK_GLASS["cb_off"],
+        "prog_track":    _DARK_GLASS["prog_track"],
+        "disabled_bg":   _DARK_GLASS["disabled_bg"],
+        "disabled_text": _DARK_GLASS["disabled_text"],
+        "border":        "#38383d",
+        "separator":     "#2e2e33",
+        "field_edge":    "#00000000",
+    },
+})
+
+
 # --- Blackout (однотонная глубокая темнота, сине-серый акцент) --------------- #
 _BLACKOUT = {
     "grad_center":  "#121212",   # без градиента — ровный фон #121212
@@ -526,6 +586,7 @@ _BLACKOUT = {
 
 THEMES = {
     "Glass":          {"assets": "Deep Ocean", "palette": _GLASS},
+    "Frosted":        {"assets": "Deep Ocean", "palette": _GLASS_SMOKE},
     "Dark Glass":     {"assets": "Deep Ocean", "palette": _DARK_GLASS},
     "Glass Night":    {"assets": "Deep Ocean", "palette": _GLASS_NIGHT},
     "Deep Ocean":     {"assets": "Deep Ocean", "palette": _DEEP_OCEAN},
@@ -543,9 +604,30 @@ DEFAULT_THEME = "Glass"
 DISABLED_THEMES = {"Glass Night", "Dark Pulse"}
 
 
+# Ключи, которые есть не у всех палитр: значение по умолчанию.
+for _entry in THEMES.values():
+    _entry["palette"].setdefault("field_edge", "#00000000")   # без кромки полей
+    _entry["palette"].setdefault("popup_bg", _entry["palette"]["field_bg"])
+
+
+def solid(pal):
+    """Палитра для окон БЕЗ стекла (тосты, меню трея, всплывающие окна).
+
+    У Frosted поверхности полупрозрачные — рассчитаны на стекло под ними. В
+    отдельном окне без стекла они показали бы насквозь рабочий стол, поэтому
+    здесь они заменяются непрозрачными из pal["solid"]."""
+    over = pal.get("solid")
+    return {**pal, **over} if over else pal
+
+
 def enabled_themes():
     """Список тем для селектора (без временно отключённых)."""
     return [t for t in THEMES if t not in DISABLED_THEMES]
+
+
+def is_glass(theme):
+    """Тема с настоящим стеклом (фон окна — размытый экран под ним)."""
+    return bool(palette(theme).get("glass"))
 
 
 def palette(theme):

@@ -89,7 +89,7 @@ class DonateButton(Rethemable, QWidget):
             self._press_p = 1.0
             self.update()
 
-        anim.animate(self, 0.0, 1.0, 240, tick,
+        anim.animate(self, 0.0, 1.0, anim.BOUNCE_MS, tick,
                      easing=QEasingCurve.Linear, on_finished=fin,
                      attr="_press_anim")
 

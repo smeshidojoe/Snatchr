@@ -11,7 +11,8 @@ import math
 import time as _time
 
 from PySide6.QtCore import (
-    Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer
+    Qt, QRectF, QPoint, Signal, QPropertyAnimation, QEasingCurve, QTimer,
+    QElapsedTimer
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPixmap, QFontMetrics, QPainterPath, QLinearGradient,
@@ -23,7 +24,8 @@ from core.i18n import tr
 from core.icons import themed_pixmap
 from core.trimmer import res_label
 from ui import anim
-from ui.widgets import SmoothScroll
+from ui.glass import backdrop_of
+from ui.widgets import SmoothScroll, lift
 from core import perflog
 
 
@@ -88,7 +90,7 @@ class GlyphButton(QWidget):
         self._fg = QColor(pal["muted"])
         self._fg_h = QColor(pal["text"])
         self._base_bg = QColor(pal["sel_chip"])
-        self._hover_bg = QColor(pal["sel_chip"]).lighter(140)
+        self._hover_bg = lift(pal["sel_chip"], 140)
         isz = s(19) if self._glyph == "scissors" else s(16)   # ножницы чуть крупнее
         f = _GLYPH_ICON.get(self._glyph)
         self._pm = themed_pixmap(theme, f, pal["muted"], isz) if f else None
@@ -130,7 +132,7 @@ class GlyphButton(QWidget):
             self._hover_t = to           # во время прокрутки — без анимации
             self.update()
             return
-        anim.animate(self, self._hover_t, to, 150, self._hover_tick,
+        anim.animate(self, self._hover_t, to, anim.HOVER_MS, self._hover_tick,
                      easing=anim.EASE_OUT, attr="_hover_anim")
 
     def _hover_tick(self, v):
@@ -159,7 +161,7 @@ class GlyphButton(QWidget):
             self._press_p = 1.0
             self.update()
 
-        anim.animate(self, 0.0, 1.0, 240, tick,
+        anim.animate(self, 0.0, 1.0, anim.BOUNCE_MS, tick,
                      easing=QEasingCurve.Linear, on_finished=fin,
                      attr="_press_anim")
 
@@ -276,8 +278,10 @@ class HistoryRow(QWidget):
                        else "downloading" if downloading else "normal")
         self._spin_angle = 0
         self._transition_t = 0.0          # 1->0: «Fetching…» уезжает, обложка проявляется
+        self._spin_clock = QElapsedTimer()
+        self._spin_clock.start()
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(33)
+        self._spin_timer.setInterval(16)
         self._spin_timer.timeout.connect(self._spin_tick)
         if self._state == "fetching":
             self._spin_timer.start()
@@ -297,6 +301,7 @@ class HistoryRow(QWidget):
         self._fit_cache = {}             # масштабированные обложки (см. _fit)
         self._sub = self._make_sub()     # площадка + разрешение (Instagram · 1080p)
         # плавное заполнение полосы прогресса
+        self._prog_clock = QElapsedTimer()
         self._prog_timer = QTimer(self)
         self._prog_timer.setInterval(16)
         self._prog_timer.timeout.connect(self._prog_tick)
@@ -388,9 +393,9 @@ class HistoryRow(QWidget):
             if on_finished:
                 on_finished()
             return
-        anim.animate(self, self._dl_t, to, 720, self._dl_tick,
+        anim.animate(self, self._dl_t, to, anim.STATE_MS, self._dl_tick,
                      easing=anim.EASE_IN_OUT, on_finished=on_finished,
-                     attr="_dl_anim")
+                     attr="_dl_anim", moves=True)
 
     def _dl_tick(self, v):
         self._dl_t = v
@@ -506,11 +511,21 @@ class HistoryRow(QWidget):
         self._op(p, 1.0)
 
     def _prog_tick(self):
-        self._draw_frac += (self._frac - self._draw_frac) * 0.14
+        # Догоняем цель на одну и ту же долю за единицу ВРЕМЕНИ (0.14 за 16 мс),
+        # а не за тик — иначе при просадке кадров полоса тормозила бы.
+        if self._prog_clock.isValid():
+            dt = self._prog_clock.restart()
+        else:
+            self._prog_clock.start()
+            dt = 16
+        k = 1.0 - (1.0 - 0.14) ** (min(dt, 200) / 16.0)
+        self._draw_frac += (self._frac - self._draw_frac) * k
         if abs(self._draw_frac - self._frac) < 0.003:
+            # Догнали — таймер спит до следующего set_progress (раньше он
+            # перерисовывал строку 60 раз в секунду всю загрузку).
             self._draw_frac = self._frac
-            if self._state != "downloading":
-                self._prog_timer.stop()
+            self._prog_timer.stop()
+            self._prog_clock.invalidate()
         self.update()
 
     def set_preview(self, pm):
@@ -603,7 +618,8 @@ class HistoryRow(QWidget):
         self.update()
 
     def _spin_tick(self):
-        self._spin_angle = (self._spin_angle + 12) % 360
+        # От времени, а не от тиков: при просадке кадров скорость та же.
+        self._spin_angle = (self._spin_clock.elapsed() * 0.36) % 360   # 360°/с
         self.update()
 
     def update_entry(self, entry):
@@ -634,9 +650,9 @@ class HistoryRow(QWidget):
         self._transition_t = 1.0
         if not self._spin_timer.isActive():
             self._spin_timer.start()      # спиннер крутится, пока уезжает
-        anim.animate(self, 1.0, 0.0, 320, self._trans_tick,
+        anim.animate(self, 1.0, 0.0, anim.STATE_MS, self._trans_tick,
                      easing=anim.EASE_OUT, on_finished=self._trans_done,
-                     attr="_trans_anim")
+                     attr="_trans_anim", moves=True)
 
     def _trans_tick(self, v):
         self._transition_t = v
@@ -702,8 +718,11 @@ class HistoryRow(QWidget):
         self._track = QColor(pal["field_bg"])
         self._ok = QColor(pal["ok"])
         self._err = QColor(pal["error"])
-        self._hover_bg = QColor(pal["sel_chip"]); self._hover_bg.setAlpha(150)
-        self._chip = QColor(pal["sel_chip"])         # непрозрачная подложка пилюль
+        self._hover_bg = QColor(pal["sel_chip"])
+        self._hover_bg.setAlpha(self._hover_bg.alpha() * 150 // 255)
+        # Пилюли лежат на треке и на заливке прогресса — им нужна плотная
+        # подложка и у темы Frosted (где sel_chip — полупрозрачный белый).
+        self._chip = QColor(themes.solid(pal)["sel_chip"])
         self._on_accent = QColor(pal["on_accent"])   # текст поверх залитого прогресса
 
     def apply_theme(self, pal=None):
@@ -837,7 +856,7 @@ class HistoryRow(QWidget):
             self._hover_t = to           # во время прокрутки — без анимации
             self.update()
             return
-        anim.animate(self, self._hover_t, to, 160, self._hover_tick,
+        anim.animate(self, self._hover_t, to, anim.HOVER_MS, self._hover_tick,
                      easing=anim.EASE_OUT, attr="_hover_anim")
 
     def _hover_tick(self, v):
@@ -1210,7 +1229,7 @@ class HistoryList(QWidget):
             target_y = i * self._row_h
             if animate and r.y() != target_y:
                 a = QPropertyAnimation(r, b"pos", r)
-                a.setDuration(260)
+                a.setDuration(anim.motion_ms(anim.SHIFT_MS))
                 a.setStartValue(r.pos())
                 from PySide6.QtCore import QPoint as _QP
                 a.setEndValue(_QP(0, target_y))
@@ -1388,9 +1407,9 @@ class HistoryList(QWidget):
             rr.move(0, int(y + shift * t))
             rr.set_alpha(1.0 - t)          # 1 -> 0 по t, значит 0 -> 1 прозрачности
 
-        anim.animate(row, 1.0, 0.0, 240, tick,
+        anim.animate(row, 1.0, 0.0, anim.SHIFT_MS, tick,
                      easing=anim.EASE_OUT, on_finished=done,
-                     attr="_cascade_anim")
+                     attr="_cascade_anim", moves=True)
 
     def insert_new(self, entry):
         """Добавляет готовую запись сверху с анимацией наезда."""
@@ -1423,7 +1442,7 @@ class HistoryList(QWidget):
         self._content.setFixedHeight(len(self._rows) * self._row_h)
         for i, r in enumerate(self._rows[1:], start=1):
             a = QPropertyAnimation(r, b"pos", r)
-            a.setDuration(280)
+            a.setDuration(anim.motion_ms(anim.SLIDE_MS))
             a.setStartValue(QPoint(0, (i - 1) * self._row_h))
             a.setEndValue(QPoint(0, i * self._row_h))
             a.setEasingCurve(anim.EASE_OUT)
@@ -1432,26 +1451,32 @@ class HistoryList(QWidget):
         # новая строка: наезжает сверху (сдвиг + прозрачность)
         row.move(0, -self._row_h // 3)
         a = QPropertyAnimation(row, b"pos", row)
-        a.setDuration(300)
+        a.setDuration(anim.motion_ms(anim.SLIDE_MS))
         a.setStartValue(QPoint(0, -self._row_h // 3))
         a.setEndValue(QPoint(0, 0))
         a.setEasingCurve(anim.EASE_OUT)
         a.start()
         row._pos_anim = a
-        anim.fade(row, 0.0, 1.0, 300)
+        anim.fade(row, 0.0, 1.0, anim.SLIDE_MS)
         self._area.verticalScrollBar().setValue(0)
 
-    def drop_missing(self):
-        """Убирает строки, чей файл удалён с диска (пока окно открыто). Строки
-        идущих загрузок не трогаем. Возвращает id удалённых записей."""
-        from core import history
-        gone = [r for r in self._rows
-                if not r.is_downloading() and not r.is_pending()
-                and not r.is_fetching() and not r.is_error()
-                and history.file_gone(r.entry.get("path"))]
-        for r in gone:
-            self.remove_row(r)
-        return [r.entry.get("id") for r in gone]
+    def _settled(self, r):
+        return (not r.is_downloading() and not r.is_pending()
+                and not r.is_fetching() and not r.is_error())
+
+    def settled_paths(self):
+        """{id: path} готовых строк — что проверять на диске (в фоне)."""
+        return {r.entry.get("id"): r.entry.get("path")
+                for r in self._rows if self._settled(r) and r.entry.get("id")}
+
+    def remove_settled(self, entry_id):
+        """Убирает готовую строку с данным id (файл пропал). Строку, которая
+        за время проверки снова пошла в работу, не трогаем."""
+        for r in list(self._rows):
+            if r.entry.get("id") == entry_id and self._settled(r):
+                self.remove_row(r)
+                return True
+        return False
 
     def set_entry_waveform(self, entry_id, path):
         """Прописать готовую заготовку волны в строку (для мгновенной обрезки)."""
@@ -1570,7 +1595,7 @@ class HistoryList(QWidget):
         def gone(r=row):
             r.setParent(None)
             r.deleteLater()
-        anim.fade(row, 1.0, 0.0, 200, on_finished=gone)
+        anim.fade(row, 1.0, 0.0, anim.EXIT_MS, on_finished=gone)
 
     def paintEvent(self, event):
         if not self._draw_bg:
@@ -1579,6 +1604,11 @@ class HistoryList(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
+        glass = backdrop_of(self)
+        if glass is not None and glass.paint(p, self, QRectF(0, 0, w, h), s(18),
+                                             "glass_panel_bright"):
+            p.end()
+            return
         p.setPen(QPen(self._border, 1))
         grad = QLinearGradient(0, 0, 0, h)      # свой вертикальный градиент истории
         grad.setColorAt(0.0, self._bg.lighter(104))

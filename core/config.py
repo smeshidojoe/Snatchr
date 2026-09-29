@@ -20,6 +20,7 @@ def defaults():
         "convert_yt":      True,          # конвертация VP9 -> H.264 (по умолчанию вкл)
         "tray_icon":       "",            # имя файла в icons/ ("" => иконка по умолчанию)
         "theme":           "Glass",       # стартовая тема для нового пользователя
+        "live_glass":      False,         # тема Frosted: фон под стеклом обновляется постоянно
         "language":        "English",     # язык интерфейса
         "usage_mode":      "focus",       # "toggle" (Pinned) | "focus" (Auto-hide)
         "allow_dragging":  False,         # разрешить перетаскивание окна

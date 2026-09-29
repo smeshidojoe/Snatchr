@@ -247,9 +247,9 @@ class FormatPage(WindowDragMixin, QWidget):
             ty = self._slot_y(i)
             if abs(row.y() - ty) < 1:
                 continue
-            anim.animate(row, float(row.y()), float(ty), 170,
+            anim.animate(row, float(row.y()), float(ty), anim.SHIFT_MS,
                          lambda v, r=row: r.move(self._pad, int(round(v))),
-                         easing=anim.EASE_OUT, attr="_y_anim")
+                         easing=anim.EASE_OUT, attr="_y_anim", moves=True)
 
     # --- изменения ------------------------------------------------------ #
     def _on_toggle(self, key, visible):

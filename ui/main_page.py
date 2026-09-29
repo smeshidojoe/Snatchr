@@ -16,7 +16,7 @@ from ui.widgets import (
     IconButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
     ThemedOwner,
     DownloadButton, Spinner, ScrollList, InfoCardRow,
-    PlaylistHeader, TimeCodeEdit, rounded_pixmap,
+    PlaylistHeader, TimeCodeEdit, rounded_pixmap, edge_css,
 )
 from ui.spotlight_history import HistoryList
 from ui.download_scheduler import DownloadScheduler
@@ -28,6 +28,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
 
     THEME_ATTRS = {
         "FIELD_BG": "field_bg",
+        "FIELD_EDGE": "field_edge",
         "TITLE_COLOR": "title",
         "TEXT_COLOR": "text",
         "MUTED_COLOR": "muted",
@@ -196,7 +197,7 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.url_text.setFont(fonts.font(s(13), "Regular"))
         self.url_text.setPlaceholderText(tr("Paste video links (one per line)…"))
         self.url_text.setStyleSheet(
-            f"QTextEdit {{ background-color: {self.FIELD_BG}; border: none; "
+            f"QTextEdit {{ background-color: {self.FIELD_BG}; {edge_css(self.FIELD_EDGE)} "
             f"border-radius: {s(8)}px; color: {self.TITLE_COLOR}; "
             f"padding: {s(6)}px {s(8)}px; }}")
         self.url_text.textChanged.connect(self._on_multi_text_changed)
@@ -228,9 +229,11 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.tc_to_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         tc_font = fonts.font(s(12), "Medium")   # SF Pro (а не моно) — как в остальном UI
         self.tc_start = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
-                                     self._pal["disabled_bg"], self._pal["disabled_text"])
+                                     self._pal["disabled_bg"], self._pal["disabled_text"],
+                                     edge=self.FIELD_EDGE)
         self.tc_end = TimeCodeEdit(self, tc_font, self.FIELD_BG, self.TITLE_COLOR, s(7),
-                                   self._pal["disabled_bg"], self._pal["disabled_text"])
+                                   self._pal["disabled_bg"], self._pal["disabled_text"],
+                                   edge=self.FIELD_EDGE)
         self.tc_start.setEnabled(False)
         self.tc_end.setEnabled(False)
 
@@ -238,9 +241,10 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             SegmentedControl(
                 self, [(tr("Video"), "video"), (tr("Audio"), "audio")], "video",
                 fonts.font(s(11), "Medium"),
-                self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
+                self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9),
+                edge_color=self.FIELD_EDGE),
             bg_color="seg_bg", sel_color="seg_sel", text_color="muted",
-            sel_text_color="on_accent")
+            sel_text_color="on_accent", edge_color="field_edge")
         self.seg_type.changed.connect(self._on_mode_change)
 
         self.sel_format = self.themed(
@@ -248,10 +252,11 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                      self.FIELD_BG, self.SEL_CHIP, self.TEXT_COLOR,
                      self.SEL_CHEVRON, s(7), s(22),
                      accent=self.SEG_SEL, border=self._pal["border"],
-                     on_accent=self.ON_ACCENT),
+                     on_accent=self.ON_ACCENT, edge=self.FIELD_EDGE,
+                     popup_bg=self._pal["popup_bg"]),
             field_bg="field_bg", chip_bg="sel_chip", text_color="text",
             chevron_color="sel_chevron", accent="seg_sel", border="border",
-            on_accent="on_accent")
+            on_accent="on_accent", edge="field_edge", popup_bg="popup_bg")
         self.sel_format.add_item(tr("Best Quality"))
         self.sel_format.set_current(tr("Best Quality"))
         self.sel_format.changed.connect(self._on_format_change)
@@ -310,15 +315,17 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
                            self.DL_BG, self.DL_BG_HOVER, s(8),
                            fg=self.ON_ACCENT,
                            disabled_bg=self._pal["disabled_bg"],
-                           disabled_text=self._pal["disabled_text"]),
-            fg="on_accent", disabled_bg="disabled_bg", disabled_text="disabled_text")
+                           disabled_text=self._pal["disabled_text"],
+                           edge=self.FIELD_EDGE),
+            fg="on_accent", disabled_bg="disabled_bg", disabled_text="disabled_text",
+            edge="field_edge")
         self.btn_download.clicked.connect(self._on_download_click)
 
     def _style_url_edit(self):
         """Стиль поля ссылки (фон/текст/подсказка — из палитры)."""
         s = self.app._s
         self.url_edit.setStyleSheet(
-            f"QLineEdit {{ background-color: {self.FIELD_BG}; border: none; "
+            f"QLineEdit {{ background-color: {self.FIELD_BG}; {edge_css(self.FIELD_EDGE)} "
             f"border-radius: {s(8)}px; color: {self.TITLE_COLOR}; "
             f"padding-left: {s(10)}px; padding-right: {s(30)}px; }}")
         pal = self.url_edit.palette()
@@ -332,6 +339,10 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         theme = self.settings.get("theme", themes.DEFAULT_THEME)
         self._load_theme()                      # свои цветовые атрибуты
         self._style_url_edit()
+        self.url_text.setStyleSheet(
+            f"QTextEdit {{ background-color: {self.FIELD_BG}; {edge_css(self.FIELD_EDGE)} "
+            f"border-radius: {s(8)}px; color: {self.TITLE_COLOR}; "
+            f"padding: {s(6)}px {s(8)}px; }}")
         css = f"color: {self.TITLE_COLOR}; background: transparent;"
         self.tc_from_lbl.setStyleSheet(css)
         self.tc_to_lbl.setStyleSheet(css)
@@ -343,7 +354,8 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         for tc in (self.tc_start, self.tc_end):
             tc.set_colors(field_bg=self.FIELD_BG, text_color=self.TITLE_COLOR,
                           disabled_bg=self._pal["disabled_bg"],
-                          disabled_text=self._pal["disabled_text"])
+                          disabled_text=self._pal["disabled_text"],
+                          edge=self.FIELD_EDGE)
         # Иконки и картинки — перетонировать под новую палитру.
         self.btn_cancel.set_icons(
             themed_icon(theme, "cancel.png", self._pal["icon"], s(16)),
@@ -800,9 +812,10 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         if cascade is None:
             cascade = not self._history_ready
         self._history_ready = True
-        with perflog.measure("history.prune_missing (диск)"):
-            entries = history.prune_missing()
-        self.history.rebuild(entries, cascade=cascade)
+        # Диск не трогаем: пропавшие файлы уберёт фоновая проверка
+        # (App._prune_histories), окно не ждёт её.
+        self.history.rebuild(history.load(), cascade=cascade)
+        QTimer.singleShot(0, self.app._prune_histories)   # когда окно уже видно
 
     def on_window_shown(self):
         """Окно показали: обновляем историю (rebuild сохраняет pending/загрузки)."""
@@ -918,10 +931,10 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
             h.setGraphicsEffect(None)
             h.hide()
             h.move(h.x(), y0)
-        anim.fade(h, 1.0, 0.0, 220, on_finished=restore)
-        anim.animate(self, 0, self.app._s(30), 220,
+        anim.fade(h, 1.0, 0.0, anim.EXIT_MS, on_finished=restore)
+        anim.animate(self, 0, self.app._s(30), anim.EXIT_MS,
                      lambda v: h.move(h.x(), y0 + int(v)),
-                     easing=anim.EASE_OUT, attr="_hist_out_anim")
+                     easing=anim.EASE_OUT, attr="_hist_out_anim", moves=True)
 
     def _multi_urls(self):
         out = []
@@ -1515,18 +1528,18 @@ class MainPage(ThemedOwner, WindowDragMixin, QWidget):
         self.status_text.setText(text)
         self.status_text.setStyleSheet(f"color: {color}; background: transparent;")
         self.status_box.show()
-        anim.fade(self.status_box, 0.0, 1.0, 200)
-        anim.animate(self, self._status_y + s(8), self._status_y, 200,
+        anim.fade(self.status_box, 0.0, 1.0, anim.ENTER_MS)
+        anim.animate(self, self._status_y + s(8), self._status_y, anim.ENTER_MS,
                      lambda v: self.status_box.move(self._dl_pad, int(round(v))),
-                     easing=anim.EASE_OUT, attr="_status_anim")
+                     easing=anim.EASE_OUT, attr="_status_anim", moves=True)
         self._status_timer.start(int(hold_ms))
 
     def _hide_status(self):
         s = self.app._s
-        anim.fade(self.status_box, 1.0, 0.0, 200, on_finished=self.status_box.hide)
-        anim.animate(self, self._status_y, self._status_y + s(8), 200,
+        anim.fade(self.status_box, 1.0, 0.0, anim.EXIT_MS, on_finished=self.status_box.hide)
+        anim.animate(self, self._status_y, self._status_y + s(8), anim.EXIT_MS,
                      lambda v: self.status_box.move(self._dl_pad, int(round(v))),
-                     easing=anim.EASE_OUT, attr="_status_anim")
+                     easing=anim.EASE_OUT, attr="_status_anim", moves=True)
 
     # ------------------------------------------------------------------ #
     @staticmethod

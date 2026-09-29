@@ -1,7 +1,7 @@
 import os
 import time
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QElapsedTimer
 from PySide6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QBrush, QPen, QPolygonF,
     QFontMetrics, QCursor, QGuiApplication,
@@ -13,6 +13,8 @@ from core import themes, fonts, tools
 from core.icons import tint_pixmap, raw_pixmap, COLORED_ICONS
 from core.i18n import tr
 from ui import anim
+from ui import compose
+from ui.widgets import pressed_rect
 
 # Низкоуровневый мышиный хук (для показа меню по зажатию ЛКМ на иконке трея).
 WH_MOUSE_LL    = 14
@@ -50,6 +52,7 @@ class TrayMenu(QWidget):
             flags |= Qt.Popup
         super().__init__(None, flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         if hold:
             self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
@@ -62,7 +65,7 @@ class TrayMenu(QWidget):
         self._labels = [it[0] for it in self._items]
         self._armed = -1                       # индекс взведённого danger-пункта
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        pal = themes.solid(themes.palette(app.settings.get("theme", themes.DEFAULT_THEME)))
         self._font = fonts.font(s(11), "Regular")
         self._field_bg = QColor(pal["field_bg"])
         self._text_color = QColor(pal["text"])
@@ -82,6 +85,7 @@ class TrayMenu(QWidget):
         self._w = max(widths, default=s(80)) + s(40)
 
         self._hover = -1
+        self._pressed = -1          # строка под нажатой кнопкой мыши
         self._hi_pos = 0.0
         self._hi_alpha = 0.0
         self._opened_at = 0.0
@@ -164,9 +168,18 @@ class TrayMenu(QWidget):
             pass
         super().hideEvent(event)
 
+    def mousePressEvent(self, event):
+        if not self._hold:
+            # Отклик сразу на нажатии: подсветка чуть «вдавливается».
+            self._pressed = self._row_at(event.position().y())
+            self.update()
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event):
         if self._hold:
             return
+        self._pressed = -1
+        self.update()
         # «Хвост» открывающего клика игнорируем, чтобы меню не закрылось сразу.
         if time.monotonic() - self._opened_at < 0.18:
             return
@@ -182,7 +195,7 @@ class TrayMenu(QWidget):
         def tick(p):
             self._cur_color = _blend(c0, tc, p)
             self.update()
-        anim.animate(self, 0.0, 1.0, 160, tick,
+        anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick,
                      easing=anim.EASE_OUT, attr="_col_anim")
 
     def _animate_hi(self, to_idx):
@@ -193,7 +206,7 @@ class TrayMenu(QWidget):
             def tick(p):
                 self._hi_alpha = a0 * (1.0 - p)
                 self.update()
-            anim.animate(self, 0.0, 1.0, 130, tick,
+            anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick,
                          easing=anim.EASE_OUT, attr="_hi_anim")
             return
 
@@ -206,8 +219,8 @@ class TrayMenu(QWidget):
             self._hi_pos = float(to_idx)
             self._hi_alpha = 1.0
             self.update()
-        anim.animate(self, 0.0, 1.0, 190, tick,
-                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim")
+        anim.animate(self, 0.0, 1.0, anim.HOVER_MS, tick,
+                     easing=anim.EASE_OUT, on_finished=fin, attr="_hi_anim", moves=True)
 
     # --- отрисовка ----------------------------------------------------- #
     def paintEvent(self, event):
@@ -225,8 +238,10 @@ class TrayMenu(QWidget):
             acc.setAlphaF(max(0.0, min(1.0, self._hi_alpha)))
             p.setPen(Qt.NoPen)
             p.setBrush(acc)
-            p.drawRoundedRect(QRectF(self._pad, hy, w - 2 * self._pad, self._row_h),
-                              self._radius - 2, self._radius - 2)
+            hrow = QRectF(self._pad, hy, w - 2 * self._pad, self._row_h)
+            if self._pressed >= 0 and self._pressed == int(round(self._hi_pos)):
+                hrow = pressed_rect(hrow)
+            p.drawRoundedRect(hrow, self._radius - 2, self._radius - 2)
 
         p.setFont(self._font)
         for i, label in enumerate(self._labels):
@@ -257,6 +272,7 @@ class TrayAnimator:
         self._timer = QTimer()
         self._timer.setInterval(40)
         self._timer.timeout.connect(self._tick)
+        self._clock = QElapsedTimer()
         self._last_ring = -1.0     # последняя отрисованная доля кольца (анти-дребезг)
 
         self._phase = "idle"       # idle|start|ring|finish|hold|restore
@@ -283,6 +299,7 @@ class TrayAnimator:
         self._phase = "start"
         self._t = 0.0
         if not self._timer.isActive():
+            self._clock.invalidate()     # первый тик — от нуля, не от прошлого запуска
             self._timer.start()
 
     def set_fraction(self, frac):
@@ -295,16 +312,28 @@ class TrayAnimator:
         self._phase = "finish"
         self._t = 0.0
         if not self._timer.isActive():
+            self._clock.invalidate()     # первый тик — от нуля, не от прошлого запуска
             self._timer.start()
 
     # --- покадровая логика --------------------------------------------- #
+    @staticmethod
+    def _chase(k, dt):
+        """Доля пути к цели за dt мс, если за 40 мс проходится доля k."""
+        return 1.0 - (1.0 - k) ** (dt / 40.0)
+
     def _tick(self):
-        dt = self._timer.interval()
+        # Реальное время с прошлого тика, а не интервал таймера: при просадке
+        # кадров фазы не растягиваются, а спиннер не замедляется.
+        if self._clock.isValid():
+            dt = min(self._clock.restart(), 200)
+        else:
+            self._clock.start()
+            dt = self._timer.interval()
         if self._spin:
-            self._angle = (self._angle + 4) % 360   # медленное вращение спиннера
+            self._angle = (self._angle + dt * 0.1) % 360   # 100°/с — медленно
         if self._phase == "start":
             self._t += dt / 240.0
-            self._draw_frac += (self._frac - self._draw_frac) * 0.25
+            self._draw_frac += (self._frac - self._draw_frac) * self._chase(0.25, dt)
             self._set(self._crossfade(self._base_pm, self._active_pixmap(),
                                       min(1.0, self._t)))
             if self._t >= 1.0:
@@ -313,14 +342,14 @@ class TrayAnimator:
             if self._spin:
                 self._set(self._spin_pixmap(self._angle))   # каждый кадр — вращение
             else:
-                self._draw_frac += (self._frac - self._draw_frac) * 0.20
+                self._draw_frac += (self._frac - self._draw_frac) * self._chase(0.20, dt)
                 # Перерисовываем, только когда видимая дуга реально изменилась.
                 if abs(self._draw_frac - self._last_ring) >= 0.004:
                     self._last_ring = self._draw_frac
                     self._set(self._ring_pixmap(self._draw_frac))
         elif self._phase == "finish":
             self._t += dt / 280.0
-            self._draw_frac += (1.0 - self._draw_frac) * 0.30
+            self._draw_frac += (1.0 - self._draw_frac) * self._chase(0.30, dt)
             self._set(self._crossfade(self._active_pixmap(), self._check_pm,
                                       min(1.0, self._t)))
             if self._t >= 1.0:
@@ -335,6 +364,7 @@ class TrayAnimator:
             self._set(self._crossfade(self._check_pm, self._base_pm, min(1.0, self._t)))
             if self._t >= 1.0:
                 self._timer.stop()
+                self._clock.invalidate()
                 self._phase = "idle"
                 self._tray.icon.setIcon(self._tray._resolve_icon())
 
@@ -594,19 +624,20 @@ class FlashToast(QWidget):
     """
 
     HOLD_MS = 1000        # сколько висит на месте
-    IN_MS   = 200
-    OUT_MS  = 180
+    IN_MS   = anim.ENTER_MS
+    OUT_MS  = anim.EXIT_MS
 
     def __init__(self, app, text, error=False):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
                          | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._app = app
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        pal = themes.solid(themes.palette(app.settings.get("theme", themes.DEFAULT_THEME)))
         self._bg = QColor(pal["card_bg"])
         # У плашки ошибки — своя рамка и цвет надписи: отличать успех от отказа
         # надо мгновенно, а читать текст на бегу человек не станет.
@@ -691,13 +722,14 @@ class FlashToast(QWidget):
         self._home = (x, y)
 
         self.move(x + self._dx, y + self._dy)
+        self.setWindowOpacity(0.0)     # без кадра на полной яркости
         self.show()
         self.raise_()
         anim.animate(self, 1.0, 0.0, self.IN_MS,
                      lambda t: self.move(int(x + self._dx * t),
                                          int(y + self._dy * t)),
-                     easing=anim.EASE_OUT, attr="_slide_in")
-        anim.fade(self, 0.0, 1.0, self.IN_MS)
+                     easing=anim.EASE_OUT, attr="_slide_in", moves=True)
+        anim.fade_window(self, 0.0, 1.0, self.IN_MS)
         QTimer.singleShot(self.IN_MS + self.HOLD_MS, self._hide_away)
 
     def _hide_away(self):
@@ -710,8 +742,8 @@ class FlashToast(QWidget):
         dy = getattr(self, "_dy", self._app._s(18))
         anim.animate(self, 0.0, 1.0, self.OUT_MS,
                      lambda t: self.move(int(x + dx * t), int(y + dy * t)),
-                     easing=anim.EASE_OUT, attr="_slide_out")
-        anim.fade(self, 1.0, 0.0, self.OUT_MS, on_finished=self.close)
+                     easing=anim.EASE_OUT, attr="_slide_out", moves=True)
+        anim.fade_window(self, 1.0, 0.0, self.OUT_MS, on_finished=self.close)
 
 
 # ------------------------------------------------------------------ #
@@ -720,40 +752,80 @@ class FlashToast(QWidget):
 class Toast(QWidget):
     """Небольшой тост в правом нижнем углу. Нативные уведомления Windows часто
     не показываются (Focus Assist / настройки), поэтому рисуем свой. Клик —
-    выполнить действие, ✕ — закрыть, авто-скрытие через ~7 c."""
+    выполнить действие, ✕ — закрыть, авто-скрытие через ~7 c.
+
+    Поведение — как у тоста Clipr:
+    * появляется за ENTER_MS (прозрачность + подъём на RISE), уходит быстрее:
+      приходит, когда решила программа, а уходит, когда человек уже всё решил;
+    * пока курсор на тосте, он не исчезает; увёл курсор, не дочитав, — ещё
+      минимум 1.5 c;
+    * новый тост не ложится поверх старого, а заменяет его содержимое на месте
+      (см. TrayIcon.show_toast -> update_message);
+    * мягкая тень; нажатие чуть вдавливает карточку.
+    """
+
+    SHADOW = 14            # поле под тень вокруг карточки
+    RISE = 12              # подъём при появлении
+    LIFE_MS = 7000
 
     def __init__(self, app, title, subtitle, on_click, sticky=False, on_dismiss=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
                          | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
         self._app = app
-        self._on_click = on_click
-        self._sticky = sticky        # не гаснет по таймеру (напр., анонс обновления)
-        self._on_dismiss = on_dismiss  # вызывается при закрытии ✕/ПКМ
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        self._reload_theme()
+        self._radius = s(12)
+        self._title_font = fonts.font(s(12), "Semibold")
+        self._sub_font = fonts.font(s(10), "Regular")
+        self._cw, self._ch = s(252), s(62)          # карточка
+        self._sh = s(self.SHADOW)
+        self._pad = s(16)
+        self._shadow = None
+        self.resize(self._cw + 2 * self._sh, self._ch + 2 * self._sh)
+        self._value = 0.0          # 0 — спрятан, 1 — на месте
+        self._target = 0.0
+        self._home = None          # (x, y) окна в показанном состоянии
+        self._hover = self._hover_close = self._pressed = False
+        self._left = 0             # сколько оставалось жить, когда навели курсор
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._dismiss)
+        self._set_content(title, subtitle, on_click, sticky, on_dismiss)
+
+    def _reload_theme(self):
+        pal = themes.solid(themes.palette(self._app.settings.get("theme", themes.DEFAULT_THEME)))
         self._bg = QColor(pal["card_bg"])
         self._border = QColor(pal["border"])
         self._title_col = QColor(pal["title"])
         self._muted = QColor(pal["muted"])
         self._accent = QColor(pal["accent"])
-        self._radius = s(12)
+
+    def _set_content(self, title, subtitle, on_click, sticky, on_dismiss):
         self._title = title
         self._sub = subtitle
-        self._title_font = fonts.font(s(12), "Semibold")
-        self._sub_font = fonts.font(s(10), "Regular")
-        self._w, self._h = s(252), s(62)
-        self._pad = s(16)
-        self._close_r = QRectF(self._w - s(24), s(6), s(18), s(18))
-        self.resize(self._w, self._h)
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(7000)
-        self._timer.timeout.connect(self._dismiss)
+        self._on_click = on_click
+        self._sticky = sticky        # не гаснет по таймеру (напр., анонс обновления)
+        self._on_dismiss = on_dismiss  # вызывается при закрытии ✕/ПКМ
 
+    # --- геометрия ------------------------------------------------------ #
+    def _card(self):
+        return QRectF(self._sh, self._sh, self._cw, self._ch)
+
+    def _close_rect(self):
+        s = self._app._s
+        c = self._card()
+        return QRectF(c.right() - s(24), c.top() + s(6), s(18), s(18))
+
+    def _near_close(self, pos):
+        return self._close_rect().adjusted(-3, -3, 3, 3).contains(pos)
+
+    # --- показ ---------------------------------------------------------- #
     def show_at(self, mode):
         """mode='corner' — правый нижний угол монитора, на котором курсор;
         mode='cursor' — рядом с указателем. Учитывает мультимонитор."""
@@ -761,68 +833,188 @@ class Toast(QWidget):
         screen = QGuiApplication.screenAt(cur) or QGuiApplication.primaryScreen()
         avail = screen.availableGeometry()
         m = self._app._s(14)
+        w, h = self._cw, self._ch
         if mode == "cursor":
             x = cur.x() + m
             y = cur.y() + m
-            if x + self._w > avail.right():
-                x = cur.x() - self._w - m
-            if y + self._h > avail.bottom():
-                y = cur.y() - self._h - m
+            if x + w > avail.right():
+                x = cur.x() - w - m
+            if y + h > avail.bottom():
+                y = cur.y() - h - m
         else:  # corner — угол того монитора, где мышь
-            x = avail.right() - self._w - m
-            y = avail.bottom() - self._h - m
-        x = max(avail.left(), min(x, avail.right() - self._w))
-        y = max(avail.top(), min(y, avail.bottom() - self._h))
-        self.move(x, y)
+            x = avail.right() - w - m
+            y = avail.bottom() - h - m
+        x = max(avail.left(), min(x, avail.right() - w))
+        y = max(avail.top(), min(y, avail.bottom() - h))
+        self._home = (x - self._sh, y - self._sh)    # окно шире карточки на тень
+        self._place()
+        self.setWindowOpacity(0.0)                   # без кадра на полной яркости
         self.show()
         self.raise_()
-        anim.fade(self, 0.0, 1.0, 200)
-        if not self._sticky:            # sticky-тост висит, пока его не закроют
-            self._timer.start()
+        self._animate(1.0, anim.ENTER_MS)
+        self._restart_life()
+
+    def update_message(self, title, subtitle, on_click, sticky=False, on_dismiss=None):
+        """Новое сообщение, пока этот тост на экране: меняем содержимое на месте
+        (и заново проявляем, если он уже уходил), а не кладём второй поверх."""
+        self._set_content(title, subtitle, on_click, sticky, on_dismiss)
+        self._pressed = False
+        self.update()
+        self._animate(1.0, anim.ENTER_MS)
+        self._restart_life()
+
+    def is_alive(self):
+        """На экране и не уходит — такой тост можно переиспользовать."""
+        try:
+            return self.isVisible() and self._target > 0.5
+        except RuntimeError:
+            return False
+
+    def _restart_life(self):
+        self._timer.stop()
+        self._left = 0 if self._sticky else self.LIFE_MS
+        if self._left and not self._hover:
+            self._timer.start(self._left)
+
+    def _animate(self, target, duration):
+        self._target = target
+        anim.animate(self, self._value, target, duration, self._on_value,
+                     easing=anim.EASE_OUT, attr="_show_anim",
+                     on_finished=self._on_anim_done)
+
+    def _on_value(self, v):
+        self._value = float(v)
+        self.setWindowOpacity(self._value)
+        self._place()
+
+    def _on_anim_done(self):
+        if self._target <= 0.0:
+            self.close()
+
+    def _place(self):
+        if self._home is None:
+            return
+        # Подъём снизу; при «меньше анимации» — только прозрачность.
+        rise = 0.0 if anim.reduced_motion() else self.RISE * (1.0 - self._value)
+        self.move(self._home[0], self._home[1] + int(round(self._app._s(rise))))
 
     def _dismiss(self):
         self._timer.stop()
-        anim.fade(self, 1.0, 0.0, 180, on_finished=self.close)
+        self._animate(0.0, anim.EXIT_MS)
+
+    # --- мышь ----------------------------------------------------------- #
+    def enterEvent(self, event):
+        self._hover = True
+        if self._timer.isActive():
+            self._left = self._timer.remainingTime()
+            self._timer.stop()
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = self._hover_close = self._pressed = False
+        # Дочитать не дали — даём ещё немного, а не прячем сразу.
+        if self._left and self.isVisible() and self._target > 0:
+            self._timer.start(max(self._left, 1500))
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        near = self._near_close(event.position())
+        if near != self._hover_close:
+            self._hover_close = near
+            self.update()
+
+    def mousePressEvent(self, event):
+        if self._card().contains(event.position()):
+            self._pressed = True           # отклик сразу, на нажатие
+            self.update()
 
     def mouseReleaseEvent(self, event):
-        self._timer.stop()
+        self._pressed = False
         # ПКМ — просто закрыть тост; ✕ — тоже закрыть; ЛКМ — запустить действие.
-        if event.button() == Qt.RightButton or self._close_r.contains(event.position()):
+        if event.button() == Qt.RightButton or self._near_close(event.position()):
+            self._left = 0
             if self._on_dismiss:        # напр., запомнить «этот апдейт отклонили»
                 self._on_dismiss()
             self._dismiss()
             return
+        if not self._card().contains(event.position()):
+            self.update()                # увёл курсор с карточки — отмена
+            return
+        self._left = 0
         cb = self._on_click
-        self.close()
+        self._dismiss()
         if cb:
             QTimer.singleShot(0, cb)
+
+    # --- отрисовка ------------------------------------------------------ #
+    def _shadow_image(self):
+        """Мягкая тень: скруглённый прямоугольник, уменьшенный и растянутый
+        обратно со сглаживанием — почти гауссово пятно, считается один раз."""
+        if self._shadow is None:
+            dpr = self.devicePixelRatioF() or 1.0
+            W, H = int(self.width() * dpr), int(self.height() * dpr)
+            img = QImage(W, H, QImage.Format_ARGB32_Premultiplied)
+            img.fill(Qt.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 110))
+            c = self._card()
+            p.drawRoundedRect(QRectF(c.x() * dpr, (c.y() + 3) * dpr,
+                                     c.width() * dpr, c.height() * dpr),
+                              self._radius * dpr, self._radius * dpr)
+            p.end()
+            small = img.scaled(max(1, W // 6), max(1, H // 6),
+                               Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            img = small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            img.setDevicePixelRatio(dpr)
+            self._shadow = img
+        return self._shadow
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self._app._s
-        w, h = self.width(), self.height()
+        p.drawImage(0, 0, self._shadow_image())
+        card = self._card()
+        if self._pressed and not self._hover_close:
+            # Нажатие: карточка чуть «вдавливается» (0.97 от центра).
+            c = card.center()
+            p.translate(c)
+            p.scale(0.97, 0.97)
+            p.translate(-c)
+        bg = QColor(self._bg)
+        if self._hover and not self._hover_close:
+            bg = _blend(bg, self._accent, 0.06)
         p.setPen(QPen(self._border, 1))
-        p.setBrush(self._bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), self._radius, self._radius)
+        p.setBrush(bg)
+        p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), self._radius, self._radius)
         # акцентная полоска слева
         p.setPen(Qt.NoPen)
         p.setBrush(self._accent)
-        p.drawRoundedRect(QRectF(s(7), h / 2 - s(12), s(3), s(24)), s(1.5), s(1.5))
-        tx = self._pad + s(2)
+        p.drawRoundedRect(QRectF(card.x() + s(7), card.center().y() - s(12), s(3), s(24)),
+                          s(1.5), s(1.5))
+        tx = card.x() + self._pad + s(2)
+        right = card.right()
         p.setFont(self._title_font)
         p.setPen(self._title_col)
-        p.drawText(QRectF(tx, s(9), w - tx - s(22), s(20)),
+        p.drawText(QRectF(tx, card.y() + s(9), right - tx - s(22), s(20)),
                    Qt.AlignVCenter | Qt.AlignLeft, self._title)
         p.setFont(self._sub_font)
         p.setPen(self._muted)
         fm = QFontMetrics(self._sub_font)
-        sub = fm.elidedText(self._sub, Qt.ElideRight, int(w - tx - self._pad))
-        p.drawText(QRectF(tx, s(31), w - tx - self._pad, s(18)),
+        sub = fm.elidedText(self._sub, Qt.ElideRight, int(right - tx - self._pad))
+        p.drawText(QRectF(tx, card.y() + s(31), right - tx - self._pad, s(18)),
                    Qt.AlignVCenter | Qt.AlignLeft, sub)
-        # ✕ (пожирнее и заметнее)
-        cr = self._close_r
-        xpen = QPen(self._muted, max(2.0, s(2.2)))
+        # ✕ — под курсором проявляется подложка
+        cr = self._close_rect()
+        if self._hover_close:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(self._muted.red(), self._muted.green(),
+                              self._muted.blue(), 40))
+            p.drawEllipse(cr)
+        xpen = QPen(self._title_col if self._hover_close else self._muted,
+                    max(2.0, s(2.2)))
         xpen.setCapStyle(Qt.RoundCap)
         p.setPen(xpen)
         p.drawLine(QPointF(cr.left() + s(4), cr.top() + s(4)),
@@ -924,10 +1116,17 @@ class TrayIcon:
         пока не закроют (напр., анонс обновления)."""
         if self.app.is_updating():
             return                     # во время обновления программа стоит
-        if self._toast is not None:
+        old = self._toast
+        if old is not None:
             try:
-                self._toast.close()
-            except Exception:
+                if old.is_alive():
+                    # Тост ещё на экране — меняем содержимое на месте, а не
+                    # кладём второй поверх (и не мигаем закрытием/открытием).
+                    old.update_message(title, subtitle, on_click,
+                                       sticky=sticky, on_dismiss=on_dismiss)
+                    return
+                old.close()
+            except RuntimeError:
                 pass
         self._toast = Toast(self.app, title, subtitle, on_click,
                             sticky=sticky, on_dismiss=on_dismiss)

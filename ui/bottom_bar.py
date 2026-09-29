@@ -234,7 +234,7 @@ class BottomBar(QWidget):
                 anim.animate(b, 1.0, 0.0, anim.WIN_RESIZE_MS,
                              lambda t: b.move(self._about_x(),
                                               int(base_y + off * t)),
-                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim")
+                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim", moves=True)
                 anim.fade(b, 0.0, 1.0, anim.WIN_RESIZE_MS)
         else:
             if not b.isVisible():
@@ -245,7 +245,7 @@ class BottomBar(QWidget):
                 anim.animate(b, 0.0, 1.0, anim.WIN_RESIZE_MS,
                              lambda t: b.move(self._about_x(),
                                               int(sy + off * t)),
-                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim")
+                             easing=anim.WIN_RESIZE_EASING, attr="_about_move_anim", moves=True)
                 anim.fade(b, 1.0, 0.0, anim.PAGE_FADE_OUT_MS, on_finished=b.hide)
             else:
                 b.hide()
@@ -258,10 +258,10 @@ class BottomBar(QWidget):
                 btn.show()
                 btn.raise_()
                 if animate:
-                    anim.fade(btn, 0.0, 1.0, 180)
+                    anim.fade(btn, 0.0, 1.0, anim.ENTER_MS)
         elif btn.isVisible():
             if animate:
-                anim.fade(btn, 1.0, 0.0, 160, on_finished=btn.hide)
+                anim.fade(btn, 1.0, 0.0, anim.EXIT_MS, on_finished=btn.hide)
             else:
                 btn.hide()
 
@@ -278,7 +278,7 @@ class BottomBar(QWidget):
                      lambda t: btn.move(int(sx + (tx - sx) * t),
                                         int(sy + (ty - sy) * t)),
                      easing=anim.WIN_RESIZE_EASING,
-                     on_finished=on_done, attr="_bar_move_anim")
+                     on_finished=on_done, attr="_bar_move_anim", moves=True)
 
     def _open_folder(self):
         path = self.settings.get("download_path", "")

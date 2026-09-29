@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QWidget
 from core import fonts, themes
 from core.i18n import tr
 from core.workers import ThumbWorker
+from ui.glass import backdrop_of
 from ui.widgets import ScrollList, InfoCardRow, PlaylistHeader, DownloadButton, rounded_pixmap
 
 
@@ -39,7 +40,8 @@ class PlaylistPanel(QWidget):
                                    pal["download_bg"], pal["download_bg_hover"], s(8),
                                    fg=pal["on_accent"],
                                    disabled_bg=pal["disabled_bg"],
-                                   disabled_text=pal["disabled_text"])
+                                   disabled_text=pal["disabled_text"],
+                                   edge=pal["field_edge"])
         self._btn.clicked.connect(self._on_download_click)
         self._header = None              # закреплённая шапка (вне скролла)
 
@@ -57,7 +59,7 @@ class PlaylistPanel(QWidget):
         self._list.set_colors(track_color=pal["field_bg"], handle_color=pal["muted"])
         self._btn.set_colors(bg=pal["download_bg"], hover=pal["download_bg_hover"],
                              fg=pal["on_accent"], disabled_bg=pal["disabled_bg"],
-                             disabled_text=pal["disabled_text"])
+                             disabled_text=pal["disabled_text"], edge=pal["field_edge"])
         if self._header is not None:
             try:
                 self._header.set_colors(
@@ -186,9 +188,12 @@ class PlaylistPanel(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
-        p.setPen(QPen(self._border, 1))
-        p.setBrush(self._bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), s(18), s(18))
+        glass = backdrop_of(self)
+        if glass is None or not glass.paint(p, self, QRectF(0, 0, w, h), s(18),
+                                            "glass_panel_bright"):
+            p.setPen(QPen(self._border, 1))
+            p.setBrush(self._bg)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), s(18), s(18))
         p.end()
 
     @staticmethod

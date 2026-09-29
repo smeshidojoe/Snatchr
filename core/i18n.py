@@ -19,6 +19,15 @@ _RU = {
     "Usage": "Режим работы",
     "Interface": "Интерфейс",
     "Window Mode": "Режим окна",
+    "Toast Position": "Где показывать тост",
+    "Hide Mode": "Скрытие",
+    "Live Glass": "Живое стекло",
+    "Glass follows what is behind the window in real time.\n"
+    "While on, the window is hidden from screenshots and\n"
+    "screen recordings (Windows cannot capture it).":
+        "Стекло в реальном времени повторяет то, что под окном.\n"
+        "Пока включено, окно не попадает на скриншоты и в\n"
+        "запись экрана (Windows не может его захватить).",
     "General": "Общее",
     "Advanced": "Дополнительно",
     "System": "Система",

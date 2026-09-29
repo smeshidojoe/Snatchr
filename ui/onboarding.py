@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QWidget
 from core import fonts, themes
 from core.i18n import tr
 from ui import anim
+from ui import compose
 from ui.widgets import LinkButton
 
 
@@ -35,7 +36,8 @@ class TrayHint(QWidget):
         self.app = app
         self._edge = edge
         s = app._s
-        pal = themes.palette(app.settings.get("theme", themes.DEFAULT_THEME))
+        # Отдельное окно без стекла — непрозрачные цвета (themes.solid).
+        pal = themes.solid(themes.palette(app.settings.get("theme", themes.DEFAULT_THEME)))
         self._bg = QColor(pal["card_bg"])
         self._border = QColor(pal["separator"])
         self._title_col = QColor(pal["title"])
@@ -44,6 +46,7 @@ class TrayHint(QWidget):
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
         self._title = tr("Snatchr lives in the tray")
@@ -102,13 +105,14 @@ class TrayHint(QWidget):
         # Стартуем ближе к трею: пузырёк под треем — чуть выше, над треем — ниже.
         start_y = final.y() + (-rise if self._arrow_up() else rise)
         self.move(final.x(), start_y)
+        self.setWindowOpacity(0.0)     # без кадра на полной яркости
         self.show()
         self.raise_()
         anim.animate(self, 0.0, 1.0, 340,
                      lambda v: self.move(final.x(),
                                          int(start_y + (final.y() - start_y) * v)),
-                     easing=anim.EASE_OUT, attr="_slide_anim")
-        anim.fade(self, 0.0, 1.0, 260)
+                     easing=anim.EASE_OUT, attr="_slide_anim", moves=True)
+        anim.fade_window(self, 0.0, 1.0, 260)
 
     def _dismiss(self):
         """Закрытие: уезжает обратно к трею и гаснет."""
@@ -116,10 +120,10 @@ class TrayHint(QWidget):
         cur = self.pos()
         drop = s(10)
         end_y = cur.y() + (-drop if self._arrow_up() else drop)
-        anim.animate(self, 0.0, 1.0, 200,
+        anim.animate(self, 0.0, 1.0, anim.EXIT_MS,
                      lambda v: self.move(cur.x(), int(cur.y() + (end_y - cur.y()) * v)),
-                     easing=anim.EASE_OUT, attr="_slide_anim")
-        anim.fade(self, 1.0, 0.0, 190, on_finished=self._finish)
+                     easing=anim.EASE_OUT, attr="_slide_anim", moves=True)
+        anim.fade_window(self, 1.0, 0.0, anim.EXIT_MS, on_finished=self._finish)
 
     def _finish(self):
         self.hide()

@@ -10,7 +10,7 @@ from core.i18n import tr
 from core.icons import themed_icon
 from ui.widgets import (
     IconButton, LinkButton, CheckBox, SegmentedControl, Selector, WindowDragMixin,
-    SmoothScroll, ThemedOwner,
+    SmoothScroll, ThemedOwner, Switch, SettingsGroup,
 )
 
 # Отображаемая подпись -> значение cookies_browser в конфиге.
@@ -359,102 +359,75 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         content.setStyleSheet("background: transparent;")
         self._host = content
 
+        # Каждый блок — карточка-группа (как в Scribe/Clipr): подпись слева,
+        # элемент управления справа, строки разделены волосяной линией.
+        gap = s(18)                           # воздух между группами
         y = s(2)
-        # Куки-блок теперь первый (перед General) и назван по смыслу.
-        self._section_title(tr("Authentification (For Restricted Videos)"), pad, y)
-        y += s(20) + self._build_cookies_card(pad, y + s(20), card_w) + s(22)
-
-        # General: только галочки/настройки загрузки (yt-dlp и Tools уехали в Repair).
-        self._section_title(tr("General"), pad, y)
-        y += s(18)
-        # Конвертация YouTube-видео + встраивание обложки — сразу за ней.
-        self._build_convert_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
-        self._build_embed_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
-        # Буфер обмена (+ режим тоста справа).
-        self._build_clipboard_row(pad, y, card_w)
-        y += s(30) + s(6)
-        # Копировать ли скачанный по Toast файл в буфер (рядом со слежением).
-        self._build_toast_copy_checkbox(pad, y, card_w)
-        y += s(30) + s(14)                    # воздух перед автовставкой
-        # Автовставка ссылки из буфера при открытии окна (+ выбор сайтов).
-        y += self._build_autopaste_block(pad, y, card_w) + s(14)
-        # Одновременных загрузок (1..3).
-        self._build_parallel_row(pad, y, card_w)
-        y += s(34) + s(8)
-        # Лимит скорости загрузки (Мбит/с; «Unlimited» = без ограничения).
-        self._build_speed_limit_row(pad, y, card_w)
-        y += s(34) + s(16)
-        self._divider(pad, y, card_w)         # разделитель после Parallel Downloads
-        y += s(16)
-
-        # Скачивание прямо по горячей клавише (ссылка берётся из буфера).
-        self._section_title(tr("Hotkey Starts Download"), pad, y)
-        y += s(18)
-        self._build_hk_download_row(pad, y, card_w)
-        y += s(30) + s(4)
-        self._build_hk_notify_row(pad, y, card_w)
-        y += s(30) + s(10)
-        self._build_hk_combo_row(tr("Download Video"), "hk_download_video",
-                                 "ctrl+alt+v", self.app.set_hk_download_video,
-                                 pad, y, card_w)
-        y += s(34) + s(8)
-        self._build_hk_combo_row(tr("Download Audio"), "hk_download_audio",
-                                 "ctrl+alt+a", self.app.set_hk_download_audio,
-                                 pad, y, card_w)
-        y += s(34) + s(16)
-        self._divider(pad, y, card_w)     # разделитель после блока
-        y += s(16)
-
-        # Spotlight (вкл/выкл + режим скрытия + смена сочетания) — после Parallel.
-        self._section_title(tr("Spotlight"), pad, y)
-        y += s(18)
-        self._build_spotlight_row(pad, y, card_w)
-        y += s(30) + s(10)
-        self._build_hotkey_row(pad, y, card_w)
-        y += s(34) + s(16)                    # отступы вокруг разделителей — равные
-        self._divider(pad, y, card_w)         # разделитель после блока Spotlight
-        y += s(16)
-
-        # Приоритет форматов: заголовок + подпись + кнопка Edit (отдельная страница).
-        y += self._build_format_priority_row(pad, y, card_w) + s(16)
-        self._divider(pad, y, card_w)         # разделитель после Format Priority
-        y += s(16)
-
-        # Interface (иконка трея, тема, язык + режим окна)
-        self._section_title(tr("Interface"), pad, y)
-        y += s(24)
-        y += self._build_usage_card(pad, y, card_w) + s(10)
-        self._build_select_row(tr("Menu Bar Icon"), pad, y, self._icon_values(),
-                               self._current_icon_display(), self._on_icon_change,
-                               icons=self._icon_icons())
-        y += s(34)
-        self._build_select_row(tr("Theme"), pad, y, list(THEMES),
-                               self.settings.get("theme", THEMES[0]), self._on_theme_change)
-        y += s(34)
-        self._build_select_row(tr("Language"), pad, y, list(LANGUAGES),
-                               self.settings.get("language", DEFAULT_LANGUAGE),
-                               self._on_language_change)
-        y += s(34) + s(22)                    # отступ между блоками
-
-        # System: уведомления об обновлениях + автозапуск.
-        self._section_title(tr("System"), pad, y)
-        y += s(18)
-        self._build_update_checkbox(pad, y, card_w)
-        y += s(30) + s(6)
-        self._build_autostart_checkbox(pad, y, card_w)
-        y += s(30) + s(22)
-
-        # Repair: обновление/починка внешних бинарников (yt-dlp, ffmpeg, кэш).
-        self._section_title(tr("Repair"), pad, y)
-        y += s(18)
-        # yt-dlp: слева название, по центру переключатель канала, справа обновление.
-        self._build_ytdlp_row(pad, y, card_w)
-        y += s(34) + s(12)
-        # Tools: слева название, справа обновление ffmpeg + очистка кэша.
-        self._build_tools_row(pad, y, card_w)
-        y += s(34) + s(18)
+        y = self._group(tr("Authentification (For Restricted Videos)"), pad, y, card_w, [
+            self._row_cookies,
+        ]) + gap
+        y = self._group(tr("General"), pad, y, card_w, [
+            self._switch_row("convert_yt", tr("Convert Youtube Videos"), False,
+                             lambda v: self._set_flag("convert_yt", v), self.CONVERT_TIP),
+            self._switch_row("embed_thumbnail", tr("Embed Thumbnail"), False,
+                             lambda v: self._set_flag("embed_thumbnail", v)),
+            self._switch_row("clipboard_watch", tr("Watch clipboard for links"), False,
+                             self.app.set_clipboard_watch, self.CLIPBOARD_TIP),
+            self._row_toast_position,
+            self._switch_row("toast_copy_file", tr("Copy downloaded file to clipboard"),
+                             True, self.app.set_toast_copy_file),
+            self._switch_row("autopaste", tr("Paste link on open"), False,
+                             lambda v: self._set_flag("autopaste", v), self.AUTOPASTE_TIP),
+            self._row_autopaste_sites,
+            self._row_parallel,
+            self._row_speed_limit,
+        ]) + gap
+        y = self._group(tr("Hotkey Starts Download"), pad, y, card_w, [
+            self._switch_row("hk_download_enabled", tr("Enable Feature"), False,
+                             self.app.set_hk_download_enabled, self.HK_DOWNLOAD_TIP),
+            self._switch_row("hk_download_notify", tr("Show notification"), True,
+                             self.app.set_hk_download_notify, self.HK_NOTIFY_TIP),
+            self._hotkey_row(tr("Download Video"), "hk_download_video", "ctrl+alt+v",
+                             self.app.set_hk_download_video),
+            self._hotkey_row(tr("Download Audio"), "hk_download_audio", "ctrl+alt+a",
+                             self.app.set_hk_download_audio),
+        ]) + gap
+        y = self._group(tr("Spotlight"), pad, y, card_w, [
+            self._switch_row("spotlight_enabled", tr("Enable Spotlight"), True,
+                             self.app.set_spotlight_enabled, self.SPOTLIGHT_TIP),
+            self._row_spotlight_dismiss,
+            self._row_spotlight_shortcut,
+        ]) + gap
+        y = self._group(tr("Format Priority"), pad, y, card_w, [
+            self._row_format_priority,
+        ]) + gap
+        interface_rows = [
+            self._switch_row("allow_dragging", tr("Allow Dragging"), False,
+                             self._on_drag_change, self.DRAG_TIP),
+            self._row_window_mode,
+            self._select_row(tr("Menu Bar Icon"), self._icon_values(),
+                             self._current_icon_display(), self._on_icon_change,
+                             icons=self._icon_icons()),
+            self._select_row(tr("Theme"), list(THEMES),
+                             self.settings.get("theme", THEMES[0]), self._on_theme_change),
+            # Живое стекло — только у прозрачной темы Frosted (см. ui/glass.py).
+            self._switch_row("live_glass", tr("Live Glass"), False,
+                             self.app.set_live_glass, self.LIVE_GLASS_TIP),
+            self._select_row(tr("Language"), list(LANGUAGES),
+                             self.settings.get("language", DEFAULT_LANGUAGE),
+                             self._on_language_change),
+        ]
+        y = self._group(tr("Interface"), pad, y, card_w, interface_rows) + gap
+        y = self._group(tr("System"), pad, y, card_w, [
+            self._switch_row("update_notify", tr("Notify about updates"), True,
+                             self.app.set_update_notify),
+            self._switch_row("autostart", tr("Launch at startup"), False,
+                             self.app.set_autostart),
+        ]) + gap
+        y = self._group(tr("Repair"), pad, y, card_w, [
+            self._row_ytdlp,
+            self._row_tools,
+        ]) + s(16)
         # Open Logs Folder + Reset Settings — в самом низу, под Repair.
         self._build_bottom_buttons(pad, y, card_w)
         y += s(32) + s(30)                    # + увеличенный нижний отступ
@@ -462,40 +435,235 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         content.resize(self.width_, y)
         area.setWidget(content)
 
-    # --- строки блоков ------------------------------------------------- #
-    def _build_ytdlp_row(self, x, y, card_w):
-        s = self.app._s
-        rh = s(30)
-        self._label("yt-dlp", fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6),
-                    key="text")
-        # Переключатель канала — справа (старое положение).
-        seg_w = s(160)
-        seg = self.themed(SegmentedControl(
-            self._host, [("Stable", "stable"), ("Nightly", "nightly")],
-            self.settings.get("ytdlp_channel", "stable"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
-                            bg_color="seg_bg", sel_color="seg_sel",
-                            text_color="muted", sel_text_color="on_accent")
-        seg_w = seg.fit_width(seg_w)
-        seg.setGeometry(self.width_ - x - seg_w, y, seg_w, rh)
-        seg.changed.connect(self.app.set_ytdlp_channel)
-        self._ytdlp_seg = seg
+    LIVE_GLASS_TIP = ("Glass follows what is behind the window in real time.\n"
+                      "While on, the window is hidden from screenshots and\n"
+                      "screen recordings (Windows cannot capture it).")
 
-    def _build_tools_row(self, x, y, card_w):
+    # --- группы и строки ------------------------------------------------ #
+    def _row_h(self):
+        return self.app._s(40)
+
+    def _group(self, title, x, y, w, rows):
+        """Карточка-группа: заголовок над ней, строки внутри.
+
+        rows — функции f(rx, ry, rw) -> высота строки: rx/rw — поле строки уже
+        с внутренним отступом карточки. Возвращает y под карточкой."""
         s = self.app._s
-        rh, bh, gap = s(30), s(26), s(8)
-        self._label(tr("Tools"), fonts.font(s(12), "Medium"), self.TEXT_COLOR, x, y + s(6),
-                    key="text")
+        if title:
+            self._section_title(title, x + s(4), y)
+            y += s(18)
+        ip = s(12)
+        group = self.themed(SettingsGroup(
+            self._host, self._pal["card_bg"], self._pal["separator"],
+            self._pal["border"], s(10), ip),
+            bg_color="card_bg", line_color="separator", border_color="border")
+        cy = 0
+        for i, build in enumerate(rows):
+            if i:
+                group.add_line(cy)
+            cy += build(x + ip, y + cy, w - 2 * ip)
+        group.setGeometry(x, y, w, cy)
+        group.lower()                         # под строками
+        return y + cy
+
+    def _row_label(self, text, x, y, h, tip=None):
+        s = self.app._s
+        lbl = self._label(text, fonts.font(s(12), "Regular"), self.TEXT_COLOR,
+                          x, y, key="text")
+        lbl.move(x, y + (h - lbl.height()) // 2)
+        if tip:
+            lbl.setToolTip(tr(tip))
+        return lbl
+
+    def _switch_row(self, key, text, default, on_toggle, tip=None):
+        def build(x, y, w):
+            s = self.app._s
+            h = self._row_h()
+            sw = self.themed(Switch(self._host, text, fonts.font(s(12), "Regular"),
+                                    self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(20)),
+                             text_color="text", off_color="cb_off", on_color="cb_on")
+            sw.setChecked(bool(self.settings.get(key, default)))
+            sw.setGeometry(x, y, w, h)
+            if tip:
+                sw.setToolTip(tr(tip))
+            sw.toggled.connect(on_toggle)
+            self._checks[key] = sw
+            return h
+        return build
+
+    def _seg(self, options, current, min_w):
+        s = self.app._s
+        seg = self.themed(SegmentedControl(
+            self._host, options, current, fonts.font(s(11), "Medium"),
+            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9),
+            edge_color=self._pal["field_edge"]),
+            bg_color="seg_bg", sel_color="seg_sel",
+            text_color="muted", sel_text_color="on_accent", edge_color="field_edge")
+        return seg, seg.fit_width(min_w)
+
+    def _seg_row(self, label, options, current, on_change, min_w, tip=None):
+        """Строка: подпись слева, сегменты справа. Возвращает (build, holder)."""
+        holder = {}
+
+        def build(x, y, w):
+            s = self.app._s
+            h = self._row_h()
+            self._row_label(label, x, y, h, tip)
+            seg, sw = self._seg(options, current, min_w)
+            sh = s(28)
+            seg.setGeometry(x + w - sw, y + (h - sh) // 2, sw, sh)
+            if tip:
+                seg.setToolTip(tr(tip))
+            seg.changed.connect(on_change)
+            holder["seg"] = seg
+            return h
+        return build, holder
+
+    def _row_toast_position(self, x, y, w):
+        build, holder = self._seg_row(
+            tr("Toast Position"), [(tr("Corner"), "corner"), (tr("At cursor"), "cursor")],
+            self.settings.get("toast_position", "corner"), self.app.set_toast_position,
+            self.app._s(168))
+        h = build(x, y, w)
+        self._toast_seg = holder["seg"]
+        return h
+
+    def _row_spotlight_dismiss(self, x, y, w):
+        # Режим скрытия: Auto-hide (по потере фокуса) | Pinned (пока не нажмёшь снова).
+        build, holder = self._seg_row(
+            tr("Hide Mode"), [(tr("Auto-hide"), "focus"), (tr("Pinned"), "manual")],
+            self.settings.get("spotlight_dismiss", "focus"), self.app.set_spotlight_dismiss,
+            self.app._s(168), self.SPOTLIGHT_TIP)
+        h = build(x, y, w)
+        self._spotlight_seg = holder["seg"]
+        return h
+
+    def _row_window_mode(self, x, y, w):
+        build, holder = self._seg_row(
+            tr("Window Mode"), [(tr("Pinned"), "toggle"), (tr("Auto-hide"), "focus")],
+            self.settings.get("usage_mode", "toggle"), self._on_usage_change,
+            self.app._s(160), self.USAGE_TIP)
+        h = build(x, y, w)
+        self._usage_seg = holder["seg"]
+        return h
+
+    def _row_ytdlp(self, x, y, w):
+        build, holder = self._seg_row(
+            "yt-dlp", [("Stable", "stable"), ("Nightly", "nightly")],
+            self.settings.get("ytdlp_channel", "stable"), self.app.set_ytdlp_channel,
+            self.app._s(160))
+        h = build(x, y, w)
+        self._ytdlp_seg = holder["seg"]
+        return h
+
+    def _hotkey_row(self, title, key, default, on_change):
+        def build(x, y, w):
+            s = self.app._s
+            h = self._row_h()
+            self._row_label(title, x, y, h)
+            hk_w, hk_h = s(180), s(28)
+            hk = HotkeyEdit(self.app, self.settings.get(key, default), self._host, self._pal)
+            hk.setGeometry(x + w - hk_w, y + (h - hk_h) // 2, hk_w, hk_h)
+            hk.changed.connect(on_change)
+            return h
+        return build
+
+    def _row_spotlight_shortcut(self, x, y, w):
+        s = self.app._s
+        h = self._row_h()
+        self._row_label(tr("Shortcut"), x, y, h)
+        hk_w, hk_h = s(180), s(28)
+        hk = HotkeyEdit(self.app, self.settings.get("spotlight_combo", "ctrl+shift+d"),
+                        self._host, self._pal)
+        hk.setGeometry(x + w - hk_w, y + (h - hk_h) // 2, hk_w, hk_h)
+        hk.changed.connect(self.app.set_spotlight_combo)
+        self._hotkey_edit = hk
+        return h
+
+    def _select_row(self, label, values, current, command, icons=None, field_bg="card_bg"):
+        def build(x, y, w):
+            s = self.app._s
+            h = self._row_h()
+            self._row_label(label, x, y, h)
+            menu_w, mh = s(140), s(26)
+            combo = self.themed(Selector(self._host, fonts.font(s(11), "Regular"),
+                                         self._pal[field_bg], self._pal["sel_chip"],
+                                         self.TEXT_COLOR, self._pal["sel_chevron"], s(7), s(22),
+                                         accent=self._pal["seg_sel"], border=self._pal["border"],
+                                         on_accent=self._pal["on_accent"],
+                                         edge=self._pal["field_edge"],
+                                         popup_bg=self._pal["popup_bg"]),
+                                field_bg=field_bg, chip_bg="sel_chip", text_color="text",
+                                chevron_color="sel_chevron", accent="seg_sel", border="border",
+                                on_accent="on_accent", edge="field_edge", popup_bg="popup_bg")
+            for v in values:
+                combo.add_item(v, icons.get(v) if icons else None)
+            if current in values:
+                combo.set_current(current)
+            combo.setGeometry(x + w - menu_w, y + (h - mh) // 2, menu_w, mh)
+            combo.changed.connect(command)
+            return h
+        return build
+
+    def _row_cookies(self, x, y, w):
+        cur_val = self.settings.get("cookies_browser", "auto")
+        cur_label = next((lab for lab, v in _COOKIE_CHOICES if v == cur_val), "Auto")
+        self._cookie_val = {lab: v for lab, v in _COOKIE_CHOICES}
+        return self._select_row(tr("Browser for cookies"),
+                                [lab for lab, _ in _COOKIE_CHOICES], cur_label,
+                                self._on_cookie_browser_change,
+                                field_bg="field_bg")(x, y, w)
+
+    def _row_parallel(self, x, y, w):
+        cur = str(self.settings.get("parallel_downloads", 2))
+        return self._select_row(tr("Parallel Downloads"), ["1", "2", "3"], cur,
+                                lambda v: self.app.set_parallel_downloads(int(v)))(x, y, w)
+
+    def _speed_label(self, mbps):
+        return tr("Unlimited") if not mbps else "%d MB/s" % mbps
+
+    def _row_speed_limit(self, x, y, w):
+        from core.downloader import SPEED_LIMITS_MBPS
+        self._speed_by_label = {self._speed_label(m): m for m in SPEED_LIMITS_MBPS}
+        values = [self._speed_label(m) for m in SPEED_LIMITS_MBPS]
+        cur = self._speed_label(int(self.settings.get("speed_limit_mbps", 0) or 0))
+        return self._select_row(tr("Download Speed Limit"), values, cur,
+                                self._on_speed_limit_change)(x, y, w)
+
+    def _on_speed_limit_change(self, label):
+        self.settings["speed_limit_mbps"] = self._speed_by_label.get(label, 0)
+        self.app.save_settings()
+
+    def _row_format_priority(self, x, y, w):
+        """Подпись слева, кнопка Edit справа (отдельная страница)."""
+        s = self.app._s
+        h = self._row_h()
+        self._row_label(tr("Show/Hide and reorder formats"), x, y, h)
+        btn_w, btn_h = s(76), s(28)
+        self.btn_formats = self.themed(LinkButton(
+            self._host, tr("Edit"), fonts.font(s(11), "Semibold"),
+            self.CHOOSE, self.LINK_HOVER, self.app.open_formats,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
+            color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
+        self.btn_formats.setGeometry(x + w - btn_w, y + (h - btn_h) // 2, btn_w, btn_h)
+        return h
+
+    def _row_tools(self, x, y, w):
+        s = self.app._s
+        h = self._row_h()
+        bh, gap = s(26), s(8)
+        self._row_label(tr("Tools"), x, y, h)
         font = fonts.font(s(11), "Semibold")
         fm = QFontMetrics(font)
         t_yt, t_ff, t_cc = tr("Update yt-dlp"), tr("Update ffmpeg"), tr("Clear Cache")
-        bw_yt = max(s(104), fm.horizontalAdvance(t_yt) + s(18))
-        bw_ff = max(s(104), fm.horizontalAdvance(t_ff) + s(18))
-        bw_cc = max(s(112), fm.horizontalAdvance(t_cc) + s(24),
+        bw_yt = max(s(96), fm.horizontalAdvance(t_yt) + s(18))
+        bw_ff = max(s(96), fm.horizontalAdvance(t_ff) + s(18))
+        bw_cc = max(s(100), fm.horizontalAdvance(t_cc) + s(24),
                     fm.horizontalAdvance(tr("Cache cleared")) + s(24))
-        by = y + (rh - bh) // 2
+        by = y + (h - bh) // 2
         # Три кнопки в один ряд, выровнены вправо: yt-dlp | ffmpeg | Clear Cache.
-        cc_x = self.width_ - x - bw_cc
+        cc_x = x + w - bw_cc
         ff_x = cc_x - gap - bw_ff
         yt_x = ff_x - gap - bw_yt
         self.btn_update = self.themed(LinkButton(
@@ -520,187 +688,63 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
             color="choose", hover_color="link_hover",
             hover_bg="choose_bg_h", base_bg="choose_bg")
         self.btn_clear_cache.setGeometry(cc_x, by, bw_cc, bh)
+        return h
 
-    def _build_clipboard_row(self, x, y, card_w):
-        s = self.app._s
-        rh = s(30)
-        seg_w = s(168)
-        seg_x = self.width_ - x - seg_w
-        cb = self.themed(CheckBox(self._host, tr("Watch clipboard for links"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("clipboard_watch", False)))
-        cb.setGeometry(x, y, seg_x - x - s(8), rh)
-        cb.setToolTip(tr(self.CLIPBOARD_TIP))
-        cb.toggled.connect(self.app.set_clipboard_watch)
-        self._checks["clipboard_watch"] = cb
-        seg = self.themed(SegmentedControl(
-            self._host, [(tr("Corner"), "corner"), (tr("At cursor"), "cursor")],
-            self.settings.get("toast_position", "corner"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
-                            bg_color="seg_bg", sel_color="seg_sel",
-                            text_color="muted", sel_text_color="on_accent")
-        seg_w = seg.fit_width(seg_w)
-        seg_x = self.width_ - x - seg_w
-        seg.setGeometry(seg_x, y, seg_w, rh)
-        seg.changed.connect(self.app.set_toast_position)
-        self._toast_seg = seg
+    # --- автовставка ссылки при открытии окна --------------------------- #
+    _AUTOPASTE_SITES = [("youtube", "Youtube"), ("instagram", "Insta"),
+                        ("tiktok", "Tiktok"), ("reddit", "Reddit"),
+                        ("twitter", "Twitter"), ("vk", "VK"),
+                        ("soundcloud", "SoundCloud")]
 
-    def _build_spotlight_row(self, x, y, card_w):
+    def _row_autopaste_sites(self, x, y, w):
+        """Сетка сайтов для автовставки (2 колонки) + Select/Deselect All в
+        свободной ячейке последнего ряда. Здесь остаются галочки: это выбор
+        нескольких пунктов из списка, а не включение режима."""
         s = self.app._s
-        rh = s(30)
-        seg_w = s(168)
-        seg_x = self.width_ - x - seg_w
-        cb = self.themed(CheckBox(self._host, tr("Enable Spotlight"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("spotlight_enabled", True)))
-        cb.setGeometry(x, y, seg_x - x - s(8), rh)
-        cb.setToolTip(tr(self.SPOTLIGHT_TIP))
-        cb.toggled.connect(self.app.set_spotlight_enabled)
-        self._checks["spotlight_enabled"] = cb
-        # Режим скрытия: Auto-hide (по потере фокуса) | Pinned (пока не нажмёшь снова).
-        seg = self.themed(SegmentedControl(
-            self._host, [(tr("Auto-hide"), "focus"), (tr("Pinned"), "manual")],
-            self.settings.get("spotlight_dismiss", "focus"), fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL, self.MUTED_COLOR, self.ON_ACCENT, s(9)),
-                            bg_color="seg_bg", sel_color="seg_sel",
-                            text_color="muted", sel_text_color="on_accent")
-        seg_w = seg.fit_width(seg_w)
-        seg_x = self.width_ - x - seg_w
-        seg.setGeometry(seg_x, y, seg_w, rh)
-        seg.changed.connect(self.app.set_spotlight_dismiss)
-        self._spotlight_seg = seg
+        from core import downloader
+        enabled = set(self.settings.get("autopaste_sites", downloader.AUTOPASTE_SITES))
+        self._site_checks = {}
+        cols, rh = 2, s(28)
+        top = s(8)
+        col_w = w // cols
+        for i, (key, label) in enumerate(self._AUTOPASTE_SITES):
+            r, c = divmod(i, cols)
+            scb = self.themed(
+                CheckBox(self._host, label, fonts.font(s(11), "Regular"),
+                         self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5)),
+                text_color="text", off_color="cb_off", on_color="cb_on")
+            scb.setChecked(key in enabled)
+            scb.setGeometry(x + c * col_w, y + top + r * rh, col_w - s(6), rh)
+            scb.toggled.connect(lambda v, k=key: self._on_site_toggle(k, v))
+            self._site_checks[key] = scb
+        n = len(self._AUTOPASTE_SITES)
+        rows = (n + cols - 1) // cols
+        sd_w, sd_h = s(96), s(24)
+        last_r, last_c = divmod(n, cols)       # первая свободная ячейка
+        if last_c == 0:                         # сетка заполнена — кнопка ниже
+            last_r, rows = rows, rows + 1
+        sd = self.themed(LinkButton(
+            self._host, tr("Deselect All"), fonts.font(s(10), "Semibold"),
+            self.CHOOSE, self.LINK_HOVER, self._toggle_all_sites,
+            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG),
+            color="choose", hover_color="link_hover",
+            hover_bg="choose_bg_h", base_bg="choose_bg")
+        sd.setGeometry(x + w - sd_w, y + top + last_r * rh + (rh - sd_h) // 2, sd_w, sd_h)
+        self._sites_toggle_btn = sd
+        self._sync_sites_toggle_label()
+        return top + rows * rh + s(8)
 
-    def _build_hotkey_row(self, x, y, card_w):
-        s = self.app._s
-        # Выравнивание — как у строк сочетаний выше (по тексту галочки).
-        self._label(tr("Shortcut"), fonts.font(s(12), "Medium"), self.TEXT_COLOR,
-                    x + int(CheckBox.text_dx(s(17))), y + s(6), key="text")
-        hk_w = s(180)
-        hk = HotkeyEdit(self.app, self.settings.get("spotlight_combo", "ctrl+shift+d"),
-                        self._host, self._pal)
-        hk.setGeometry(self.width_ - x - hk_w, y, hk_w, s(30))
-        hk.changed.connect(self.app.set_spotlight_combo)
-        self._hotkey_edit = hk
 
     HK_DOWNLOAD_TIP = ("Download the link from the clipboard by pressing a\n"
                        "shortcut — no window opens. What is downloaded\n"
                        "(video or audio) depends on the shortcut pressed;\n"
                        "progress is shown by the spinning tray icon.")
 
-    def _build_hk_download_row(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Enable Feature"), fonts.font(s(12), "Regular"),
-                                  self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                         text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("hk_download_enabled", False)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.setToolTip(tr(self.HK_DOWNLOAD_TIP))
-        cb.toggled.connect(self.app.set_hk_download_enabled)
-        self._checks["hk_download_enabled"] = cb
 
     HK_NOTIFY_TIP = ("Show a short «Download Started» plate in the corner\n"
                      "when a shortcut fires. Without it the only sign that\n"
                      "the download began is the spinning tray icon.")
 
-    def _build_hk_notify_row(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Show notification"),
-                                  fonts.font(s(12), "Regular"),
-                                  self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                         text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("hk_download_notify", True)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.setToolTip(tr(self.HK_NOTIFY_TIP))
-        cb.toggled.connect(self.app.set_hk_download_notify)
-        self._checks["hk_download_notify"] = cb
-
-    def _build_hk_combo_row(self, title, key, default, on_change, x, y, card_w):
-        """Строка со сменой сочетания: подпись слева, поле захвата справа.
-
-        Подпись выравниваем по ТЕКСТУ галочки блока, а не по её рамке — иначе
-        она висит левее всего остального и колонка выглядит рваной."""
-        s = self.app._s
-        self._label(title, fonts.font(s(12), "Medium"), self.TEXT_COLOR,
-                    x + int(CheckBox.text_dx(s(17))), y + s(6), key="text")
-        hk_w = s(180)
-        hk = HotkeyEdit(self.app, self.settings.get(key, default), self._host, self._pal)
-        hk.setGeometry(self.width_ - x - hk_w, y, hk_w, s(30))
-        hk.changed.connect(on_change)
-        return hk
-
-    def _build_convert_checkbox(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Convert Youtube Videos"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("convert_yt", False)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.setToolTip(tr(self.CONVERT_TIP))
-        cb.toggled.connect(lambda v: self._set_flag("convert_yt", v))
-        self._checks["convert_yt"] = cb
-
-    def _build_embed_checkbox(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Embed Thumbnail"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("embed_thumbnail", False)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.toggled.connect(lambda v: self._set_flag("embed_thumbnail", v))
-        self._checks["embed_thumbnail"] = cb
-
-    def _build_update_checkbox(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Notify about updates"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("update_notify", True)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.toggled.connect(self.app.set_update_notify)
-        self._checks["update_notify"] = cb
-
-    def _build_toast_copy_checkbox(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Copy downloaded file to clipboard"),
-                      fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("toast_copy_file", True)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.toggled.connect(self.app.set_toast_copy_file)
-        self._checks["toast_copy_file"] = cb
-
-    def _build_parallel_row(self, x, y, card_w):
-        cur = str(self.settings.get("parallel_downloads", 2))
-        self._build_select_row(tr("Parallel Downloads"), x, y, ["1", "2", "3"],
-                               cur, lambda v: self.app.set_parallel_downloads(int(v)))
-
-    def _speed_label(self, mbps):
-        return tr("Unlimited") if not mbps else "%d MB/s" % mbps
-
-    def _build_speed_limit_row(self, x, y, card_w):
-        from core.downloader import SPEED_LIMITS_MBPS
-        self._speed_by_label = {self._speed_label(m): m for m in SPEED_LIMITS_MBPS}
-        values = [self._speed_label(m) for m in SPEED_LIMITS_MBPS]
-        cur = self._speed_label(int(self.settings.get("speed_limit_mbps", 0) or 0))
-        self._build_select_row(tr("Download Speed Limit"), x, y, values, cur,
-                               self._on_speed_limit_change)
-
-    def _on_speed_limit_change(self, label):
-        self.settings["speed_limit_mbps"] = self._speed_by_label.get(label, 0)
-        self.app.save_settings()
-
-    def _build_autostart_checkbox(self, x, y, card_w):
-        s = self.app._s
-        cb = self.themed(CheckBox(self._host, tr("Launch at startup"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("autostart", False)))
-        cb.setGeometry(x, y, card_w, s(30))
-        cb.toggled.connect(self.app.set_autostart)
-        self._checks["autostart"] = cb
 
     def _build_bottom_buttons(self, x, y, card_w):
         """Open Logs Folder + Reset Settings — две кнопки одинаковой ширины в один
@@ -747,54 +791,6 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         except RuntimeError:
             pass
 
-    # --- автовставка ссылки при открытии окна --------------------------- #
-    _AUTOPASTE_SITES = [("youtube", "Youtube"), ("instagram", "Insta"),
-                        ("tiktok", "Tiktok"), ("reddit", "Reddit"),
-                        ("twitter", "Twitter"), ("vk", "VK"),
-                        ("soundcloud", "SoundCloud")]
-
-    def _build_autopaste_block(self, x, y, card_w):
-        s = self.app._s
-        from core import downloader
-        # Строка: чекбокс включения + кнопка Select/Deselect All справа.
-        sd_w = s(96)
-        cb = self.themed(CheckBox(self._host, tr("Paste link on open"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("autopaste", False)))
-        cb.setGeometry(x, y, card_w - sd_w - s(8), s(30))
-        cb.setToolTip(tr(self.AUTOPASTE_TIP))
-        cb.toggled.connect(lambda v: self._set_flag("autopaste", v))
-        self._checks["autopaste"] = cb
-        sd = self.themed(LinkButton(
-            self._host, tr("Deselect All"), fonts.font(s(10), "Semibold"),
-            self.CHOOSE, self.LINK_HOVER, self._toggle_all_sites,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG), color="choose", hover_color="link_hover",
-            hover_bg="choose_bg_h", base_bg="choose_bg")
-        sd.setGeometry(x + card_w - sd_w, y + s(2), sd_w, s(26))
-        self._sites_toggle_btn = sd
-        # Сетка сайтов (2 колонки).
-        enabled = set(self.settings.get("autopaste_sites", downloader.AUTOPASTE_SITES))
-        self._site_checks = {}
-        cols, rh = 2, s(26)
-        # Сетку сдвигаем под текст галочки «Paste link on open»: список сайтов
-        # ей подчинён, и по левому краю рамки он смотрелся как отдельный блок.
-        gx = x + int(CheckBox.text_dx(s(17)))
-        col_w = (card_w - (gx - x)) // cols
-        gy = y + s(34)
-        for i, (key, label) in enumerate(self._AUTOPASTE_SITES):
-            r, c = divmod(i, cols)
-            scb = self.themed(
-                CheckBox(self._host, label, fonts.font(s(11), "Regular"),
-                         self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(16), s(5)),
-                text_color="text", off_color="cb_off", on_color="cb_on")
-            scb.setChecked(key in enabled)
-            scb.setGeometry(gx + c * col_w, gy + r * rh, col_w - s(6), s(24))
-            scb.toggled.connect(lambda v, k=key: self._on_site_toggle(k, v))
-            self._site_checks[key] = scb
-        self._sync_sites_toggle_label()
-        rows = (len(self._AUTOPASTE_SITES) + cols - 1) // cols
-        return s(34) + rows * rh
 
     def _on_site_toggle(self, key, value):
         from core import downloader
@@ -816,30 +812,6 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         all_on = all(cb.isChecked() for cb in self._site_checks.values())
         self._sites_toggle_btn.setText(tr("Deselect All") if all_on else tr("Select All"))
 
-    def _build_select_row(self, label, x, y, values, current, command, icons=None):
-        s = self.app._s
-        menu_w = s(140)
-        lbl = QLabel(label, self._host)
-        lbl.setFont(fonts.font(s(12), "Medium"))
-        lbl.setStyleSheet(f"color: {self.TEXT_COLOR}; background: transparent;")
-        lbl.move(x, y + s(5))
-        lbl.adjustSize()
-        self._labels.append((lbl, "text"))
-        combo = self.themed(Selector(self._host, fonts.font(s(11), "Regular"),
-                         self._pal["card_bg"], self._pal["sel_chip"], self.TEXT_COLOR,
-                         self._pal["sel_chevron"], s(7), s(22),
-                         accent=self._pal["seg_sel"], border=self._pal["border"],
-                         on_accent=self._pal["on_accent"]),
-                            field_bg="card_bg", chip_bg="sel_chip", text_color="text",
-                            chevron_color="sel_chevron", accent="seg_sel", border="border",
-                            on_accent="on_accent")
-        for v in values:
-            combo.add_item(v, icons.get(v) if icons else None)
-        if current in values:
-            combo.set_current(current)
-        combo.setGeometry(self.width_ - x - menu_w, y, menu_w, s(26))
-        combo.changed.connect(command)
-        return combo
 
     # --- перенесено из About: иконка трея / тема / язык ---------------- #
     def _icon_values(self):
@@ -904,62 +876,11 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         # сигнала её же селектора.
         QTimer.singleShot(0, self.app.apply_language_live)
 
-    def _build_cookies_card(self, x, y, card_w):
-        s = self.app._s
-        self._label(tr("Browser for cookies"), fonts.font(s(11), "Regular"),
-                    self.TEXT_COLOR, x, y + s(3), key="text")
-        cur_val = self.settings.get("cookies_browser", "auto")
-        cur_label = next((lab for lab, v in _COOKIE_CHOICES if v == cur_val), "Auto")
-        self._cookie_val = {lab: v for lab, v in _COOKIE_CHOICES}
-
-        sel = self.themed(Selector(self._host, fonts.font(s(11), "Regular"),
-                       self._pal["field_bg"], self._pal["sel_chip"], self.TEXT_COLOR,
-                       self._pal["sel_chevron"], s(7), s(22),
-                       accent=self.SEG_SEL, border=self._pal["border"],
-                       on_accent=self.ON_ACCENT),
-                            field_bg="field_bg", chip_bg="sel_chip", text_color="text",
-                            chevron_color="sel_chevron", accent="seg_sel", border="border",
-                            on_accent="on_accent")
-        for lab, _ in _COOKIE_CHOICES:
-            sel.add_item(lab)
-        sel.set_current(cur_label)
-        sel.changed.connect(self._on_cookie_browser_change)
-        sel.setGeometry(card_w - s(120), y, s(120) + x, s(26))
-        self._cookie_sel = sel
-        return s(26)
 
     def _on_cookie_browser_change(self, label):
         self.settings["cookies_browser"] = self._cookie_val.get(label, "auto")
         self.app.save_settings()
 
-    def _divider(self, x, y, w):
-        """Тонкая горизонтальная линия-разделитель между блоками настроек.
-
-        Цвет — «separator» палитры (он подогнан под каждую тему), а не «border»:
-        у светлой Glass border почти белый (#f7fafd) и линия была не видна."""
-        line = QFrame(self._host)
-        line.setGeometry(x, y, w, 1)
-        line.setStyleSheet("background: %s; border: none;" % self._pal["separator"])
-        self._sep_lines.append(line)
-        return line
-
-    def _build_format_priority_row(self, x, y, card_w):
-        """Format Priority: заголовок + подпись слева, кнопка Edit справа.
-        Возвращает высоту блока (чтобы разделитель ниже не липнул к подписи)."""
-        s = self.app._s
-        self._section_title(tr("Format Priority"), x, y)
-        sub_y = y + s(18)
-        sub_f = fonts.font(s(11), "Regular")
-        self._label(tr("Show/Hide and reorder formats"), sub_f, self.TEXT_COLOR, x, sub_y,
-                    key="text")
-        btn_w, btn_h = s(76), s(30)
-        self.btn_formats = self.themed(LinkButton(
-            self._host, tr("Edit"), fonts.font(s(11), "Semibold"),
-            self.CHOOSE, self.LINK_HOVER, self.app.open_formats,
-            hover_bg=self.CHOOSE_BG_H, radius=s(6), base_bg=self.CHOOSE_BG), color="choose", hover_color="link_hover",
-            hover_bg="choose_bg_h", base_bg="choose_bg")
-        self.btn_formats.setGeometry(x + card_w - btn_w, y + s(6), btn_w, btn_h)
-        return max(s(18) + QFontMetrics(sub_f).height(), s(6) + btn_h)
 
     # ------------------------------------------------------------------ #
     def _section_title(self, text, x, y):
@@ -1002,46 +923,6 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
 
         return card_h
 
-    def _build_usage_card(self, x, y, card_w):
-        """Allow Dragging сверху, ниже — «Window Mode» слева и компактный
-        переключатель Pinned/Auto-hide справа (в один ряд с остальными
-        select-строками блока Interface)."""
-        s = self.app._s
-        cb_h = s(30)
-        row_h = s(34)
-        card_h = cb_h + s(6) + row_h
-        card = self._card(x, y, card_w, card_h)
-
-        cb = self.themed(CheckBox(card, tr("Allow Dragging"), fonts.font(s(12), "Regular"),
-                      self.TEXT_COLOR, self.CB_OFF, self.CB_ON, s(17), s(5)),
-                            text_color="text", off_color="cb_off", on_color="cb_on")
-        cb.setChecked(bool(self.settings.get("allow_dragging", False)))
-        cb.setGeometry(0, 0, card_w, cb_h)
-        cb.setToolTip(tr(self.DRAG_TIP))
-        cb.toggled.connect(self._on_drag_change)
-        self._checks["allow_dragging"] = cb
-
-        row_y = cb_h + s(6)
-        self._label(tr("Window Mode"), fonts.font(s(12), "Medium"),
-                    self.TEXT_COLOR, x, y + row_y + s(8), key="text")
-
-        seg_w = s(160)                       # компактнее и прижат вправо
-        seg = self.themed(SegmentedControl(
-            card,
-            [(tr("Pinned"), "toggle"), (tr("Auto-hide"), "focus")],
-            self.settings.get("usage_mode", "toggle"),
-            fonts.font(s(11), "Medium"),
-            self.SEG_BG, self.SEG_SEL,
-            self.MUTED_COLOR, self.ON_ACCENT, s(9)),
-            bg_color="seg_bg", sel_color="seg_sel",
-            text_color="muted", sel_text_color="on_accent")
-        seg_w = seg.fit_width(seg_w)
-        seg.setGeometry(card_w - seg_w, row_y, seg_w, s(30))
-        seg.setToolTip(tr(self.USAGE_TIP))
-        seg.changed.connect(self._on_usage_change)
-        self._usage_seg = seg
-
-        return card_h
 
     def _tool_update_done(self, btn, restore, ok):
         """Итог обновления инструмента — прямо на кнопке, которую нажали.
@@ -1074,8 +955,8 @@ class SettingsPage(ThemedOwner, WindowDragMixin, QWidget):
         def fade_to(text, on_done=None):
             def swapped():
                 btn.setText(text)
-                anim.fade(btn, 0.0, 1.0, 160, on_finished=on_done)
-            anim.fade(btn, 1.0, 0.0, 160, on_finished=swapped)
+                anim.fade(btn, 0.0, 1.0, anim.ENTER_MS, on_finished=on_done)
+            anim.fade(btn, 1.0, 0.0, anim.EXIT_MS, on_finished=swapped)
 
         def finish():
             self._cc_flashing = False

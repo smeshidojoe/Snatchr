@@ -10,7 +10,7 @@ import os
 import uuid
 
 from PySide6.QtCore import (
-    Qt, QRectF, QTimer, QEvent, QPoint, QPropertyAnimation
+    Qt, QRectF, QTimer, QEvent, QPropertyAnimation
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPixmap, QGuiApplication, QCursor, QKeyEvent,
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import QWidget, QLineEdit, QLabel, QApplication
 from core import fonts, themes, downloader, history
 from core.i18n import tr
 from ui import anim
+from ui import compose
+from ui.glass import Backdrop, backdrop_of
 from ui.widgets import SegmentedControl
 from ui.spotlight_history import HistoryList
 from ui.spotlight_trim import TrimPanel
@@ -90,12 +92,15 @@ class SearchField(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         s = self.app._s
         w, h = self.width(), self.height()
-        p.setPen(QPen(self._border, 1))
-        grad = QLinearGradient(0, 0, 0, h)      # свой вертикальный градиент поля
-        grad.setColorAt(0.0, self._bg.lighter(105))
-        grad.setColorAt(1.0, self._bg.darker(107))
-        p.setBrush(grad)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), self._radius, self._radius)
+        glass = backdrop_of(self)
+        if glass is None or not glass.paint(p, self, QRectF(0, 0, w, h), self._radius,
+                                            "glass_panel_bright"):
+            p.setPen(QPen(self._border, 1))
+            grad = QLinearGradient(0, 0, 0, h)      # свой вертикальный градиент поля
+            grad.setColorAt(0.0, self._bg.lighter(105))
+            grad.setColorAt(1.0, self._bg.darker(107))
+            p.setBrush(grad)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), self._radius, self._radius)
 
         # подсветка краёв (красная — неподдерживаемая ссылка), затухающая
         if self._glow_t > 0.01:
@@ -118,6 +123,8 @@ class Spotlight(QWidget):
                          | Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint)
         self.app = app
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        compose.gpu_composited(self)       # анимации окна — через GPU
+        self._glass = Backdrop(self, app)  # тема Frosted: панели — стекло
         s = app._s
 
         self.MX = s(8)
@@ -152,10 +159,12 @@ class Spotlight(QWidget):
         self.seg_mode = SegmentedControl(
             self, [(tr("Video"), "video"), (tr("Audio"), "audio")], "video",
             fonts.font(s(12), "Medium"), pal0["seg_bg"], pal0["seg_sel"],
-            pal0["muted"], pal0["on_accent"], s(13))    # более круглые края
+            pal0["muted"], pal0["on_accent"], s(13),    # более круглые края
+            edge_color=pal0["field_edge"])
         self.seg_mode.changed.connect(self._on_mode_change)
         self._seg_keys = {"bg_color": "seg_bg", "sel_color": "seg_sel",
-                          "text_color": "muted", "sel_text_color": "on_accent"}
+                          "text_color": "muted", "sel_text_color": "on_accent",
+                          "edge_color": "field_edge"}
 
         self.search = SearchField(app, self._on_submit, self._on_debounce, self)
         self.trim = TrimPanel(app, self)
@@ -182,12 +191,6 @@ class Spotlight(QWidget):
         self._msg_timer.setSingleShot(True)
         self._msg_timer.timeout.connect(self._hide_msg)
 
-        # Пока окно открыто — периодически убираем из истории удалённые с диска
-        # файлы (не дожидаясь перезапуска Spotlight).
-        self._prune_timer = QTimer(self)
-        self._prune_timer.setInterval(3000)
-        self._prune_timer.timeout.connect(self._prune_visible)
-
         # Корректно гасим фоновые потоки при выходе (иначе Qt ругается
         # «QThread: Destroyed while thread is still running»).
         QApplication.instance().aboutToQuit.connect(self.shutdown)
@@ -211,6 +214,7 @@ class Spotlight(QWidget):
         if pal is None:
             pal = themes.palette(
                 self.app.settings.get("theme", themes.DEFAULT_THEME))
+        self._glass.theme_changed()
         self.seg_mode.set_colors(**{arg: pal[key]
                                     for arg, key in self._seg_keys.items()})
         self._restyle_msg(pal)
@@ -231,11 +235,11 @@ class Spotlight(QWidget):
         self._msg.move(x, y)
         self._msg.show()
         self._msg.raise_()
-        anim.fade(self._msg, 0.0, 1.0, 160)
+        anim.fade(self._msg, 0.0, 1.0, anim.ENTER_MS)
         self._msg_timer.start(2600)
 
     def _hide_msg(self):
-        anim.fade(self._msg, 1.0, 0.0, 200, on_finished=self._msg.hide)
+        anim.fade(self._msg, 1.0, 0.0, anim.EXIT_MS, on_finished=self._msg.hide)
 
     def shutdown(self):
         """Останавливает воспроизведение/воркеры перед выходом приложения."""
@@ -288,9 +292,9 @@ class Spotlight(QWidget):
         self._close_trim(animate=False)
         self._close_playlist(animate=False)
         self._relayout()                        # сначала размеры (ширина списка), потом строки
-        with perflog.measure("Spotlight: prune_missing (диск)"):
-            entries = history.prune_missing()   # выкинуть удалённые с диска
-        self.history.rebuild(entries)
+        # Диск здесь НЕ проверяем: окно по хоткею должно появиться сразу.
+        # Пропавшие файлы уберёт фоновая проверка сразу после показа.
+        self.history.rebuild(history.load())
         self.app.sync_view_mirrors(self)        # подтянуть идущие загрузки из окна
         cur = QCursor.pos()
         screen = QGuiApplication.screenAt(cur) or QGuiApplication.primaryScreen()
@@ -300,53 +304,16 @@ class Spotlight(QWidget):
         y = avail.top() + int((avail.height() - h) * 0.44)   # ниже, ближе к центру
         y = max(avail.top() + self.MY, min(y, avail.bottom() - h - self.MY))
         self.move(x, y)
-        # Окно появляется как единое целое (windowOpacity 0->1), а панели слегка
-        # подъезжают снизу. НЕ используем QGraphicsOpacityEffect на детях: на
-        # полупрозрачном окне это на кадр показывало насквозь рабочий стол
-        # (моргание). Дети остаются непрозрачными — окно проявляется целиком.
-        self.setWindowOpacity(0.0)
-        self._prep_slide(self.seg_mode, self.app._s(6))
-        self._prep_slide(self.search, self.app._s(10))
-        self._prep_slide(self.history, self.app._s(18))
+        # Появляется МГНОВЕННО, без анимации: окно вызывают с клавиатуры
+        # десятки раз в день, и любая пауза между хоткеем и готовым полем
+        # читается как тормоза (так же в Raycast и Spotty). Уход — короткий.
         self.show()
         self.raise_()
         self.activateWindow()
         self.search.edit().setFocus()
         self.search.edit().selectAll()
-        self._prune_timer.start()
-        from core import perflog
         perflog.note("Spotlight: показ начат")
-        a = QPropertyAnimation(self, b"windowOpacity", self)
-        a.setDuration(170)
-        a.setStartValue(0.0)
-        a.setEndValue(1.0)
-        a.setEasingCurve(anim.EASE_OUT)
-        a.start()
-        self._show_anim = a
-        self._run_slide(self.seg_mode, delay=0)
-        self._run_slide(self.search, delay=0)
-        self._run_slide(self.history, delay=55)
-
-    def _prep_slide(self, widget, dy):
-        """Смещает элемент вниз ДО show() (без эффектов прозрачности)."""
-        end = widget.pos()
-        widget._enter_end = end
-        widget._enter_start = QPoint(end.x(), end.y() + dy)
-        widget.move(widget._enter_start)
-
-    def _run_slide(self, widget, delay=0):
-        def go():
-            pa = QPropertyAnimation(widget, b"pos", widget)
-            pa.setDuration(300)
-            pa.setStartValue(widget._enter_start)
-            pa.setEndValue(widget._enter_end)
-            pa.setEasingCurve(anim.EASE_OUT)
-            pa.start()
-            widget._enter_pos_anim = pa
-        if delay:
-            QTimer.singleShot(delay, go)
-        else:
-            go()
+        self.app._prune_histories()             # пропавшие файлы — в фоне
 
     def hide_spotlight(self):
         if not self.isVisible() or self._closing:
@@ -355,7 +322,7 @@ class Spotlight(QWidget):
         self._close_playlist(animate=False)
         self._closing = True
         a = QPropertyAnimation(self, b"windowOpacity", self)
-        a.setDuration(150)
+        a.setDuration(anim.EXIT_MS)
         a.setStartValue(1.0)
         a.setEndValue(0.0)
         a.setEasingCurve(anim.EASE_OUT)
@@ -367,20 +334,7 @@ class Spotlight(QWidget):
         self.hide()
         self.setWindowOpacity(1.0)
         self._closing = False
-        self._prune_timer.stop()
         self._update_tray_ring()                # если идут загрузки — кольцо в трее
-
-    def _prune_visible(self):
-        """Убирает из истории строки, чьи файлы удалили с диска (окно открыто)."""
-        if not self.isVisible():
-            return
-        from core import perflog
-        with perflog.measure("Spotlight: периодическая чистка (диск)"):
-            ids = self.history.drop_missing()
-        if ids:
-            for entry_id in ids:
-                history.remove(entry_id)
-        self.close_trim_if_gone()
 
     # авто-скрытие при потере фокуса (кроме моментов, когда открыто своё меню)
     def event(self, e):
@@ -828,10 +782,10 @@ class Spotlight(QWidget):
         self._relayout()             # геометрия ДО show — иначе панель успевала
         self.trim.show()             # мелькнуть в старом месте/размере
         self._fit_for_extra(target + self.GAP)
-        anim.animate(self, 0.0, 1.0, 560,
+        anim.animate(self, 0.0, 1.0, anim.DRAWER_IN_MS,
                      lambda v: self._set_trim_h(int(target * v)),
-                     easing=anim.EASE_OUT,
-                     on_finished=self.trim.end_anim, attr="_trim_anim")
+                     easing=anim.EASE_DRAWER,
+                     on_finished=self.trim.end_anim, attr="_trim_anim", moves=True)
 
     def _load_trim(self, path, waveform=None, entry_id=""):
         """Загрузить файл в панель обрезки и отметить его строку активной."""
@@ -873,9 +827,9 @@ class Spotlight(QWidget):
             self.trim.stop()
             self.trim.hide()
             self._relayout()
-        anim.animate(self, 1.0, 0.0, 500,
+        anim.animate(self, 1.0, 0.0, anim.DRAWER_OUT_MS,
                      lambda v: self._set_trim_h(int(start * v)),
-                     easing=anim.EASE_OUT, on_finished=done, attr="_trim_anim")
+                     easing=anim.EASE_DRAWER, on_finished=done, attr="_trim_anim", moves=True)
 
     def _fit_for_extra(self, extra):
         screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
@@ -914,9 +868,9 @@ class Spotlight(QWidget):
         target = self.playlist.target_height()
         self.playlist.show()
         self._fit_for_extra(target + self.GAP)
-        anim.animate(self, 0.0, 1.0, 300,
+        anim.animate(self, 0.0, 1.0, anim.DRAWER_IN_MS,
                      lambda v: self._set_pl_h(int(target * v)),
-                     easing=anim.EASE_OUT, attr="_pl_anim")
+                     easing=anim.EASE_DRAWER, attr="_pl_anim", moves=True)
 
     def _set_pl_h(self, h):
         self._pl_h = h
@@ -938,9 +892,9 @@ class Spotlight(QWidget):
             self._pl_h = 0
             self.playlist.hide()
             self._relayout()
-        anim.animate(self, 1.0, 0.0, 240,
+        anim.animate(self, 1.0, 0.0, anim.DRAWER_OUT_MS,
                      lambda v: self._set_pl_h(int(start * v)),
-                     easing=anim.EASE_OUT, on_finished=done, attr="_pl_anim")
+                     easing=anim.EASE_DRAWER, on_finished=done, attr="_pl_anim", moves=True)
 
     def _on_playlist_download(self, entries):
         """Кнопка Download в панели: выбранные ролики уезжают в историю и качаются
