@@ -71,6 +71,7 @@ class App(QWidget):
 
         self.current_page = "main"
         self._nav_busy = False
+        self._nav_waiters = []            # что сделать, когда смена вкладок доиграет
 
         # Режим работы окна:
         #   "toggle" (Pinned)   — клик по иконке открывает/закрывает окно;
@@ -519,6 +520,16 @@ class App(QWidget):
 
     def _nav_done(self):
         self._nav_busy = False
+        waiters, self._nav_waiters = self._nav_waiters, []
+        for fn in waiters:
+            fn()
+
+    def _after_nav(self, fn):
+        """fn() — сразу, если вкладки не меняются, иначе по окончании смены."""
+        if self._nav_busy:
+            self._nav_waiters.append(fn)
+        else:
+            fn()
 
     def _raise_bar_buttons(self):
         """Кнопки нижней панели — поверх страниц и их снимков."""
@@ -815,8 +826,11 @@ class App(QWidget):
             return
         self.show_near_tray()            # показать окно
         self.open_about()                # перейти на About
-        # запустить скачивание с уже известным URL (как кнопка в About)
-        QTimer.singleShot(350, lambda u=pu["url"]: self.start_app_update(u))
+        # Скачивание с уже известным URL (как кнопка в About) — когда переход
+        # доиграет. Раньше стоял таймер на 350 мс при переходе в 380: оверлей
+        # появлялся посреди смены вкладок, и в её конце страница About и кнопки
+        # панели поднимались ПОВЕРХ него.
+        self._after_nav(lambda u=pu["url"]: self.start_app_update(u))
 
     def _on_update_toast_dismiss(self):
         pu = getattr(self, "_pending_update", None)
@@ -1809,6 +1823,7 @@ class App(QWidget):
             self.bottom_bar.set_page_mode("main")
         anim.cancel_swap(self)                # смена вкладок могла не доиграть
         self._nav_busy = False
+        self._nav_waiters = []                # её ждали для страницы, которой уже нет
         # Только по уже построенным: этот метод зовётся при каждом показе окна,
         # и обращение к свойствам создало бы все страницы на первом же клике.
         for p in self._built_pages():
