@@ -47,7 +47,7 @@ EXISTING = set()
 JOB_N = [0]
 
 
-def _next_job_dir():
+def _next_job_dir(*_):
     JOB_N[0] += 1
     return "JOB%d" % JOB_N[0]
 

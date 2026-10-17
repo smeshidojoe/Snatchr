@@ -16,6 +16,7 @@ import json
 import time
 import uuid
 import shutil
+import sys
 import unicodedata
 
 from core import tools
@@ -25,6 +26,9 @@ from core.i18n import tr
 from core.config import APP_DIR
 
 TMP_ROOT = os.path.join(APP_DIR, "tmp")   # временные папки загрузок рядом с конфигом
+# Папка заданий на ДРУГОМ диске (см. _job_root) и список таких папок для уборки.
+JOB_TMP_NAME = ".snatchr-tmp"
+_JOB_ROOTS_FILE = os.path.join(APP_DIR, "tmp_roots.txt")
 
 SEP = " · "          # разделитель блоков в подписи
 MIN_HEIGHT = 360     # ниже 360p не показываем
@@ -662,6 +666,24 @@ def cleanup_temp():
                 _rm_dir(os.path.join(TMP_ROOT, n))
     except OSError:
         pass
+    # Папки заданий на дисках загрузок. Удаляем только своё — по имени.
+    try:
+        with open(_JOB_ROOTS_FILE, encoding="utf-8") as f:
+            roots = [ln.strip() for ln in f if ln.strip()]
+        left = []
+        for root in roots:
+            if os.path.basename(root) != JOB_TMP_NAME:
+                continue
+            shutil.rmtree(root, ignore_errors=True)
+            if os.path.exists(root):
+                left.append(root)        # диск не подключён/занято — в следующий раз
+        if left:
+            with open(_JOB_ROOTS_FILE, "w", encoding="utf-8") as f:
+                f.write("".join(r + "\n" for r in left))
+        else:
+            os.remove(_JOB_ROOTS_FILE)
+    except OSError:
+        pass
     try:
         import tempfile
         import glob
@@ -860,6 +882,7 @@ _ERROR_MAP = [
     ("unsupported url", "Link not supported."),
     ("ffmpeg", "Processing failed (ffmpeg)."),
     ("no space left", "Not enough disk space."),
+    ("not enough space on the disk", "Not enough disk space."),   # WinError 112
 ]
 
 
@@ -1224,12 +1247,72 @@ def _out_dir(settings):
         os.path.expanduser("~"), "Downloads")
 
 
-def _new_job_dir():
-    """Создаёт временную папку задания (tmp/aaaa-xxxx-bbbb-dddd рядом с конфигом)."""
+def _same_drive(a, b):
+    da = os.path.splitdrive(os.path.abspath(a))[0].rstrip("\\/").lower()
+    db = os.path.splitdrive(os.path.abspath(b))[0].rstrip("\\/").lower()
+    return da == db
+
+
+def _remember_job_root(root):
+    """Запоминает папку заданий вне APP_DIR — её уберёт cleanup_temp, даже если
+    папку загрузок потом сменили."""
+    try:
+        try:
+            with open(_JOB_ROOTS_FILE, encoding="utf-8") as f:
+                known = {ln.strip() for ln in f if ln.strip()}
+        except OSError:
+            known = set()
+        if root in known:
+            return
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(_JOB_ROOTS_FILE, "a", encoding="utf-8") as f:
+            f.write(root + "\n")
+    except OSError:
+        pass
+
+
+def _job_root(download_dir):
+    """Где создавать папку задания.
+
+    По умолчанию — TMP_ROOT в %APPDATA%, то есть на диске C:. Но видео качается
+    туда ЦЕЛИКОМ (плюс отдельные потоки и копия на время склейки — до двух
+    размеров файла), и выбор папки загрузок на другом диске место на C: не
+    спасал: при нехватке видеопоток падал, а в загрузки приезжал один звук.
+    Поэтому, если загрузки на другом диске, задание живёт там же —
+    в скрытой «<папка загрузок>\\.snatchr-tmp». Заодно итоговый перенос
+    становится переименованием, а не копированием гигабайтов между дисками.
+    Не вышло создать (диск только для чтения, нет прав) — прежнее место."""
+    if not download_dir or _same_drive(download_dir, TMP_ROOT):
+        return TMP_ROOT
+    root = os.path.join(os.path.abspath(download_dir), JOB_TMP_NAME)
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        return TMP_ROOT
+    _remember_job_root(root)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(root, 0x2)   # HIDDEN
+        except Exception:
+            pass
+    return root
+
+
+def _new_job_dir(download_dir=None):
+    """Создаёт временную папку задания (<корень>/aaaa-xxxx-bbbb-dddd).
+    Корень — TMP_ROOT или папка на диске загрузок (см. _job_root)."""
     h = uuid.uuid4().hex[:16]
     name = "-".join(h[i:i + 4] for i in range(0, 16, 4))
-    d = os.path.join(TMP_ROOT, name)
-    os.makedirs(d, exist_ok=True)
+    root = _job_root(download_dir)
+    d = os.path.join(root, name)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        if root == TMP_ROOT:
+            raise
+        d = os.path.join(TMP_ROOT, name)
+        os.makedirs(d, exist_ok=True)
     return d
 
 
@@ -1237,6 +1320,12 @@ def _rm_dir(path):
     try:
         if path and os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
+        # Последнее задание на диске загрузок — убираем и саму .snatchr-tmp,
+        # чтобы в папке пользователя не висело пустой служебной папки. Занята
+        # другим заданием — rmdir просто не сработает.
+        parent = os.path.dirname(os.path.normpath(path or ""))
+        if os.path.basename(parent) == JOB_TMP_NAME:
+            os.rmdir(parent)
     except Exception:
         pass
 
@@ -1251,6 +1340,22 @@ def _rm(path):
 
 # Промежуточные файлы отдельных потоков yt-dlp: «<base>.f248.webm».
 _FRAG_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
+
+
+def _is_stream_part(path):
+    """Промежуточный файл ОДНОГО потока («<base>.f140.m4a») или недокачка.
+
+    Такой файл не итог: при склейке видео+звук yt-dlp сначала качает потоки по
+    отдельности. Если видеопоток упал (с --ignore-errors это не останавливает
+    загрузку), звук всё равно докачивается, склейки нет, а последняя строка
+    «[download] Destination:» указывает на звуковую дорожку. Раньше её и
+    выдавали за готовое видео: выбрал 1080p — получил «… .f140.m4a».
+
+    «<base>.temp.mp4» — недописанный результат склейки/постобработки ffmpeg."""
+    name = os.path.basename(path or "").lower()
+    return (name.endswith((".part", ".ytdl", ".temp"))
+            or ".temp." in name
+            or bool(_FRAG_RE.search(name)))
 
 
 def _scan_job_output(job_dir, ext):
@@ -1268,8 +1373,7 @@ def _scan_job_output(job_dir, ext):
         p = os.path.join(job_dir, n)
         if not os.path.isfile(p):
             continue
-        low = n.lower()
-        if low.endswith((".part", ".ytdl", ".temp")) or _FRAG_RE.search(n):
+        if _is_stream_part(n):
             continue
         cands.append(p)
     if not cands:
@@ -1605,7 +1709,7 @@ def _run_thumbnail_job(url, settings, hooks, title):
     log = logbook.Log(url)
     log.begin("thumbnail")
     log.event("Downloading thumbnail")
-    job_dir = _new_job_dir()
+    job_dir = _new_job_dir(_out_dir(settings))
     dest = ""
     if is_youtube(url) and not hooks.is_stopped():
         vid = _youtube_id(url)
@@ -1815,13 +1919,13 @@ def run_job(option, url, settings, hooks, title=None, info=None):
     download_dir = _out_dir(settings)
     # Качаем в отдельную временную папку; готовый файл переносим в папку загрузок.
     # Так все обломки и temp-файлы изолированы и легко удаляются при отмене.
-    job_dir = _new_job_dir()
+    job_dir = _new_job_dir(download_dir)
     expected = _expected_path(option, url, settings, title, job_dir)
 
     def _resolve(parsed):
         if expected and os.path.exists(expected):
             return expected
-        if parsed and os.path.exists(parsed):
+        if parsed and os.path.exists(parsed) and not _is_stream_part(parsed):
             return parsed
         # Путь из консоли не совпал с файлом (напр., emoji в заголовке) —
         # ищем итог прямо в одноразовой папке задания.
@@ -1831,7 +1935,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         """Чистая папка под следующую попытку (expected пересчитывается)."""
         nonlocal job_dir, expected
         _rm_dir(job_dir)
-        job_dir = _new_job_dir()
+        job_dir = _new_job_dir(download_dir)
         expected = _expected_path(opt or option, url, settings, title, job_dir)
 
     # Куки применяем best-effort. Если их извлечение из браузера падает (Chrome
@@ -1944,7 +2048,7 @@ def run_job(option, url, settings, hooks, title=None, info=None):
         if not hooks.is_stopped():
             if expected and os.path.exists(expected):
                 dest = expected
-            elif not (dest and os.path.exists(dest)):
+            elif not (dest and os.path.exists(dest)) or _is_stream_part(dest):
                 dest = _scan_job_output(job_dir, _merge_ext(opt_full, url, settings))
             ok = bool(dest)
         if ok and dest and not hooks.is_stopped():
